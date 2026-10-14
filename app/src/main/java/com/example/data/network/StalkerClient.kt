@@ -170,7 +170,7 @@ class StalkerClient(
                                 logoUrl = logo,
                                 groupTitle = groupTitle,
                                 channelNumber = number,
-                                httpUserAgent = null // spoof is for API/playlist requests only, not playback
+                                httpUserAgent = userAgent
                             )
                         )
                     }
