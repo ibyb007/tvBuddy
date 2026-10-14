@@ -10,6 +10,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -242,24 +247,6 @@ fun TvBuddyPlayerScreen(
 
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF1E293B),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, AccentCyan),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(onClick = onOpenSpoofSettings)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Security, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(15.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Spoof", color = AccentCyan, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
-                            }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
                             color = Color(0xFF334155),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
@@ -283,7 +270,11 @@ fun TvBuddyPlayerScreen(
             enter = fadeIn(),
             exit = fadeOut()
         ) {
-            Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (isFullscreen) Modifier.windowInsetsPadding(WindowInsets.safeDrawing) else Modifier)
+            ) {
                 // Top Action Bar
                 Box(
                     modifier = Modifier
@@ -397,29 +388,29 @@ fun TvBuddyPlayerScreen(
                                 }
                             }
 
-                            // DRM Status Badge
-                            if (streamInfo.isDrmProtected) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(StatusDrm.copy(alpha = 0.25f))
-                                        .border(1.dp, StatusDrm, RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 6.dp, vertical = 4.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm, modifier = Modifier.size(10.dp))
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text(streamInfo.drmType, color = StatusDrm, fontSize = 10.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-
                             // Aspect Ratio
                             IconButton(
                                 onClick = onCycleAspect,
                                 modifier = Modifier.size(36.dp)
                             ) {
                                 Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(18.dp))
+                            }
+
+                            // Fullscreen toggle (auto-rotates with the phone while fullscreen)
+                            IconButton(
+                                onClick = onToggleFullscreen,
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.15f))
+                                    .testTag("fullscreen_toggle_btn")
+                            ) {
+                                Icon(
+                                    imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                    contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
+                                    tint = AccentCyan,
+                                    modifier = Modifier.size(20.dp)
+                                )
                             }
                         }
                     }
@@ -515,7 +506,7 @@ fun TvBuddyPlayerScreen(
                                         )
                                     }
                                     Text(
-                                        text = "Spoof: ${spoofProfile.preset.displayName}",
+                                        text = channel.groupTitle,
                                         color = Color(0xFF94A3B8),
                                         fontSize = 11.sp
                                     )
