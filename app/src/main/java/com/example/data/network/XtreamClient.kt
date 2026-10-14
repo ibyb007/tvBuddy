@@ -138,7 +138,7 @@ class XtreamClient(
                                 logoUrl = streamIcon,
                                 groupTitle = groupTitle,
                                 channelNumber = num,
-                                httpUserAgent = userAgent
+                                httpUserAgent = null // spoof is for API/playlist requests only, not playback
                             )
                         )
                     }
