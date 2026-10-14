@@ -179,8 +179,10 @@ class TvBuddyRepository(
             val channels = M3uParser.parse(
                 content = content,
                 playlistId = playlistId,
-                defaultUserAgent = spoof.getUserAgent(),
-                defaultHeaders = effectiveHeaders
+                // Spoof headers are used only to download the playlist above; they are NOT
+                // saved on channels, so playback never sends the spoofed player identity.
+                defaultUserAgent = null,
+                defaultHeaders = emptyMap()
             )
 
             if (channels.isNotEmpty()) {
@@ -312,8 +314,9 @@ class TvBuddyRepository(
             val channels = JsonPlaylistParser.parse(
                 content = content,
                 playlistId = playlistId,
-                defaultUserAgent = spoof.getUserAgent(),
-                defaultHeaders = spoof.getEffectiveHeaders()
+                // Spoof is for loading the playlist only; not stored on channels.
+                defaultUserAgent = null,
+                defaultHeaders = emptyMap()
             )
 
             if (channels.isNotEmpty()) {
