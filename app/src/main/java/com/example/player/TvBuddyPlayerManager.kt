@@ -173,10 +173,7 @@ class TvBuddyPlayerManager(
             }
     }
 
-    fun playChannel(
-        channel: ChannelEntity,
-        globalSpoof: SpoofProfile = SpoofProfile(SpoofPreset.TIVIMATE)
-    ) {
+    fun playChannel(channel: ChannelEntity) {
         _currentChannel.value = channel
         _errorMessage.value = null
         _isBuffering.value = true
@@ -184,10 +181,11 @@ class TvBuddyPlayerManager(
 
         val player = getPlayer()
 
-        // 1. Determine User-Agent & Headers
-        val userAgent = channel.httpUserAgent?.ifBlank { null } ?: globalSpoof.getUserAgent()
+        // 1. Playback headers. Player spoofing is only used while adding/loading a playlist.
+        //    Here we send ONLY what the playlist itself specifies for this channel
+        //    (e.g. #EXTVLCOPT / "|User-Agent=" / JSON headers); otherwise the default player UA.
+        val userAgent: String? = channel.httpUserAgent?.ifBlank { null }
         val headers = mutableMapOf<String, String>()
-        headers.putAll(globalSpoof.getEffectiveHeaders())
 
         if (!channel.httpHeadersJson.isNullOrBlank()) {
             try {
@@ -199,11 +197,11 @@ class TvBuddyPlayerManager(
                 }
             } catch (_: Exception) {}
         }
-        headers["User-Agent"] = userAgent
+        if (userAgent != null) headers["User-Agent"] = userAgent
 
-        // 2. Build HttpDataSource Factory with spoof headers
+        // 2. Build HttpDataSource Factory with the channel's own headers
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent(userAgent)
+            .apply { if (userAgent != null) setUserAgent(userAgent) }
             .setAllowCrossProtocolRedirects(true)
             .setConnectTimeoutMs(15_000)
             .setReadTimeoutMs(20_000)
