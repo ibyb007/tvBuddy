@@ -16,8 +16,11 @@ android {
     applicationId = "com.aistudio.tvbuddy.kxyv"
     minSdk = 24
     targetSdk = 36
-    versionCode = 1
-    versionName = "1.0"
+    // CI passes these in (see .github/workflows/build-apk.yml); local builds use the defaults.
+    versionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
+    versionName = (findProperty("appVersionName") as String?) ?: "1.0"
+    // Canary builds get a ".canary" suffix so they install side-by-side with the stable app.
+    (findProperty("appIdSuffix") as String?)?.takeIf { it.isNotBlank() }?.let { applicationIdSuffix = it }
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
