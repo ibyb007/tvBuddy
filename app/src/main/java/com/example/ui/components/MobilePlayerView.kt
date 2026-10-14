@@ -251,21 +251,6 @@ fun MobilePlayerView(
                                 )
                             }
 
-                            if (streamInfo.isDrmProtected) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(StatusDrm.copy(alpha = 0.25f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm, modifier = Modifier.size(10.dp))
-                                        Spacer(modifier = Modifier.width(2.dp))
-                                        Text(streamInfo.drmType, color = StatusDrm, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                                    }
-                                }
-                            }
-
                             IconButton(
                                 onClick = onCycleAspect,
                                 modifier = Modifier.size(32.dp)
