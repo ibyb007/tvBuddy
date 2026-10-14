@@ -1,0 +1,274 @@
+package com.example.data.repository
+
+import android.content.Context
+import com.example.data.local.TvBuddyDatabase
+import com.example.data.local.entity.ChannelEntity
+import com.example.data.local.entity.HistoryEntity
+import com.example.data.local.entity.PlaylistEntity
+import com.example.data.model.DrmConfig
+import com.example.data.model.DrmType
+import com.example.data.model.PlaylistType
+import com.example.data.model.SpoofPreset
+import com.example.data.model.SpoofProfile
+import com.example.data.network.StalkerClient
+import com.example.data.network.XtreamClient
+import com.example.data.parser.JsonPlaylistParser
+import com.example.data.parser.M3uParser
+import com.example.data.sample.DemoChannels
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+class TvBuddyRepository(
+    private val context: Context,
+    private val database: TvBuddyDatabase = TvBuddyDatabase.getDatabase(context),
+    private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .build(),
+    private val xtreamClient: XtreamClient = XtreamClient(okHttpClient),
+    private val stalkerClient: StalkerClient = StalkerClient(okHttpClient)
+) {
+    private val playlistDao = database.playlistDao()
+    private val channelDao = database.channelDao()
+    private val historyDao = database.historyDao()
+
+    val allPlaylists: Flow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
+    val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
+    val favoriteChannels: Flow<List<ChannelEntity>> = channelDao.getFavoriteChannels()
+    val allCategories: Flow<List<String>> = channelDao.getAllCategories()
+    val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
+
+    suspend fun initializeDefaultsIfNeeded() = withContext(Dispatchers.IO) {
+        val existing = playlistDao.getAllPlaylists().first()
+        if (existing.isEmpty()) {
+            val playlistId = playlistDao.insertPlaylist(DemoChannels.demoPlaylist)
+            val demoChannels = DemoChannels.getDemoChannels(playlistId)
+            channelDao.insertChannels(demoChannels)
+            playlistDao.updateChannelCount(playlistId, demoChannels.size)
+        }
+    }
+
+    fun getChannelsByPlaylist(playlistId: Long): Flow<List<ChannelEntity>> {
+        return channelDao.getChannelsByPlaylist(playlistId)
+    }
+
+    fun searchChannels(query: String): Flow<List<ChannelEntity>> {
+        return channelDao.searchChannels(query)
+    }
+
+    suspend fun toggleFavorite(channelId: Long, currentFavorite: Boolean) = withContext(Dispatchers.IO) {
+        channelDao.updateFavorite(channelId, !currentFavorite)
+    }
+
+    suspend fun recordHistory(channel: ChannelEntity) = withContext(Dispatchers.IO) {
+        historyDao.insertHistory(
+            HistoryEntity(
+                channelId = channel.id,
+                channelName = channel.name,
+                streamUrl = channel.streamUrl,
+                logoUrl = channel.logoUrl,
+                groupTitle = channel.groupTitle
+            )
+        )
+    }
+
+    suspend fun clearHistory() = withContext(Dispatchers.IO) {
+        historyDao.clearHistory()
+    }
+
+    suspend fun deletePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
+        channelDao.deleteChannelsByPlaylist(playlist.id)
+        playlistDao.deletePlaylist(playlist)
+    }
+
+    suspend fun addM3uPlaylist(
+        name: String,
+        sourceUrlOrContent: String,
+        isRawContent: Boolean = false,
+        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE,
+        customUserAgent: String = "",
+        customHeaders: Map<String, String> = emptyMap()
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
+            val effectiveHeaders = spoof.getEffectiveHeaders()
+
+            val content = if (isRawContent) {
+                sourceUrlOrContent
+            } else {
+                val reqBuilder = Request.Builder().url(sourceUrlOrContent)
+                effectiveHeaders.forEach { (k, v) -> reqBuilder.header(k, v) }
+                okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
+                    resp.body?.string() ?: ""
+                }
+            }
+
+            val playlistId = playlistDao.insertPlaylist(
+                PlaylistEntity(
+                    name = name,
+                    type = PlaylistType.M3U,
+                    sourceUrl = if (isRawContent) "Pasted M3U" else sourceUrlOrContent,
+                    spoofPreset = spoofPreset.name,
+                    customUserAgent = customUserAgent.ifBlank { null },
+                    customHeadersJson = if (customHeaders.isNotEmpty()) JSONObject(customHeaders).toString() else null
+                )
+            )
+
+            val channels = M3uParser.parse(
+                content = content,
+                playlistId = playlistId,
+                defaultUserAgent = spoof.getUserAgent(),
+                defaultHeaders = effectiveHeaders
+            )
+
+            if (channels.isNotEmpty()) {
+                channelDao.insertChannels(channels)
+                playlistDao.updateChannelCount(playlistId, channels.size)
+            }
+
+            Result.success(channels.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun addXtreamPlaylist(
+        name: String,
+        serverUrl: String,
+        username: String,
+        password: String,
+        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val spoof = SpoofProfile(spoofPreset)
+            val auth = xtreamClient.authenticate(serverUrl, username, password, spoof.getUserAgent())
+            if (!auth.success) {
+                return@withContext Result.failure(Exception(auth.message))
+            }
+
+            val playlistId = playlistDao.insertPlaylist(
+                PlaylistEntity(
+                    name = name,
+                    type = PlaylistType.XTREAM,
+                    sourceUrl = serverUrl,
+                    username = username,
+                    password = password,
+                    spoofPreset = spoofPreset.name
+                )
+            )
+
+            val channels = xtreamClient.fetchChannels(
+                serverUrl = serverUrl,
+                username = username,
+                password = password,
+                playlistId = playlistId,
+                userAgent = spoof.getUserAgent()
+            )
+
+            if (channels.isNotEmpty()) {
+                channelDao.insertChannels(channels)
+                playlistDao.updateChannelCount(playlistId, channels.size)
+            }
+
+            Result.success(channels.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun addStalkerPlaylist(
+        name: String,
+        portalUrl: String,
+        macAddress: String,
+        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val spoof = SpoofProfile(spoofPreset)
+            val auth = stalkerClient.handshake(portalUrl, macAddress, spoof.getUserAgent())
+            if (!auth.success) {
+                return@withContext Result.failure(Exception(auth.message))
+            }
+
+            val playlistId = playlistDao.insertPlaylist(
+                PlaylistEntity(
+                    name = name,
+                    type = PlaylistType.STALKER,
+                    sourceUrl = portalUrl,
+                    macAddress = macAddress,
+                    spoofPreset = spoofPreset.name
+                )
+            )
+
+            val channels = stalkerClient.fetchChannels(
+                portalUrl = portalUrl,
+                macAddress = macAddress,
+                playlistId = playlistId,
+                userAgent = spoof.getUserAgent()
+            )
+
+            if (channels.isNotEmpty()) {
+                channelDao.insertChannels(channels)
+                playlistDao.updateChannelCount(playlistId, channels.size)
+            }
+
+            Result.success(channels.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun addJsonPlaylist(
+        name: String,
+        sourceUrlOrContent: String,
+        isRawContent: Boolean = false,
+        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val spoof = SpoofProfile(spoofPreset)
+            val content = if (isRawContent) {
+                sourceUrlOrContent
+            } else {
+                val req = Request.Builder()
+                    .url(sourceUrlOrContent)
+                    .header("User-Agent", spoof.getUserAgent())
+                    .build()
+                okHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
+                    resp.body?.string() ?: ""
+                }
+            }
+
+            val playlistId = playlistDao.insertPlaylist(
+                PlaylistEntity(
+                    name = name,
+                    type = PlaylistType.RAW_JSON,
+                    sourceUrl = if (isRawContent) "Pasted JSON" else sourceUrlOrContent,
+                    spoofPreset = spoofPreset.name
+                )
+            )
+
+            val channels = JsonPlaylistParser.parse(
+                content = content,
+                playlistId = playlistId,
+                defaultUserAgent = spoof.getUserAgent(),
+                defaultHeaders = spoof.getEffectiveHeaders()
+            )
+
+            if (channels.isNotEmpty()) {
+                channelDao.insertChannels(channels)
+                playlistDao.updateChannelCount(playlistId, channels.size)
+            }
+
+            Result.success(channels.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+}

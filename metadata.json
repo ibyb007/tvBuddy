@@ -1,0 +1,6 @@
+{
+  "name": "tvBuddy",
+  "description": "Open source IPTV player alternative to TiviMate & OTT Navigator with DRM playback, M3U/Xtream/Stalker/JSON support, and player spoofing for Mobile & TV",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

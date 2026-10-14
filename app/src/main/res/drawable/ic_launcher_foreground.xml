@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- TV Antennae / Broadcast Rays -->
+    <path
+        android:pathData="M38,32 L47,40"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#00E5FF" />
+    <path
+        android:pathData="M70,32 L61,40"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#00E5FF" />
+
+    <!-- TV Outer Display Screen -->
+    <path
+        android:pathData="M27,40 L81,40 A6,6 0 0,1 87,46 L87,74 A6,6 0 0,1 81,80 L27,80 A6,6 0 0,1 21,74 L21,46 A6,6 0 0,1 27,40 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="21"
+                android:startY="40"
+                android:endX="87"
+                android:endY="80"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#1F293D" />
+                <item android:offset="1.0" android:color="#111827" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- TV Outer Border Glow -->
+    <path
+        android:pathData="M27,40 L81,40 A6,6 0 0,1 87,46 L87,74 A6,6 0 0,1 81,80 L27,80 A6,6 0 0,1 21,74 L21,46 A6,6 0 0,1 27,40 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#38BDF8"
+        android:fillColor="#00000000" />
+
+    <!-- TV Stand Base -->
+    <path
+        android:pathData="M48,80 L46,86 L62,86 L60,80 Z"
+        android:fillColor="#38BDF8" />
+    <path
+        android:pathData="M42,86 L66,86"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeColor="#38BDF8" />
+
+    <!-- Play Icon with Gradient -->
+    <path
+        android:pathData="M49,52 L64,60 L49,68 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="49"
+                android:startY="52"
+                android:endX="64"
+                android:endY="68"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#00E5FF" />
+                <item android:offset="1.0" android:color="#7C4DFF" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

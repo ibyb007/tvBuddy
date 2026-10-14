@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Background -->
+    <path
+        android:pathData="M0,0h320v180h-320z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="0"
+                android:startY="0"
+                android:endX="320"
+                android:endY="180"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#0B0F19" />
+                <item android:offset="0.5" android:color="#141E33" />
+                <item android:offset="1.0" android:color="#1A2744" />
+            </gradient>
+        </aapt:attr>
+    </path>
+
+    <!-- TV Screen Icon -->
+    <path
+        android:pathData="M70,45 L150,45 A8,8 0 0,1 158,53 L158,107 A8,8 0 0,1 150,115 L70,115 A8,8 0 0,1 62,107 L62,53 A8,8 0 0,1 70,45 Z"
+        android:fillColor="#1E293B"
+        android:strokeWidth="3"
+        android:strokeColor="#38BDF8" />
+
+    <path
+        android:pathData="M102,64 L124,78 L102,92 Z"
+        android:fillColor="#00E5FF" />
+
+    <!-- TV Stand -->
+    <path
+        android:pathData="M104,115 L100,125 L120,125 L116,115 Z"
+        android:fillColor="#38BDF8" />
+    <path
+        android:pathData="M92,125 L128,125"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round"
+        android:strokeColor="#38BDF8" />
+
+    <!-- Signal waves -->
+    <path
+        android:pathData="M175,70 A15,15 0 0,1 175,90"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeColor="#7C4DFF" />
+    <path
+        android:pathData="M185,62 A28,28 0 0,1 185,98"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeColor="#38BDF8" />
+    <path
+        android:pathData="M195,54 A42,42 0 0,1 195,106"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:strokeColor="#00E5FF" />
+</vector>

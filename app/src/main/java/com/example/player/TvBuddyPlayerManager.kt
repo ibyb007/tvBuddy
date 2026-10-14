@@ -1,0 +1,335 @@
+package com.example.player
+
+import android.content.Context
+import android.net.Uri
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.Format
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionOverride
+import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.hls.HlsMediaSource
+import androidx.media3.exoplayer.rtsp.RtspMediaSource
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
+import com.example.data.local.entity.ChannelEntity
+import com.example.data.model.DrmConfig
+import com.example.data.model.DrmType
+import com.example.data.model.SpoofPreset
+import com.example.data.model.SpoofProfile
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
+
+data class StreamInfo(
+    val width: Int = 0,
+    val height: Int = 0,
+    val bitrate: Int = 0,
+    val mimeType: String = "",
+    val isDrmProtected: Boolean = false,
+    val drmType: String = "None"
+)
+
+data class TrackInfo(
+    val id: String,
+    val label: String,
+    val language: String,
+    val isSelected: Boolean,
+    val trackGroupIndex: Int,
+    val trackIndex: Int,
+    val type: Int // C.TRACK_TYPE_AUDIO or C.TRACK_TYPE_TEXT
+)
+
+enum class AspectMode(val title: String, val resizeMode: Int) {
+    FIT("Fit Screen", AspectRatioFrameLayout.RESIZE_MODE_FIT),
+    FILL("Fill / Stretch", AspectRatioFrameLayout.RESIZE_MODE_FILL),
+    ZOOM("Zoom / Crop", AspectRatioFrameLayout.RESIZE_MODE_ZOOM),
+    FOUR_THREE("4:3 Standard", AspectRatioFrameLayout.RESIZE_MODE_FIXED_WIDTH),
+    SIXTEEN_NINE("16:9 Widescreen", AspectRatioFrameLayout.RESIZE_MODE_FIT)
+}
+
+@OptIn(UnstableApi::class)
+class TvBuddyPlayerManager(
+    private val context: Context
+) {
+    private var exoPlayer: ExoPlayer? = null
+
+    private val _isPlaying = MutableStateFlow(false)
+    val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
+
+    private val _isBuffering = MutableStateFlow(false)
+    val isBuffering: StateFlow<Boolean> = _isBuffering.asStateFlow()
+
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    private val _currentChannel = MutableStateFlow<ChannelEntity?>(null)
+    val currentChannel: StateFlow<ChannelEntity?> = _currentChannel.asStateFlow()
+
+    private val _streamInfo = MutableStateFlow(StreamInfo())
+    val streamInfo: StateFlow<StreamInfo> = _streamInfo.asStateFlow()
+
+    private val _aspectMode = MutableStateFlow(AspectMode.FIT)
+    val aspectMode: StateFlow<AspectMode> = _aspectMode.asStateFlow()
+
+    private val _audioTracks = MutableStateFlow<List<TrackInfo>>(emptyList())
+    val audioTracks: StateFlow<List<TrackInfo>> = _audioTracks.asStateFlow()
+
+    private val _subtitleTracks = MutableStateFlow<List<TrackInfo>>(emptyList())
+    val subtitleTracks: StateFlow<List<TrackInfo>> = _subtitleTracks.asStateFlow()
+
+    fun getPlayer(): ExoPlayer {
+        return exoPlayer ?: createPlayer().also { exoPlayer = it }
+    }
+
+    private fun createPlayer(): ExoPlayer {
+        return ExoPlayer.Builder(context)
+            .setSeekBackIncrementMs(10_000)
+            .setSeekForwardIncrementMs(10_000)
+            .build().apply {
+                playWhenReady = true
+                addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
+                        _isPlaying.value = (playbackState == Player.STATE_READY && playWhenReady)
+                        if (playbackState == Player.STATE_READY) {
+                            _errorMessage.value = null
+                        }
+                    }
+
+                    override fun onIsPlayingChanged(playing: Boolean) {
+                        _isPlaying.value = playing
+                    }
+
+                    override fun onPlayerError(error: PlaybackException) {
+                        _isBuffering.value = false
+                        _isPlaying.value = false
+                        val detailedCause = error.cause?.localizedMessage ?: error.message
+                        val errorCodeName = error.errorCodeName
+                        _errorMessage.value = "Playback Error ($errorCodeName): $detailedCause"
+                    }
+
+                    override fun onTracksChanged(tracks: Tracks) {
+                        updateAvailableTracks(tracks)
+                    }
+
+                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                        val current = _streamInfo.value
+                        _streamInfo.value = current.copy(
+                            width = videoSize.width,
+                            height = videoSize.height
+                        )
+                    }
+                })
+            }
+    }
+
+    fun playChannel(
+        channel: ChannelEntity,
+        globalSpoof: SpoofProfile = SpoofProfile(SpoofPreset.TIVIMATE)
+    ) {
+        _currentChannel.value = channel
+        _errorMessage.value = null
+        _isBuffering.value = true
+
+        val player = getPlayer()
+
+        // 1. Determine User-Agent & Headers
+        val userAgent = channel.httpUserAgent?.ifBlank { null } ?: globalSpoof.getUserAgent()
+        val headers = mutableMapOf<String, String>()
+        headers.putAll(globalSpoof.getEffectiveHeaders())
+
+        if (!channel.httpHeadersJson.isNullOrBlank()) {
+            try {
+                val json = JSONObject(channel.httpHeadersJson)
+                val keys = json.keys()
+                while (keys.hasNext()) {
+                    val k = keys.next()
+                    headers[k] = json.getString(k)
+                }
+            } catch (_: Exception) {}
+        }
+        headers["User-Agent"] = userAgent
+
+        // 2. Build HttpDataSource Factory with spoof headers
+        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(userAgent)
+            .setAllowCrossProtocolRedirects(true)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+            .setDefaultRequestProperties(headers)
+
+        // 3. Build MediaItem & DRM
+        val uri = Uri.parse(channel.streamUrl)
+        val mediaItemBuilder = MediaItem.Builder().setUri(uri)
+
+        val drmType = DrmType.fromString(channel.drmType)
+        val isDrm = (drmType != DrmType.NONE)
+
+        if (isDrm && drmType.uuid != null) {
+            val drmHeaders = mutableMapOf<String, String>()
+            drmHeaders.putAll(headers)
+
+            if (!channel.drmHeadersJson.isNullOrBlank()) {
+                try {
+                    val dj = JSONObject(channel.drmHeadersJson)
+                    val k = dj.keys()
+                    while (k.hasNext()) {
+                        val key = k.next()
+                        drmHeaders[key] = dj.getString(key)
+                    }
+                } catch (_: Exception) {}
+            }
+
+            var licenseUrl = channel.drmLicenseUrl
+            if (drmType == DrmType.CLEARKEY && licenseUrl.isNullOrBlank() && !channel.drmKeyIdKey.isNullOrBlank()) {
+                val parts = channel.drmKeyIdKey.split(":")
+                if (parts.size == 2) {
+                    licenseUrl = "https://cwip-shaka-proxy.appspot.com/clearkey?key_id=${parts[0]}&key=${parts[1]}"
+                }
+            }
+
+            val drmBuilder = MediaItem.DrmConfiguration.Builder(drmType.uuid!!)
+                .setMultiSession(true)
+                .setLicenseRequestHeaders(drmHeaders)
+
+            if (!licenseUrl.isNullOrBlank()) {
+                drmBuilder.setLicenseUri(Uri.parse(licenseUrl))
+            }
+
+            mediaItemBuilder.setDrmConfiguration(drmBuilder.build())
+        }
+
+        val mediaItem = mediaItemBuilder.build()
+
+        // 4. Create appropriate MediaSource
+        val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory)
+
+        _streamInfo.value = StreamInfo(
+            isDrmProtected = isDrm,
+            drmType = if (isDrm) drmType.title else "None"
+        )
+
+        player.setMediaSource(mediaSource)
+        player.prepare()
+        player.play()
+    }
+
+    private fun createMediaSource(
+        uri: Uri,
+        mediaItem: MediaItem,
+        dataSourceFactory: DefaultHttpDataSource.Factory
+    ): MediaSource {
+        val path = uri.toString().lowercase()
+        return when {
+            path.contains(".m3u8") || path.contains("type=m3u") -> {
+                HlsMediaSource.Factory(dataSourceFactory)
+                    .setAllowChunklessPreparation(true)
+                    .createMediaSource(mediaItem)
+            }
+            path.contains(".mpd") -> {
+                DashMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem)
+            }
+            path.startsWith("rtsp://") -> {
+                RtspMediaSource.Factory()
+                    .createMediaSource(mediaItem)
+            }
+            else -> {
+                ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .createMediaSource(mediaItem)
+            }
+        }
+    }
+
+    private fun updateAvailableTracks(tracks: Tracks) {
+        val audio = mutableListOf<TrackInfo>()
+        val subtitles = mutableListOf<TrackInfo>()
+
+        for (groupIndex in 0 until tracks.groups.size) {
+            val group = tracks.groups[groupIndex]
+            val trackType = group.type
+
+            for (trackIndex in 0 until group.length) {
+                val isSelected = group.isTrackSelected(trackIndex)
+                val format = group.getTrackFormat(trackIndex)
+                val lang = format.language ?: "und"
+                val label = format.label ?: when (trackType) {
+                    C.TRACK_TYPE_AUDIO -> "Audio ${audio.size + 1} ($lang)"
+                    C.TRACK_TYPE_TEXT -> "Subtitle ${subtitles.size + 1} ($lang)"
+                    else -> "Track"
+                }
+
+                val trackInfo = TrackInfo(
+                    id = format.id ?: "$groupIndex-$trackIndex",
+                    label = label,
+                    language = lang,
+                    isSelected = isSelected,
+                    trackGroupIndex = groupIndex,
+                    trackIndex = trackIndex,
+                    type = trackType
+                )
+
+                if (trackType == C.TRACK_TYPE_AUDIO) {
+                    audio.add(trackInfo)
+                } else if (trackType == C.TRACK_TYPE_TEXT) {
+                    subtitles.add(trackInfo)
+                }
+            }
+        }
+
+        _audioTracks.value = audio
+        _subtitleTracks.value = subtitles
+    }
+
+    fun selectTrack(trackInfo: TrackInfo) {
+        val player = exoPlayer ?: return
+        val currentTracks = player.currentTracks
+        if (trackInfo.trackGroupIndex < currentTracks.groups.size) {
+            val trackGroup = currentTracks.groups[trackInfo.trackGroupIndex].mediaTrackGroup
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .setOverrideForType(
+                    TrackSelectionOverride(trackGroup, listOf(trackInfo.trackIndex))
+                )
+                .build()
+        }
+    }
+
+    fun disableSubtitles() {
+        val player = exoPlayer ?: return
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
+            .build()
+    }
+
+    fun cycleAspectMode() {
+        val modes = AspectMode.entries.toTypedArray()
+        val nextIndex = (_aspectMode.value.ordinal + 1) % modes.size
+        _aspectMode.value = modes[nextIndex]
+    }
+
+    fun setAspectMode(mode: AspectMode) {
+        _aspectMode.value = mode
+    }
+
+    fun togglePlayPause() {
+        exoPlayer?.let {
+            if (it.isPlaying) it.pause() else it.play()
+        }
+    }
+
+    fun release() {
+        exoPlayer?.release()
+        exoPlayer = null
+    }
+}
