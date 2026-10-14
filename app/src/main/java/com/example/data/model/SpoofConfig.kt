@@ -16,7 +16,7 @@ data class SpoofProfile(
 ) {
     fun getUserAgent(): String {
         return when (preset) {
-            SpoofPreset.TIVIMATE -> "TiviMate/5.0.4 (Linux; Android 12; Free/Premium)"
+            SpoofPreset.TIVIMATE -> "TiviMate/5.3.3 (Android 12)"
             SpoofPreset.OTT_NAVIGATOR -> "OTT Navigator/1.6.8.5 (Android TV; Android 11; OTT-Nav)"
             SpoofPreset.VLC -> "VLC/3.5.4 (Linux; Android 12; LibVLC/3.5.4)"
             SpoofPreset.APPLE_TV -> "AppleCoreMedia/1.0.0.19E241 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_us)"
