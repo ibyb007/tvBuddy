@@ -348,67 +348,17 @@ fun TvBuddyPlayerScreen(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            // Picture-in-Picture Button
-                            IconButton(
-                                onClick = onEnterPip,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.15f))
-                                    .testTag("pip_btn")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PictureInPictureAlt,
-                                    contentDescription = "Picture in Picture",
-                                    tint = AccentCyan,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-
-                            // Quality Button
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = DarkSurfaceElevated,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .clickable(onClick = onOpenQualityPicker)
-                                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    .testTag("quality_btn")
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.HighQuality, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = videoQuality.title.substringBefore(" "),
-                                        color = AccentCyan,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-                            }
-
-                            // Aspect Ratio
-                            IconButton(
-                                onClick = onCycleAspect,
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(18.dp))
-                            }
-
                             // Fullscreen toggle (auto-rotates with the phone while fullscreen)
                             IconButton(
                                 onClick = onToggleFullscreen,
                                 modifier = Modifier
                                     .size(36.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.15f))
                                     .testTag("fullscreen_toggle_btn")
                             ) {
                                 Icon(
                                     imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
                                     contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
-                                    tint = AccentCyan,
+                                    tint = Color.White,
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
@@ -515,13 +465,50 @@ fun TvBuddyPlayerScreen(
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
                                 IconButton(onClick = onOpenAudioTracks, modifier = Modifier.size(36.dp)) {
                                     Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Audio Tracks", tint = Color.White, modifier = Modifier.size(20.dp))
                                 }
                                 IconButton(onClick = onOpenSubtitles, modifier = Modifier.size(36.dp)) {
                                     Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+
+                                // Picture-in-Picture
+                                IconButton(
+                                    onClick = onEnterPip,
+                                    modifier = Modifier.size(36.dp).testTag("pip_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.PictureInPictureAlt,
+                                        contentDescription = "Picture in Picture",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+
+                                // Quality picker (no box / border)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .clickable(onClick = onOpenQualityPicker)
+                                        .padding(horizontal = 6.dp, vertical = 8.dp)
+                                        .testTag("quality_btn")
+                                ) {
+                                    Icon(Icons.Default.HighQuality, contentDescription = "Quality", tint = Color.White, modifier = Modifier.size(20.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = videoQuality.title.substringBefore(" "),
+                                        color = Color.White,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+
+                                // Aspect ratio / resize
+                                IconButton(onClick = onCycleAspect, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(20.dp))
                                 }
                             }
                         }
