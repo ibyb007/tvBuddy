@@ -117,7 +117,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playChannel(channel: ChannelEntity) {
-        playerManager.playChannel(channel)
+        playerManager.playChannel(channel, _globalSpoof.value)
         viewModelScope.launch {
             repository.recordHistory(channel)
         }
