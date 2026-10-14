@@ -40,6 +40,7 @@ import com.example.ui.theme.DarkSurfaceElevated
 fun QualityPickerDialog(
     currentQuality: VideoQuality,
     streamInfo: StreamInfo,
+    availableQualities: List<VideoQuality> = VideoQuality.entries,
     onSelectQuality: (VideoQuality) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -90,7 +91,16 @@ fun QualityPickerDialog(
 
                 Spacer(modifier = Modifier.height(4.dp))
 
-                VideoQuality.entries.forEach { quality ->
+                if (availableQualities.size <= 1) {
+                    Text(
+                        text = "This channel offers a single quality, so there is nothing to switch.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                }
+
+                availableQualities.forEach { quality ->
                     val isSelected = (currentQuality == quality)
                     Surface(
                         shape = RoundedCornerShape(10.dp),
