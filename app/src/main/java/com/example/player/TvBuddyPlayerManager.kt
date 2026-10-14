@@ -95,6 +95,10 @@ class TvBuddyPlayerManager(
     private val _videoQuality = MutableStateFlow(VideoQuality.AUTO)
     val videoQuality: StateFlow<VideoQuality> = _videoQuality.asStateFlow()
 
+    // Quality tiers that the CURRENT channel can actually play (always contains AUTO).
+    private val _availableQualities = MutableStateFlow(listOf(VideoQuality.AUTO))
+    val availableQualities: StateFlow<List<VideoQuality>> = _availableQualities.asStateFlow()
+
     private val _audioTracks = MutableStateFlow<List<TrackInfo>>(emptyList())
     val audioTracks: StateFlow<List<TrackInfo>> = _audioTracks.asStateFlow()
 
@@ -132,9 +136,9 @@ class TvBuddyPlayerManager(
                         val message = when {
                             rootCause is HttpDataSource.InvalidResponseCodeException -> {
                                 when (rootCause.responseCode) {
-                                    403 -> "HTTP 403 Forbidden: Stream provider denied access or token expired. Switch Player Spoofing signature or verify stream permissions."
+                                    403 -> "HTTP 403 Forbidden: Stream provider denied access or the token expired."
                                     404 -> "HTTP 404 Not Found: Stream URL is offline or unavailable. Please select another channel."
-                                    else -> "HTTP ${rootCause.responseCode}: Stream blocked or unavailable. Try switching Player Spoofing."
+                                    else -> "HTTP ${rootCause.responseCode}: Stream blocked or unavailable."
                                 }
                             }
                             rootCause is UnknownHostException -> {
@@ -176,6 +180,7 @@ class TvBuddyPlayerManager(
         _currentChannel.value = channel
         _errorMessage.value = null
         _isBuffering.value = true
+        _availableQualities.value = listOf(VideoQuality.AUTO)
 
         val player = getPlayer()
 
@@ -302,10 +307,20 @@ class TvBuddyPlayerManager(
     private fun updateAvailableTracks(tracks: Tracks) {
         val audio = mutableListOf<TrackInfo>()
         val subtitles = mutableListOf<TrackInfo>()
+        val videoHeights = mutableSetOf<Int>()
 
         for (groupIndex in 0 until tracks.groups.size) {
             val group = tracks.groups[groupIndex]
             val trackType = group.type
+
+            if (trackType == C.TRACK_TYPE_VIDEO) {
+                for (trackIndex in 0 until group.length) {
+                    if (!group.isTrackSupported(trackIndex)) continue
+                    val h = group.getTrackFormat(trackIndex).height
+                    if (h > 0) videoHeights.add(h)
+                }
+                continue
+            }
 
             for (trackIndex in 0 until group.length) {
                 val isSelected = group.isTrackSelected(trackIndex)
@@ -337,6 +352,25 @@ class TvBuddyPlayerManager(
 
         _audioTracks.value = audio
         _subtitleTracks.value = subtitles
+        _availableQualities.value = computeAvailableQualities(videoHeights)
+    }
+
+    /**
+     * Maps the real video track heights of the stream to quality tiers. A tier is offered only
+     * when the stream has a rendition that falls into it (so no "4K" for a 1080p channel).
+     * Streams with a single rendition have nothing to choose from, so only AUTO is returned.
+     */
+    private fun computeAvailableQualities(heights: Set<Int>): List<VideoQuality> {
+        if (heights.size <= 1) return listOf(VideoQuality.AUTO)
+        val tiers = VideoQuality.entries.filter { it != VideoQuality.AUTO }.sortedBy { it.maxHeight }
+        val present = mutableSetOf<VideoQuality>()
+        for (h in heights) {
+            // Smallest tier that fits the height (10% tolerance for 1088p, 2176p etc.)
+            val tier = tiers.firstOrNull { h <= (it.maxHeight * 1.1).toInt() } ?: tiers.last()
+            present.add(tier)
+        }
+        val ordered = tiers.filter { it in present }.sortedByDescending { it.maxHeight }
+        return listOf(VideoQuality.AUTO) + ordered
     }
 
     fun selectTrack(trackInfo: TrackInfo) {
