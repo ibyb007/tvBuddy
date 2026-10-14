@@ -62,6 +62,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val streamInfo: StateFlow<StreamInfo> = playerManager.streamInfo
     val aspectMode: StateFlow<AspectMode> = playerManager.aspectMode
     val videoQuality: StateFlow<com.example.player.VideoQuality> = playerManager.videoQuality
+    val availableQualities: StateFlow<List<com.example.player.VideoQuality>> = playerManager.availableQualities
     val audioTracks: StateFlow<List<TrackInfo>> = playerManager.audioTracks
     val subtitleTracks: StateFlow<List<TrackInfo>> = playerManager.subtitleTracks
     val allCurrentPrograms: StateFlow<List<com.example.data.local.entity.ProgramEntity>> =
