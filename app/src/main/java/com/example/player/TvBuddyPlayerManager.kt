@@ -12,8 +12,10 @@ import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.source.MediaSource
@@ -28,6 +30,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import org.json.JSONObject
+import java.net.UnknownHostException
 
 data class StreamInfo(
     val width: Int = 0,
@@ -56,6 +59,15 @@ enum class AspectMode(val title: String, val resizeMode: Int) {
     SIXTEEN_NINE("16:9 Widescreen", AspectRatioFrameLayout.RESIZE_MODE_FIT)
 }
 
+enum class VideoQuality(val title: String, val maxWidth: Int, val maxHeight: Int) {
+    AUTO("Auto (Adaptive)", Int.MAX_VALUE, Int.MAX_VALUE),
+    UHD_4K("4K UHD (2160p)", 3840, 2160),
+    FHD_1080P("Full HD (1080p)", 1920, 1080),
+    HD_720P("HD (720p)", 1280, 720),
+    SD_480P("SD (480p)", 854, 480),
+    DATA_SAVER_360P("Data Saver (360p)", 640, 360)
+}
+
 @OptIn(UnstableApi::class)
 class TvBuddyPlayerManager(
     private val context: Context
@@ -79,6 +91,9 @@ class TvBuddyPlayerManager(
 
     private val _aspectMode = MutableStateFlow(AspectMode.FIT)
     val aspectMode: StateFlow<AspectMode> = _aspectMode.asStateFlow()
+
+    private val _videoQuality = MutableStateFlow(VideoQuality.AUTO)
+    val videoQuality: StateFlow<VideoQuality> = _videoQuality.asStateFlow()
 
     private val _audioTracks = MutableStateFlow<List<TrackInfo>>(emptyList())
     val audioTracks: StateFlow<List<TrackInfo>> = _audioTracks.asStateFlow()
@@ -112,9 +127,29 @@ class TvBuddyPlayerManager(
                     override fun onPlayerError(error: PlaybackException) {
                         _isBuffering.value = false
                         _isPlaying.value = false
-                        val detailedCause = error.cause?.localizedMessage ?: error.message
-                        val errorCodeName = error.errorCodeName
-                        _errorMessage.value = "Playback Error ($errorCodeName): $detailedCause"
+
+                        val rootCause = error.cause
+                        val message = when {
+                            rootCause is HttpDataSource.InvalidResponseCodeException -> {
+                                if (rootCause.responseCode == 404) {
+                                    "Stream link returned 404 (Offline or expired). Please select another channel or check playlist."
+                                } else {
+                                    "HTTP ${rootCause.responseCode}: Blocked by provider. Try switching Player Spoofing signature."
+                                }
+                            }
+                            rootCause is UnknownHostException -> {
+                                "Unable to resolve stream server hostname. Please verify network access."
+                            }
+                            error.errorCode == PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED ||
+                            error.message?.contains("crypto", ignoreCase = true) == true -> {
+                                "Hardware Widevine Crypto HAL is unprovisioned in this emulator. Please test ClearKey DRM streams or use a physical Android TV/mobile device."
+                            }
+                            else -> {
+                                val detailedCause = rootCause?.localizedMessage ?: error.message
+                                "Playback Error (${error.errorCodeName}): $detailedCause"
+                            }
+                        }
+                        _errorMessage.value = message
                     }
 
                     override fun onTracksChanged(tracks: Tracks) {
@@ -175,6 +210,18 @@ class TvBuddyPlayerManager(
         val isDrm = (drmType != DrmType.NONE)
 
         if (isDrm && drmType.uuid != null) {
+            val isCryptoSupported = try {
+                FrameworkMediaDrm.isCryptoSchemeSupported(drmType.uuid!!)
+            } catch (_: Throwable) {
+                false
+            }
+
+            if (!isCryptoSupported && drmType == DrmType.WIDEVINE) {
+                _isBuffering.value = false
+                _errorMessage.value = "Widevine Crypto HAL is not available in this virtual environment. Supported on certified physical Android TV & Mobile devices."
+                return
+            }
+
             val drmHeaders = mutableMapOf<String, String>()
             drmHeaders.putAll(headers)
 
@@ -310,6 +357,18 @@ class TvBuddyPlayerManager(
             .buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
             .build()
+    }
+
+    fun setVideoQuality(quality: VideoQuality) {
+        _videoQuality.value = quality
+        val player = exoPlayer ?: return
+        val params = player.trackSelectionParameters.buildUpon()
+        if (quality == VideoQuality.AUTO) {
+            params.clearVideoSizeConstraints()
+        } else {
+            params.setMaxVideoSize(quality.maxWidth, quality.maxHeight)
+        }
+        player.trackSelectionParameters = params.build()
     }
 
     fun cycleAspectMode() {

@@ -1,4 +1,4 @@
-name: Build tvBuddy APK (Mobile & TV)
+name: tvBuddy CI/CD - Build & Release Mobile & TV APK
 
 on:
   push:
@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build APK
+  test_and_build:
+    name: Test & Build APKs
     runs-on: ubuntu-latest
 
     steps:
@@ -40,28 +40,65 @@ jobs:
             chmod +x ./gradlew
           fi
 
-      - name: Build Debug APK
+      - name: Run Unit Tests
+        run: ./gradlew testDebugUnitTest --stacktrace
+
+      - name: Build Debug APK (Universal Mobile & Android TV)
         run: ./gradlew assembleDebug --stacktrace
 
-      - name: Find Built APK
-        id: find_apk
+      - name: Setup Release Signing Keystore
+        id: setup_keystore
         run: |
-          APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          echo "Found APK: $APK_PATH"
-          echo "apk_path=$APK_PATH" >> $GITHUB_OUTPUT
+          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
+            echo "Using production keystore from repository secrets"
+            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > app/my-upload-key.jks
+            echo "KEYSTORE_PATH=my-upload-key.jks" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
+          else
+            echo "Generating release signing keystore for CI"
+            keytool -genkey -v -keystore app/my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias upload -storepass android -keypass android \
+              -dname "CN=tvBuddy, OU=MobileTV, O=OpenSource, L=Global, S=Global, C=US"
+            echo "KEYSTORE_PATH=my-upload-key.jks" >> $GITHUB_ENV
+            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
+            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
+          fi
 
-      - name: Upload Debug APK
+      - name: Build Signed Release APK
+        run: ./gradlew assembleRelease --stacktrace
+
+      - name: Locate Built APKs
+        id: locate_apks
+        run: |
+          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
+          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          echo "Debug APK: $DEBUG_APK"
+          echo "Release APK: $RELEASE_APK"
+          echo "debug_apk=$DEBUG_APK" >> $GITHUB_OUTPUT
+          echo "release_apk=$RELEASE_APK" >> $GITHUB_OUTPUT
+
+      - name: Upload Debug APK Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tvBuddy-Universal-Debug-APK
-          path: ${{ steps.find_apk.outputs.apk_path }}
+          name: tvBuddy-Mobile-TV-Debug-APK
+          path: ${{ steps.locate_apks.outputs.debug_apk }}
           retention-days: 14
 
-      - name: Create Release (on tag)
+      - name: Upload Signed Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tvBuddy-Mobile-TV-Release-APK
+          path: ${{ steps.locate_apks.outputs.release_apk }}
+          retention-days: 30
+
+      - name: Create GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ steps.find_apk.outputs.apk_path }}
+          files: |
+            ${{ steps.locate_apks.outputs.debug_apk }}
+            ${{ steps.locate_apks.outputs.release_apk }}
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

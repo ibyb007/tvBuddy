@@ -8,17 +8,20 @@ import androidx.room.TypeConverters
 import com.example.data.local.dao.ChannelDao
 import com.example.data.local.dao.HistoryDao
 import com.example.data.local.dao.PlaylistDao
+import com.example.data.local.dao.ProgramDao
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.HistoryEntity
 import com.example.data.local.entity.PlaylistEntity
+import com.example.data.local.entity.ProgramEntity
 
 @Database(
     entities = [
         PlaylistEntity::class,
         ChannelEntity::class,
-        HistoryEntity::class
+        HistoryEntity::class,
+        ProgramEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -26,6 +29,7 @@ abstract class TvBuddyDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun channelDao(): ChannelDao
     abstract fun historyDao(): HistoryDao
+    abstract fun programDao(): ProgramDao
 
     companion object {
         @Volatile

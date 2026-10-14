@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Tv
@@ -61,6 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.local.entity.ChannelEntity
+import com.example.data.local.entity.ProgramEntity
+import com.example.player.VideoQuality
 import com.example.ui.MainViewModel
 import com.example.ui.components.ChannelListItem
 import com.example.ui.components.MobilePlayerView
@@ -68,7 +71,9 @@ import com.example.ui.components.TvPlayerOverlay
 import com.example.ui.components.VideoPlayerSurface
 import com.example.ui.dialogs.AddPlaylistDialog
 import com.example.ui.dialogs.DrmDebuggerDialog
+import com.example.ui.dialogs.EpgGuideDialog
 import com.example.ui.dialogs.PlaylistManagerDialog
+import com.example.ui.dialogs.QualityPickerDialog
 import com.example.ui.dialogs.SpoofSettingsDialog
 import com.example.ui.dialogs.TrackSelectionDialog
 import com.example.ui.dialogs.iptvTextFieldColors
@@ -96,6 +101,7 @@ fun HomeScreen(
     val globalSpoof by viewModel.globalSpoof.collectAsStateWithLifecycle()
     val uiMessage by viewModel.uiMessage.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
+    val allCurrentPrograms by viewModel.allCurrentPrograms.collectAsStateWithLifecycle()
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
@@ -104,8 +110,19 @@ fun HomeScreen(
     val playerError by viewModel.playerError.collectAsStateWithLifecycle()
     val streamInfo by viewModel.streamInfo.collectAsStateWithLifecycle()
     val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
+    val videoQuality by viewModel.videoQuality.collectAsStateWithLifecycle()
     val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
     val subtitleTracks by viewModel.subtitleTracks.collectAsStateWithLifecycle()
+
+    // Active program for current playing channel
+    val currentProgram = remember(currentChannel, allCurrentPrograms) {
+        currentChannel?.let { ch ->
+            allCurrentPrograms.firstOrNull {
+                it.epgChannelId.equals(ch.streamId, ignoreCase = true) ||
+                it.epgChannelId.equals(ch.name, ignoreCase = true)
+            }
+        }
+    }
 
     // Dialogs state
     var showAddDialog by remember { mutableStateOf(false) }
@@ -114,6 +131,8 @@ fun HomeScreen(
     var showPlaylistManager by remember { mutableStateOf(false) }
     var showAudioDialog by remember { mutableStateOf(false) }
     var showSubtitleDialog by remember { mutableStateOf(false) }
+    var showQualityDialog by remember { mutableStateOf(false) }
+    var showEpgGuideDialog by remember { mutableStateOf(false) }
 
     // Search input toggle
     var isSearchActive by remember { mutableStateOf(false) }
@@ -130,9 +149,10 @@ fun HomeScreen(
         }
     }
 
-    // Auto-play first channel if in TV mode and no channel playing yet
-    LaunchedEffect(isTvMode, channels) {
+    // Auto-play safe first channel if explicitly switched to TV mode
+    LaunchedEffect(isTvMode) {
         if (isTvMode && currentChannel == null && channels.isNotEmpty()) {
+            // Pick first channel (Big Buck Bunny Live HLS)
             viewModel.playChannel(channels.first())
         }
     }
@@ -163,6 +183,8 @@ fun HomeScreen(
                 aspectMode = aspectMode,
                 streamInfo = streamInfo,
                 spoofProfile = globalSpoof,
+                videoQuality = videoQuality,
+                currentProgram = currentProgram,
                 channelsList = channels,
                 onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
                 onNextChannel = { viewModel.playNextChannel() },
@@ -170,6 +192,8 @@ fun HomeScreen(
                 onSelectChannel = { viewModel.playChannel(it) },
                 onToggleFavorite = { viewModel.toggleFavorite(it) },
                 onCycleAspect = { viewModel.cycleAspect() },
+                onOpenQualityPicker = { showQualityDialog = true },
+                onOpenEpgGuide = { showEpgGuideDialog = true },
                 onOpenAudioTracks = { showAudioDialog = true },
                 onOpenSubtitles = { showSubtitleDialog = true },
                 onClosePlayer = { viewModel.setTvMode(false) },
@@ -231,6 +255,14 @@ fun HomeScreen(
                                 // Search
                                 IconButton(onClick = { isSearchActive = !isSearchActive }) {
                                     Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.White)
+                                }
+
+                                // EPG Guide
+                                IconButton(
+                                    onClick = { showEpgGuideDialog = true },
+                                    modifier = Modifier.testTag("epg_guide_btn")
+                                ) {
+                                    Icon(Icons.Default.Schedule, contentDescription = "EPG Guide", tint = AccentCyan)
                                 }
 
                                 // Player Spoofing
@@ -329,6 +361,8 @@ fun HomeScreen(
                         aspectMode = aspectMode,
                         streamInfo = streamInfo,
                         spoofProfile = globalSpoof,
+                        videoQuality = videoQuality,
+                        currentProgram = currentProgram,
                         isFullscreen = isMobileFullscreen,
                         onToggleFullscreen = { isMobileFullscreen = !isMobileFullscreen },
                         onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
@@ -336,6 +370,7 @@ fun HomeScreen(
                         onPreviousChannel = { viewModel.playPreviousChannel() },
                         onToggleFavorite = { viewModel.toggleFavorite(it) },
                         onCycleAspect = { viewModel.cycleAspect() },
+                        onOpenQualityPicker = { showQualityDialog = true },
                         onOpenAudioTracks = { showAudioDialog = true },
                         onOpenSubtitles = { showSubtitleDialog = true },
                         onRetry = { currentChannel?.let { viewModel.playChannel(it) } }
@@ -442,9 +477,14 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             items(channels, key = { it.id }) { item ->
+                                val channelProg = allCurrentPrograms.firstOrNull {
+                                    it.epgChannelId.equals(item.streamId, ignoreCase = true) ||
+                                    it.epgChannelId.equals(item.name, ignoreCase = true)
+                                }
                                 ChannelListItem(
                                     channel = item,
                                     isSelected = item.id == currentChannel?.id,
+                                    currentProgram = channelProg,
                                     onSelect = { viewModel.playChannel(item) },
                                     onToggleFavorite = { viewModel.toggleFavorite(item) }
                                 )
@@ -464,6 +504,25 @@ fun HomeScreen(
             onAddXtream = { name, srv, u, p, spoof -> viewModel.addXtreamPlaylist(name, srv, u, p, spoof) },
             onAddStalker = { name, portal, mac, spoof -> viewModel.addStalkerPlaylist(name, portal, mac, spoof) },
             onAddJson = { name, src, isRaw, spoof -> viewModel.addJsonPlaylist(name, src, isRaw, spoof) }
+        )
+    }
+
+    if (showEpgGuideDialog) {
+        EpgGuideDialog(
+            channels = channels,
+            programs = allCurrentPrograms,
+            onSelectChannel = { viewModel.playChannel(it) },
+            onImportXmltv = { src, isRaw -> viewModel.importXmltv(src, isRaw) },
+            onDismiss = { showEpgGuideDialog = false }
+        )
+    }
+
+    if (showQualityDialog) {
+        QualityPickerDialog(
+            currentQuality = videoQuality,
+            streamInfo = streamInfo,
+            onSelectQuality = { viewModel.setVideoQuality(it) },
+            onDismiss = { showQualityDialog = false }
         )
     }
 

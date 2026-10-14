@@ -37,12 +37,14 @@ class TvBuddyRepository(
     private val playlistDao = database.playlistDao()
     private val channelDao = database.channelDao()
     private val historyDao = database.historyDao()
+    private val programDao = database.programDao()
 
     val allPlaylists: Flow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
     val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
     val favoriteChannels: Flow<List<ChannelEntity>> = channelDao.getFavoriteChannels()
     val allCategories: Flow<List<String>> = channelDao.getAllCategories()
     val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
+    val allCurrentPrograms: Flow<List<com.example.data.local.entity.ProgramEntity>> = programDao.getAllCurrentPrograms()
 
     suspend fun initializeDefaultsIfNeeded() = withContext(Dispatchers.IO) {
         val existing = playlistDao.getAllPlaylists().first()
@@ -51,6 +53,45 @@ class TvBuddyRepository(
             val demoChannels = DemoChannels.getDemoChannels(playlistId)
             channelDao.insertChannels(demoChannels)
             playlistDao.updateChannelCount(playlistId, demoChannels.size)
+
+            val demoPrograms = DemoChannels.getDemoPrograms()
+            programDao.insertPrograms(demoPrograms)
+        }
+    }
+
+    fun getScheduleForChannel(epgChannelId: String): Flow<List<com.example.data.local.entity.ProgramEntity>> {
+        return programDao.getScheduleForChannel(epgChannelId)
+    }
+
+    suspend fun importXmltv(
+        urlOrContent: String,
+        isRawText: Boolean,
+        userAgent: String
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val programs = if (isRawText) {
+                com.example.data.parser.XmltvParser.parseString(urlOrContent)
+            } else {
+                val req = Request.Builder().url(urlOrContent).header("User-Agent", userAgent).build()
+                okHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
+                    val bodyStream = resp.body?.byteStream() ?: throw Exception("Empty response body")
+                    if (urlOrContent.endsWith(".gz", ignoreCase = true)) {
+                        java.util.zip.GZIPInputStream(bodyStream).use { gzStream ->
+                            com.example.data.parser.XmltvParser.parse(gzStream)
+                        }
+                    } else {
+                        com.example.data.parser.XmltvParser.parse(bodyStream)
+                    }
+                }
+            }
+
+            if (programs.isNotEmpty()) {
+                programDao.insertPrograms(programs)
+            }
+            Result.success(programs.size)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
     }
 

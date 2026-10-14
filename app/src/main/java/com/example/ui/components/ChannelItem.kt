@@ -56,6 +56,7 @@ import com.example.ui.theme.StatusWarning
 fun ChannelListItem(
     channel: ChannelEntity,
     isSelected: Boolean,
+    currentProgram: com.example.data.local.entity.ProgramEntity? = null,
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
@@ -191,13 +192,25 @@ fun ChannelListItem(
 
                 Spacer(modifier = Modifier.height(2.dp))
 
-                Text(
-                    text = channel.groupTitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF94A3B8),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                if (currentProgram != null) {
+                    Text(
+                        text = "▶ ${currentProgram.title}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AccentCyan,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                } else {
+                    Text(
+                        text = channel.groupTitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF94A3B8),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
 
             // Favorite Button

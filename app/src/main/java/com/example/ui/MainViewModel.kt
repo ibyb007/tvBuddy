@@ -61,8 +61,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playerError: StateFlow<String?> = playerManager.errorMessage
     val streamInfo: StateFlow<StreamInfo> = playerManager.streamInfo
     val aspectMode: StateFlow<AspectMode> = playerManager.aspectMode
+    val videoQuality: StateFlow<com.example.player.VideoQuality> = playerManager.videoQuality
     val audioTracks: StateFlow<List<TrackInfo>> = playerManager.audioTracks
     val subtitleTracks: StateFlow<List<TrackInfo>> = playerManager.subtitleTracks
+    val allCurrentPrograms: StateFlow<List<com.example.data.local.entity.ProgramEntity>> =
+        repository.allCurrentPrograms.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     // Filtered categories
     val categories: StateFlow<List<String>> = combine(rawChannels) { list ->
@@ -254,6 +257,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.clearHistory()
             _uiMessage.value = UiMessage(text = "Playback history cleared")
+        }
+    }
+
+    fun setVideoQuality(quality: com.example.player.VideoQuality) {
+        playerManager.setVideoQuality(quality)
+        _uiMessage.value = UiMessage(text = "Quality set to: ${quality.title}")
+    }
+
+    fun getScheduleForChannel(epgChannelId: String) = repository.getScheduleForChannel(epgChannelId)
+
+    fun importXmltv(source: String, isRaw: Boolean) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val result = repository.importXmltv(source, isRaw, _globalSpoof.value.getUserAgent())
+            _isLoading.value = false
+            result.fold(
+                onSuccess = { count ->
+                    _uiMessage.value = UiMessage(text = "Imported $count EPG programs successfully!")
+                },
+                onFailure = { err ->
+                    _uiMessage.value = UiMessage(text = "EPG Import error: ${err.localizedMessage}", isError = true)
+                }
+            )
         }
     }
 

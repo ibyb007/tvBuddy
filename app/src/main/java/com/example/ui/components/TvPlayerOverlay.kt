@@ -32,10 +32,12 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Star
@@ -88,6 +90,8 @@ fun TvPlayerOverlay(
     aspectMode: AspectMode,
     streamInfo: StreamInfo,
     spoofProfile: SpoofProfile,
+    videoQuality: com.example.player.VideoQuality = com.example.player.VideoQuality.AUTO,
+    currentProgram: com.example.data.local.entity.ProgramEntity? = null,
     channelsList: List<ChannelEntity>,
     onTogglePlayPause: () -> Unit,
     onNextChannel: () -> Unit,
@@ -95,6 +99,8 @@ fun TvPlayerOverlay(
     onSelectChannel: (ChannelEntity) -> Unit,
     onToggleFavorite: (ChannelEntity) -> Unit,
     onCycleAspect: () -> Unit,
+    onOpenQualityPicker: () -> Unit = {},
+    onOpenEpgGuide: () -> Unit = {},
     onOpenAudioTracks: () -> Unit,
     onOpenSubtitles: () -> Unit,
     onClosePlayer: () -> Unit,
@@ -302,11 +308,22 @@ fun TvPlayerOverlay(
                                         maxLines = 1,
                                         overflow = TextOverflow.Ellipsis
                                     )
-                                    Text(
-                                        text = channel.groupTitle,
-                                        color = Color(0xFF94A3B8),
-                                        fontSize = 12.sp
-                                    )
+                                    if (currentProgram != null) {
+                                        Text(
+                                            text = "▶ ${currentProgram.title}",
+                                            color = AccentCyan,
+                                            fontSize = 13.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    } else {
+                                        Text(
+                                            text = channel.groupTitle,
+                                            color = Color(0xFF94A3B8),
+                                            fontSize = 12.sp
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -446,6 +463,18 @@ fun TvPlayerOverlay(
                                 icon = Icons.Default.ClosedCaption,
                                 label = "Subtitles",
                                 onClick = onOpenSubtitles
+                            )
+
+                            TvActionButton(
+                                icon = Icons.Default.HighQuality,
+                                label = videoQuality.title.substringBefore(" "),
+                                onClick = onOpenQualityPicker
+                            )
+
+                            TvActionButton(
+                                icon = Icons.Default.Schedule,
+                                label = "EPG",
+                                onClick = onOpenEpgGuide
                             )
 
                             TvActionButton(

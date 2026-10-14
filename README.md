@@ -1,7 +1,7 @@
 # tvBuddy 📺
 
 > **Open-Source Alternative to TiviMate & OTT Navigator**  
-> Modern IPTV & VOD player designed for both **Android TV** and **Mobile & Tablets**, featuring hardware-accelerated **DRM Playback** (Widevine, ClearKey, PlayReady), multi-format playlist ingestion (M3U, Xtream Codes, Stalker MAC Portal, Raw JSON), and **Player Signature Spoofing**.
+> Modern IPTV & VOD player designed for both **Android TV** and **Mobile & Tablets**, featuring hardware-accelerated **DRM Playback** (Widevine, ClearKey, PlayReady), multi-format playlist ingestion (M3U, Xtream Codes, Stalker MAC Portal, Raw JSON), **XMLTV Electronic Program Guide (EPG)**, and **Player Signature Spoofing**.
 
 ---
 
@@ -15,6 +15,20 @@
   - `#KODIPROP:inputstream.adaptive.license_key=...`
   - `#KODIPROP:inputstream.adaptive.manifest_type=...`
 - **Built-in DRM Debugger**: Test encrypted MPEG-DASH & HLS streams on the fly with live key/license parameter customization.
+
+---
+
+### 📅 Electronic Program Guide (EPG)
+- **XMLTV Standard Support**: Ingests program schedules in standard `.xml` or compressed `.xml.gz` formats.
+- **Live Program Progress**: Shows currently airing program with real-time percentage progress bar right on channel list and player OSD.
+- **Program Details Dialog**: Access complete synopsis, genre, duration, and upcoming schedule.
+- **Channel EPG Guide View**: Full interactive timeline sheet showing current and upcoming shows per channel.
+
+---
+
+### 🎚️ Adaptive Video Quality Picker
+- Switch between **Auto (Adaptive)**, **4K UHD (2160p)**, **Full HD (1080p)**, **HD (720p)**, **SD (480p)**, and **Data Saver (360p)**.
+- Integrated into both Mobile player controls and Android TV OSD.
 
 ---
 
@@ -53,6 +67,8 @@ Some IPTV providers block generic media players or enforce specific client signa
     - `UP` / `DOWN`: Instant channel zapping.
     - `LEFT`: Opens quick channel guide overlay without stopping video playback.
     - `OK` / `ENTER`: Toggles on-screen display (OSD) controls.
+  - Video Quality selector (Auto, 4K, 1080p, 720p, etc.).
+  - EPG current show display with progress bar.
   - Aspect ratio switcher (Fit, Fill/Stretch, Zoom, 4:3, 16:9).
   - Audio track and Subtitle / Closed Caption language picker.
   - Live DRM status & video resolution badges.
@@ -60,7 +76,7 @@ Some IPTV providers block generic media players or enforce specific client signa
   - Modern Material Design 3 touch interface.
   - Categories horizontal filter pills.
   - Instant channel search & favorites list.
-  - Mobile video player with touch gestures, fullscreen button, and track selectors.
+  - Mobile video player with touch gestures, fullscreen button, quality picker, and track selectors.
   - Instant one-tap switch between Mobile and TV mode.
 
 ---
@@ -69,19 +85,21 @@ Some IPTV providers block generic media players or enforce specific client signa
 
 The repository includes a ready-to-run GitHub Actions workflow at [`.github/workflows/build-apk.yml`](.github/workflows/build-apk.yml).
 
-### Automatic Build:
-1. Push your repository to GitHub.
-2. Navigate to the **Actions** tab in your GitHub repository.
-3. Select **"Build tvBuddy APK (Mobile & TV)"** and click **Run workflow**.
-4. Once completed, download the built APK from the **Artifacts** section (`tvBuddy-Universal-Debug-APK`).
-5. Pushing a tag (e.g. `v1.0.0`) automatically creates a GitHub Release with the APK attached.
+### Automatic CI/CD Pipeline:
+- **Triggers**: Every push to `main` branch, pull request, or manual dispatch.
+- **Testing**: Runs unit tests (`gradle testDebugUnitTest`) before building.
+- **Dual Builds**: Generates both Universal **Debug** and **Signed Release** APKs.
+- **Artifacts**: Uploads `tvBuddy-Mobile-TV-Debug-APK` and `tvBuddy-Mobile-TV-Release-APK` artifacts.
+- **Releases**: Pushing tags (e.g. `v1.0.0`) automatically publishes a GitHub Release with both APKs attached.
 
 ### Local Build:
 ```bash
 gradle :app:assembleDebug
+gradle :app:assembleRelease
 ```
-The APK will be generated at:
-`app/build/outputs/apk/debug/app-debug.apk`
+The APKs will be located at:
+- Debug: `app/build/outputs/apk/debug/app-debug.apk`
+- Release: `app/build/outputs/apk/release/app-release.apk`
 
 ---
 
@@ -89,6 +107,7 @@ The APK will be generated at:
 - **Language**: Kotlin 2.2.10
 - **UI Framework**: Jetpack Compose (Material 3) + Android TV Leanback enhancements
 - **Media Engine**: AndroidX Media3 (ExoPlayer 1.5.1) with HLS, DASH, RTSP, and OkHttp data sources
-- **Local Persistence**: AndroidX Room Database (Playlists, Channels, Favorites, Playback History)
+- **EPG Engine**: XMLTV Parser (`.xml` & `.xml.gz` GZip streaming) + Room Database schedule cache
+- **Local Persistence**: AndroidX Room Database (Playlists, Channels, Programs, Favorites, Playback History)
 - **Image Loading**: Coil 2.7.0
 - **Network**: OkHttp 4.10.0

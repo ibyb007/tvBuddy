@@ -46,4 +46,24 @@ class TvBuddyUnitTest {
         assertNotNull(channel.httpHeadersJson)
         assertTrue(channel.httpHeadersJson!!.contains("Referer"))
     }
+
+    @Test
+    fun testXmltvDateParsing() {
+        val date1 = com.example.data.parser.XmltvParser.parseDate("20261014120000 +0000")
+        assertTrue(date1 > 0L)
+
+        val date2 = com.example.data.parser.XmltvParser.parseDate("20261014120000")
+        assertTrue(date2 > 0L)
+    }
+
+    @Test
+    fun testVideoQualityPresets() {
+        val fhd = com.example.player.VideoQuality.FHD_1080P
+        assertEquals(1920, fhd.maxWidth)
+        assertEquals(1080, fhd.maxHeight)
+
+        val uhd = com.example.player.VideoQuality.UHD_4K
+        assertEquals(3840, uhd.maxWidth)
+        assertEquals(2160, uhd.maxHeight)
+    }
 }

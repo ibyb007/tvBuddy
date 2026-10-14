@@ -79,6 +79,8 @@ fun MobilePlayerView(
     aspectMode: AspectMode,
     streamInfo: StreamInfo,
     spoofProfile: SpoofProfile,
+    videoQuality: com.example.player.VideoQuality = com.example.player.VideoQuality.AUTO,
+    currentProgram: com.example.data.local.entity.ProgramEntity? = null,
     isFullscreen: Boolean,
     onToggleFullscreen: () -> Unit,
     onTogglePlayPause: () -> Unit,
@@ -86,6 +88,7 @@ fun MobilePlayerView(
     onPreviousChannel: () -> Unit,
     onToggleFavorite: (ChannelEntity) -> Unit,
     onCycleAspect: () -> Unit,
+    onOpenQualityPicker: () -> Unit = {},
     onOpenAudioTracks: () -> Unit,
     onOpenSubtitles: () -> Unit,
     onRetry: () -> Unit,
@@ -204,23 +207,50 @@ fun MobilePlayerView(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         if (channel != null) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.fillMaxWidth(0.55f)) {
                                 Text(
                                     text = channel.name,
                                     color = Color.White,
                                     fontSize = 14.sp,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.fillMaxWidth(0.6f)
+                                    overflow = TextOverflow.Ellipsis
                                 )
+                                if (currentProgram != null) {
+                                    Text(
+                                        text = "▶ ${currentProgram.title}",
+                                        color = AccentCyan,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
                             }
                         }
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
+                            // Video Quality Picker Button
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = DarkSurfaceElevated,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable(onClick = onOpenQualityPicker)
+                                    .border(1.dp, Color(0xFF334155), RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 3.dp)
+                            ) {
+                                Text(
+                                    text = videoQuality.title.substringBefore(" "),
+                                    color = AccentCyan,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
                             if (streamInfo.isDrmProtected) {
                                 Box(
                                     modifier = Modifier

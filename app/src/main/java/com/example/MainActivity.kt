@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Bundle
-import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,12 +25,11 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // Keep screen on during live TV playback
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        // Detect if running on Android TV or Touch Device
+        // Detect if running on an Android TV device
         val isTv = isRunningOnTv()
-        viewModel.setTvMode(isTv)
+        if (isTv) {
+            viewModel.setTvMode(true)
+        }
 
         setContent {
             TvBuddyTheme {
@@ -49,7 +47,6 @@ class MainActivity : ComponentActivity() {
         val uiModeManager = getSystemService(Context.UI_MODE_SERVICE) as? UiModeManager
         val isTvUi = uiModeManager?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION
         val hasLeanback = packageManager.hasSystemFeature(PackageManager.FEATURE_LEANBACK)
-        val hasNoTouchscreen = !packageManager.hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)
-        return isTvUi || hasLeanback || hasNoTouchscreen
+        return isTvUi || hasLeanback
     }
 }
