@@ -20,18 +20,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -57,16 +60,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.data.local.entity.ChannelEntity
-import com.example.data.local.entity.ProgramEntity
-import com.example.player.VideoQuality
 import com.example.ui.MainViewModel
 import com.example.ui.components.ChannelListItem
-import com.example.ui.components.MobilePlayerView
 import com.example.ui.components.TvPlayerOverlay
 import com.example.ui.components.VideoPlayerSurface
 import com.example.ui.dialogs.AddPlaylistDialog
@@ -87,6 +85,8 @@ import com.example.ui.theme.StatusDrm
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
+    isInPipMode: Boolean = false,
+    onEnterPip: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val configuration = LocalConfiguration.current
@@ -133,6 +133,7 @@ fun HomeScreen(
     var showSubtitleDialog by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
     var showEpgGuideDialog by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
 
     // Search input toggle
     var isSearchActive by remember { mutableStateOf(false) }
@@ -152,16 +153,37 @@ fun HomeScreen(
     // Auto-play safe first channel if explicitly switched to TV mode
     LaunchedEffect(isTvMode) {
         if (isTvMode && currentChannel == null && channels.isNotEmpty()) {
-            // Pick first channel (Big Buck Bunny Live HLS)
             viewModel.playChannel(channels.first())
         }
     }
 
-    BackHandler(enabled = isMobileFullscreen || (isTvMode && currentChannel != null)) {
-        if (isMobileFullscreen) {
-            isMobileFullscreen = false
-        } else if (isTvMode) {
-            viewModel.setTvMode(false)
+    // Intercept back button gestures properly:
+    // 1. Exit fullscreen if in fullscreen
+    // 2. Clear search query if typed
+    // 3. Close search bar if active
+    // 4. Close player / stop playback if a channel is playing
+    // 5. Exit TV mode if in TV mode
+    // 6. When no player is playing and on main home screen, let system exit app (pausing/stopping playback!)
+    val shouldInterceptBack = !isInPipMode && (isMobileFullscreen || currentChannel != null || isTvMode || isSearchActive || searchQuery.isNotEmpty())
+
+    BackHandler(enabled = shouldInterceptBack) {
+        when {
+            isMobileFullscreen -> {
+                isMobileFullscreen = false
+            }
+            searchQuery.isNotEmpty() -> {
+                viewModel.setSearchQuery("")
+            }
+            isSearchActive -> {
+                isSearchActive = false
+            }
+            isTvMode -> {
+                viewModel.setTvMode(false)
+                viewModel.closePlayer()
+            }
+            currentChannel != null -> {
+                viewModel.closePlayer()
+            }
         }
     }
 
@@ -196,7 +218,11 @@ fun HomeScreen(
                 onOpenEpgGuide = { showEpgGuideDialog = true },
                 onOpenAudioTracks = { showAudioDialog = true },
                 onOpenSubtitles = { showSubtitleDialog = true },
-                onClosePlayer = { viewModel.setTvMode(false) },
+                onClosePlayer = {
+                    viewModel.setTvMode(false)
+                    viewModel.closePlayer()
+                },
+                onOpenSpoofSettings = { showSpoofDialog = true },
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -205,13 +231,26 @@ fun HomeScreen(
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHostState) },
             containerColor = DarkBackground,
+            floatingActionButton = {
+                // Prominent Add Playlist button always visible on Mobile when not in fullscreen player
+                if (!isMobileFullscreen && !isInPipMode && currentChannel == null) {
+                    ExtendedFloatingActionButton(
+                        onClick = { showAddDialog = true },
+                        containerColor = AccentCyan,
+                        contentColor = Color.Black,
+                        icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                        text = { Text("Add Playlist", fontWeight = FontWeight.Bold) },
+                        modifier = Modifier.testTag("fab_add_playlist")
+                    )
+                }
+            },
             topBar = {
-                if (!isMobileFullscreen) {
+                if (!isMobileFullscreen && !isInPipMode) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(DarkSurface)
-                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                            .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -250,68 +289,97 @@ fun HomeScreen(
                                 }
                             }
 
-                            // Action Icons
+                            // Primary Action Icons & Overflow Menu
                             Row(verticalAlignment = Alignment.CenterVertically) {
+                                // Prominent Add Playlist Button on Top Bar
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = AccentCyan,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { showAddDialog = true }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                        .testTag("add_playlist_btn")
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.width(6.dp))
+
                                 // Search
-                                IconButton(onClick = { isSearchActive = !isSearchActive }) {
+                                IconButton(
+                                    onClick = { isSearchActive = !isSearchActive },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
                                     Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.White)
                                 }
 
                                 // EPG Guide
                                 IconButton(
                                     onClick = { showEpgGuideDialog = true },
-                                    modifier = Modifier.testTag("epg_guide_btn")
+                                    modifier = Modifier.size(36.dp).testTag("epg_guide_btn")
                                 ) {
                                     Icon(Icons.Default.Schedule, contentDescription = "EPG Guide", tint = AccentCyan)
                                 }
 
-                                // Player Spoofing
-                                IconButton(
-                                    onClick = { showSpoofDialog = true },
-                                    modifier = Modifier.testTag("spoof_settings_btn")
-                                ) {
-                                    Icon(Icons.Default.Security, contentDescription = "Player Spoofing", tint = AccentCyan)
-                                }
+                                // More / Overflow Menu to prevent horizontal clipping
+                                Box {
+                                    IconButton(
+                                        onClick = { showMoreMenu = true },
+                                        modifier = Modifier.size(36.dp).testTag("more_menu_btn")
+                                    ) {
+                                        Icon(Icons.Default.MoreVert, contentDescription = "More Options", tint = Color.White)
+                                    }
 
-                                // DRM Tester
-                                IconButton(
-                                    onClick = { showDrmDebugger = true },
-                                    modifier = Modifier.testTag("drm_debugger_btn")
-                                ) {
-                                    Icon(Icons.Default.Lock, contentDescription = "DRM Tester", tint = StatusDrm)
-                                }
-
-                                // Playlists Manager
-                                IconButton(
-                                    onClick = { showPlaylistManager = true },
-                                    modifier = Modifier.testTag("playlist_manager_btn")
-                                ) {
-                                    Icon(Icons.Default.Folder, contentDescription = "Playlists", tint = Color.White)
-                                }
-
-                                // Add (+)
-                                IconButton(
-                                    onClick = { showAddDialog = true },
-                                    modifier = Modifier.testTag("add_playlist_btn")
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = "Add Playlist", tint = AccentCyan)
-                                }
-
-                                // TV Mode Switcher
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = DarkSurfaceElevated,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { viewModel.setTvMode(true) }
-                                        .border(1.dp, Color(0xFF475569), RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                                        .testTag("tv_mode_btn")
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Tv, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(14.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("TV", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = AccentCyan)
+                                    DropdownMenu(
+                                        expanded = showMoreMenu,
+                                        onDismissRequest = { showMoreMenu = false },
+                                        modifier = Modifier.background(DarkSurfaceElevated)
+                                    ) {
+                                        DropdownMenuItem(
+                                            leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, tint = AccentCyan) },
+                                            text = { Text("Add Playlist", color = Color.White, fontWeight = FontWeight.Medium) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showAddDialog = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = Color.White) },
+                                            text = { Text("Playlists Manager", color = Color.White) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showPlaylistManager = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, tint = AccentCyan) },
+                                            text = { Text("Player Spoofing Engine", color = Color.White) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showSpoofDialog = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm) },
+                                            text = { Text("DRM Stream Debugger", color = Color.White) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                showDrmDebugger = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            leadingIcon = { Icon(Icons.Default.Tv, contentDescription = null, tint = AccentCyan) },
+                                            text = { Text("Switch to TV Mode", color = AccentCyan, fontWeight = FontWeight.Bold) },
+                                            onClick = {
+                                                showMoreMenu = false
+                                                viewModel.setTvMode(true)
+                                            }
+                                        )
                                     }
                                 }
                             }
@@ -347,37 +415,49 @@ fun HomeScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(paddingValues)
+                    .padding(if (isMobileFullscreen || isInPipMode) androidx.compose.foundation.layout.PaddingValues(0.dp) else paddingValues)
             ) {
-                // If a channel is selected, show the Mobile Player
+                // If a channel is selected, show the custom Composable Player Screen
                 if (currentChannel != null) {
                     val player = viewModel.playerManager.getPlayer()
-                    MobilePlayerView(
-                        player = player,
-                        channel = currentChannel,
-                        isPlaying = isPlaying,
-                        isBuffering = isBuffering,
-                        errorMessage = playerError,
-                        aspectMode = aspectMode,
-                        streamInfo = streamInfo,
-                        spoofProfile = globalSpoof,
-                        videoQuality = videoQuality,
-                        currentProgram = currentProgram,
-                        isFullscreen = isMobileFullscreen,
-                        onToggleFullscreen = { isMobileFullscreen = !isMobileFullscreen },
-                        onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
-                        onNextChannel = { viewModel.playNextChannel() },
-                        onPreviousChannel = { viewModel.playPreviousChannel() },
-                        onToggleFavorite = { viewModel.toggleFavorite(it) },
-                        onCycleAspect = { viewModel.cycleAspect() },
-                        onOpenQualityPicker = { showQualityDialog = true },
-                        onOpenAudioTracks = { showAudioDialog = true },
-                        onOpenSubtitles = { showSubtitleDialog = true },
-                        onRetry = { currentChannel?.let { viewModel.playChannel(it) } }
-                    )
+                    Box(
+                        modifier = if (isMobileFullscreen || isInPipMode) {
+                            Modifier.fillMaxSize()
+                        } else {
+                            Modifier.fillMaxWidth().height(240.dp)
+                        }
+                    ) {
+                        TvBuddyPlayerScreen(
+                            player = player,
+                            channel = currentChannel,
+                            isPlaying = isPlaying,
+                            isBuffering = isBuffering,
+                            errorMessage = playerError,
+                            aspectMode = aspectMode,
+                            streamInfo = streamInfo,
+                            spoofProfile = globalSpoof,
+                            videoQuality = videoQuality,
+                            currentProgram = currentProgram,
+                            isInPipMode = isInPipMode,
+                            isFullscreen = isMobileFullscreen,
+                            onEnterPip = onEnterPip,
+                            onToggleFullscreen = { isMobileFullscreen = !isMobileFullscreen },
+                            onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
+                            onNextChannel = { viewModel.playNextChannel() },
+                            onPreviousChannel = { viewModel.playPreviousChannel() },
+                            onToggleFavorite = { viewModel.toggleFavorite(it) },
+                            onCycleAspect = { viewModel.cycleAspect() },
+                            onOpenQualityPicker = { showQualityDialog = true },
+                            onOpenAudioTracks = { showAudioDialog = true },
+                            onOpenSubtitles = { showSubtitleDialog = true },
+                            onRetry = { currentChannel?.let { viewModel.playChannel(it) } },
+                            onClosePlayer = { viewModel.closePlayer() },
+                            onOpenSpoofSettings = { showSpoofDialog = true }
+                        )
+                    }
                 }
 
-                if (!isMobileFullscreen) {
+                if (!isMobileFullscreen && !isInPipMode) {
                     // Category Chips
                     LazyRow(
                         modifier = Modifier
@@ -453,12 +533,21 @@ fun HomeScreen(
                                 )
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    TextButton(
-                                        onClick = { showAddDialog = true },
-                                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = AccentCyan)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = AccentCyan,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { showAddDialog = true }
+                                            .padding(horizontal = 16.dp, vertical = 10.dp)
                                     ) {
-                                        Text("+ Add Playlist")
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text("+ Add Playlist", fontWeight = FontWeight.Bold, color = Color.Black)
+                                        }
                                     }
+
                                     TextButton(
                                         onClick = { showDrmDebugger = true },
                                         colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = StatusDrm)

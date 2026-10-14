@@ -283,6 +283,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun closePlayer() {
+        playerManager.closePlayer()
+    }
+
+    fun pausePlayer() {
+        playerManager.pause()
+    }
+
     fun dismissMessage() {
         _uiMessage.value = null
     }

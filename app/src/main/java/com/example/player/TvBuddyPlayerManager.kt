@@ -131,18 +131,20 @@ class TvBuddyPlayerManager(
                         val rootCause = error.cause
                         val message = when {
                             rootCause is HttpDataSource.InvalidResponseCodeException -> {
-                                if (rootCause.responseCode == 404) {
-                                    "Stream link returned 404 (Offline or expired). Please select another channel or check playlist."
-                                } else {
-                                    "HTTP ${rootCause.responseCode}: Blocked by provider. Try switching Player Spoofing signature."
+                                when (rootCause.responseCode) {
+                                    403 -> "HTTP 403 Forbidden: Stream provider denied access or token expired. Switch Player Spoofing signature or verify stream permissions."
+                                    404 -> "HTTP 404 Not Found: Stream URL is offline or unavailable. Please select another channel."
+                                    else -> "HTTP ${rootCause.responseCode}: Stream blocked or unavailable. Try switching Player Spoofing."
                                 }
                             }
                             rootCause is UnknownHostException -> {
-                                "Unable to resolve stream server hostname. Please verify network access."
+                                "Unable to resolve stream server hostname. Please check internet connection."
                             }
                             error.errorCode == PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_DRM_DEVICE_REVOKED ||
                             error.message?.contains("crypto", ignoreCase = true) == true -> {
-                                "Hardware Widevine Crypto HAL is unprovisioned in this emulator. Please test ClearKey DRM streams or use a physical Android TV/mobile device."
+                                "DRM hardware crypto is not available in this virtual environment. Hardware Widevine/ClearKey playback is fully supported on physical Android TV and mobile devices."
                             }
                             else -> {
                                 val detailedCause = rootCause?.localizedMessage ?: error.message
@@ -216,9 +218,9 @@ class TvBuddyPlayerManager(
                 false
             }
 
-            if (!isCryptoSupported && drmType == DrmType.WIDEVINE) {
+            if (!isCryptoSupported) {
                 _isBuffering.value = false
-                _errorMessage.value = "Widevine Crypto HAL is not available in this virtual environment. Supported on certified physical Android TV & Mobile devices."
+                _errorMessage.value = "${drmType.title} hardware crypto is not provisioned in this environment. Hardware DRM playback is supported on certified physical Android TV & mobile devices."
                 return
             }
 
@@ -387,8 +389,28 @@ class TvBuddyPlayerManager(
         }
     }
 
+    fun pause() {
+        exoPlayer?.pause()
+    }
+
+    fun stop() {
+        exoPlayer?.stop()
+        _isPlaying.value = false
+        _isBuffering.value = false
+    }
+
+    fun closePlayer() {
+        stop()
+        _currentChannel.value = null
+        _errorMessage.value = null
+    }
+
     fun release() {
+        exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
+        _isPlaying.value = false
+        _isBuffering.value = false
+        _currentChannel.value = null
     }
 }

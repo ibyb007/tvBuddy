@@ -28,18 +28,16 @@ data class SpoofProfile(
     fun getEffectiveHeaders(): Map<String, String> {
         val headers = mutableMapOf<String, String>()
         headers["User-Agent"] = getUserAgent()
+        headers["Accept"] = "*/*"
 
         when (preset) {
             SpoofPreset.TIVIMATE -> {
-                headers["X-Requested-With"] = "ar.tvplayer.tv"
-                headers["Accept"] = "*/*"
+                headers["Accept-Language"] = "en-US,en;q=0.9"
             }
             SpoofPreset.OTT_NAVIGATOR -> {
-                headers["X-Requested-With"] = "studio.scillarium.ottnavigator"
-                headers["Accept"] = "*/*"
+                headers["Accept-Language"] = "en-US,en;q=0.9"
             }
             SpoofPreset.APPLE_TV -> {
-                headers["Accept"] = "*/*"
                 headers["Connection"] = "keep-alive"
             }
             else -> {}

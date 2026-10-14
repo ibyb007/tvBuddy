@@ -56,6 +56,20 @@ class TvBuddyRepository(
 
             val demoPrograms = DemoChannels.getDemoPrograms()
             programDao.insertPrograms(demoPrograms)
+        } else {
+            val demoPl = existing.firstOrNull { it.sourceUrl == "local://curated_demo.m3u" }
+            if (demoPl != null) {
+                val demoChs = channelDao.getChannelsByPlaylist(demoPl.id).first()
+                if (demoChs.any { it.streamUrl.contains("commondatastorage.googleapis.com") || it.streamUrl.contains("gtv-videos-bucket") }) {
+                    channelDao.deleteChannelsByPlaylist(demoPl.id)
+                    val freshDemoChannels = DemoChannels.getDemoChannels(demoPl.id)
+                    channelDao.insertChannels(freshDemoChannels)
+                    playlistDao.updateChannelCount(demoPl.id, freshDemoChannels.size)
+
+                    val demoPrograms = DemoChannels.getDemoPrograms()
+                    programDao.insertPrograms(demoPrograms)
+                }
+            }
         }
     }
 
