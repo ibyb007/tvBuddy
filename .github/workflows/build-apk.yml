@@ -1,104 +1,201 @@
-name: tvBuddy CI/CD - Build & Release Mobile & TV APK
+name: tvBuddy - Build & Release
+
+# Manual only: Actions tab > "tvBuddy - Build & Release" > Run workflow
+#   canary : GitHub *pre-release* (tag: canary-<run number>)
+#   stable : normal GitHub release (tag: v<version>)
 
 on:
-  push:
-    branches: [ "main", "master" ]
-    tags: [ "v*" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+    inputs:
+      channel:
+        description: "Release channel"
+        type: choice
+        options: [ canary, stable ]
+        default: canary
+      version:
+        description: "Stable only: version number, e.g. 1.2.0 (no leading v)"
+        type: string
+        required: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # needed to create releases / tags
+
+env:
+  BASE_VERSION: "1.0.0"   # used for canary version names; bump when you start a new line
 
 jobs:
-  test_and_build:
-    name: Test & Build APKs
+  build:
+    name: Build APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # ---------- Work out channel / version ----------
+      - name: Resolve channel and version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          CHANNEL="canary"
+          if [[ "${{ inputs.channel }}" == "stable" ]]; then
+            CHANNEL="stable"
+            VERSION="${{ inputs.version }}"
+            if [[ -z "$VERSION" ]]; then echo "::error::Stable manual runs need a 'version' input"; exit 1; fi
+          fi
+
+          if [[ "$CHANNEL" == "stable" ]]; then
+            VERSION_NAME="$VERSION"
+            TAG="v${VERSION}"
+            ID_SUFFIX=""
+            PRERELEASE=false
+          else
+            VERSION_NAME="${BASE_VERSION}-canary.${GITHUB_RUN_NUMBER}+${SHORT_SHA}"
+            TAG="canary-${GITHUB_RUN_NUMBER}"
+            ID_SUFFIX=".canary"
+            PRERELEASE=true
+          fi
+
+          PUBLISH=true
+
+          {
+            echo "channel=$CHANNEL"
+            echo "version_name=$VERSION_NAME"
+            echo "version_code=${GITHUB_RUN_NUMBER}"
+            echo "tag=$TAG"
+            echo "id_suffix=$ID_SUFFIX"
+            echo "prerelease=$PRERELEASE"
+            echo "publish=$PUBLISH"
+            echo "apk_name=tvBuddy-${VERSION_NAME//+/-}-${CHANNEL}.apk"
+          } >> "$GITHUB_OUTPUT"
+          echo "Channel=$CHANNEL  Version=$VERSION_NAME  Tag=$TAG  Publish=$PUBLISH"
+
+      # ---------- Toolchain ----------
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'gradle'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Ensure Gradle Wrapper Executable
+      # The ubuntu runner already ships an Android SDK. We only accept licenses so AGP
+      # can auto-download the platform it needs. (android-actions/setup-android was
+      # failing on "sdkmanager tools", so it has been removed.)
+      - name: Accept Android SDK licenses
+        shell: bash
         run: |
-          if [ -f "./gradlew" ]; then
-            chmod +x ./gradlew
+          yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          echo "sdk.dir=${ANDROID_HOME}" > local.properties
+
+      # The repo has no gradlew / gradle-wrapper.jar, so install the Gradle version
+      # the project's wrapper properties ask for (9.3.1, required by AGP 9.1).
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+
+      # ---------- Signing ----------
+      # app/build.gradle.kts expects ${rootDir}/debug.keystore (git-ignored) for debug builds.
+      - name: Create debug keystore
+        run: |
+          keytool -genkeypair -v -keystore debug.keystore -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+      # Add RELEASE_KEYSTORE_BASE64, STORE_PASSWORD, KEY_PASSWORD (key alias must be "upload")
+      # as repo secrets so every release is signed with the SAME key and users can update in place.
+      # Without them a throwaway key is generated, which means APKs can't update over each other.
+      - name: Set up release keystore
+        env:
+          KS_B64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASS: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "Using release keystore from secrets"
+            echo "$KS_B64" | base64 --decode > "$GITHUB_WORKSPACE/release.jks"
+            echo "STORE_PASSWORD=$KS_PASS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=${KEY_PASS:-$KS_PASS}" >> "$GITHUB_ENV"
           else
-            gradle wrapper
-            chmod +x ./gradlew
+            echo "::warning::No RELEASE_KEYSTORE_BASE64 secret - using a temporary CI key (APKs won't be update-compatible)"
+            keytool -genkeypair -v -keystore "$GITHUB_WORKSPACE/release.jks" -storepass android -keypass android \
+              -alias upload -keyalg RSA -keysize 2048 -validity 10000 \
+              -dname "CN=tvBuddy,OU=CI,O=OpenSource,C=US"
+            echo "STORE_PASSWORD=android" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=android" >> "$GITHUB_ENV"
           fi
+          echo "KEYSTORE_PATH=$GITHUB_WORKSPACE/release.jks" >> "$GITHUB_ENV"
 
-      - name: Run Unit Tests
-        run: ./gradlew testDebugUnitTest --stacktrace
+      # ---------- Build ----------
+      - name: Unit tests
+        run: gradle testDebugUnitTest --stacktrace --no-daemon
+        # Don't let a flaky test block a canary pre-release; stable must pass.
+        continue-on-error: ${{ steps.meta.outputs.channel == 'canary' }}
 
-      - name: Build Debug APK (Universal Mobile & Android TV)
-        run: ./gradlew assembleDebug --stacktrace
+      - name: Build release APK
+        run: >
+          gradle assembleRelease --stacktrace --no-daemon
+          -PappVersionName="${{ steps.meta.outputs.version_name }}"
+          -PappVersionCode="${{ steps.meta.outputs.version_code }}"
+          -PappIdSuffix="${{ steps.meta.outputs.id_suffix }}"
 
-      - name: Setup Release Signing Keystore
-        id: setup_keystore
+      - name: Collect APK
+        id: apk
         run: |
-          if [ -n "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ]; then
-            echo "Using production keystore from repository secrets"
-            echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > app/my-upload-key.jks
-            echo "KEYSTORE_PATH=my-upload-key.jks" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=${{ secrets.STORE_PASSWORD }}" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
-          else
-            echo "Generating release signing keystore for CI"
-            keytool -genkey -v -keystore app/my-upload-key.jks -keyalg RSA -keysize 2048 -validity 10000 \
-              -alias upload -storepass android -keypass android \
-              -dname "CN=tvBuddy, OU=MobileTV, O=OpenSource, L=Global, S=Global, C=US"
-            echo "KEYSTORE_PATH=my-upload-key.jks" >> $GITHUB_ENV
-            echo "STORE_PASSWORD=android" >> $GITHUB_ENV
-            echo "KEY_PASSWORD=android" >> $GITHUB_ENV
-          fi
+          APK=$(find app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          test -n "$APK" || { echo "::error::No release APK found"; exit 1; }
+          mkdir -p dist
+          cp "$APK" "dist/${{ steps.meta.outputs.apk_name }}"
+          (cd dist && sha256sum "${{ steps.meta.outputs.apk_name }}" > "${{ steps.meta.outputs.apk_name }}.sha256")
+          ls -la dist
 
-      - name: Build Signed Release APK
-        run: ./gradlew assembleRelease --stacktrace
-
-      - name: Locate Built APKs
-        id: locate_apks
-        run: |
-          DEBUG_APK=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          RELEASE_APK=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          echo "Debug APK: $DEBUG_APK"
-          echo "Release APK: $RELEASE_APK"
-          echo "debug_apk=$DEBUG_APK" >> $GITHUB_OUTPUT
-          echo "release_apk=$RELEASE_APK" >> $GITHUB_OUTPUT
-
-      - name: Upload Debug APK Artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tvBuddy-Mobile-TV-Debug-APK
-          path: ${{ steps.locate_apks.outputs.debug_apk }}
-          retention-days: 14
-
-      - name: Upload Signed Release APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: tvBuddy-Mobile-TV-Release-APK
-          path: ${{ steps.locate_apks.outputs.release_apk }}
+          name: tvBuddy-${{ steps.meta.outputs.channel }}-apk
+          path: dist/*
           retention-days: 30
 
-      - name: Create GitHub Release (on tag)
-        if: startsWith(github.ref, 'refs/tags/v')
+      # ---------- Release ----------
+      - name: Publish GitHub release
+        if: steps.meta.outputs.publish == 'true'
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ${{ steps.locate_apks.outputs.debug_apk }}
-            ${{ steps.locate_apks.outputs.release_apk }}
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.meta.outputs.channel == 'canary' && format('Canary {0} ({1})', github.run_number, steps.meta.outputs.version_name) || format('tvBuddy {0}', steps.meta.outputs.version_name) }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
           generate_release_notes: true
+          body: |
+            **Channel:** `${{ steps.meta.outputs.channel }}`
+            **Version:** `${{ steps.meta.outputs.version_name }}`
+            **Commit:** ${{ github.sha }}
+
+            ${{ steps.meta.outputs.channel == 'canary' && '⚠️ Pre-release build from the latest `main`. May be unstable. Installs side-by-side with the stable app.' || '' }}
+          files: |
+            dist/${{ steps.meta.outputs.apk_name }}
+            dist/${{ steps.meta.outputs.apk_name }}.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Keep only the 10 newest canary pre-releases so the Releases page stays tidy.
+      - name: Prune old canary releases
+        if: steps.meta.outputs.publish == 'true' && steps.meta.outputs.channel == 'canary'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
+          | while read -r tag; do
+              echo "Deleting old canary $tag"
+              gh release delete "$tag" --cleanup-tag --yes || true
+            done
