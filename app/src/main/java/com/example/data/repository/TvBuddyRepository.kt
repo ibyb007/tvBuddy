@@ -151,18 +151,56 @@ class TvBuddyRepository(
         customHeaders: Map<String, String> = emptyMap()
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
-            val effectiveHeaders = spoof.getEffectiveHeaders()
+            var spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
+            var effectiveHeaders = spoof.getEffectiveHeaders()
 
             val content = if (isRawContent) {
                 sourceUrlOrContent
             } else {
-                val reqBuilder = Request.Builder().url(sourceUrlOrContent)
-                effectiveHeaders.forEach { (k, v) -> reqBuilder.header(k, v) }
-                okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                    if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
-                    resp.body?.string() ?: ""
+                // Some providers answer unknown players with an HTML page / a redirect to Telegram
+                // instead of the playlist. Try the chosen signature first, then fall back through
+                // the other player signatures until a real M3U comes back.
+                val candidates = buildList {
+                    add(spoof)
+                    SpoofPreset.entries
+                        .filter { it != spoofPreset && it != SpoofPreset.CUSTOM && it != SpoofPreset.EXOPLAYER }
+                        .forEach { add(SpoofProfile(it, "", customHeaders)) }
                 }
+                var found: String? = null
+                var lastProblem = "No valid M3U returned"
+                for (candidate in candidates) {
+                    val headers = candidate.getEffectiveHeaders()
+                    try {
+                        val reqBuilder = Request.Builder().url(sourceUrlOrContent)
+                        headers.forEach { (k, v) -> reqBuilder.header(k, v) }
+                        val body = okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                lastProblem = "HTTP ${resp.code}: ${resp.message}"
+                                null
+                            } else {
+                                val finalHost = resp.request.url.host
+                                val text = resp.body?.string() ?: ""
+                                if (finalHost.contains("t.me") || finalHost.contains("telegram")) {
+                                    lastProblem = "Provider redirected to Telegram (player signature '${candidate.preset.displayName}' rejected)"
+                                    null
+                                } else if (!text.contains("#EXTM3U", ignoreCase = true) &&
+                                    !text.contains("#EXTINF", ignoreCase = true)) {
+                                    lastProblem = "Provider returned a non-playlist page for '${candidate.preset.displayName}'"
+                                    null
+                                } else text
+                            }
+                        }
+                        if (body != null) {
+                            found = body
+                            spoof = candidate
+                            effectiveHeaders = headers
+                            break
+                        }
+                    } catch (e: Exception) {
+                        lastProblem = e.message ?: e.javaClass.simpleName
+                    }
+                }
+                found ?: throw Exception(lastProblem)
             }
 
             val playlistId = playlistDao.insertPlaylist(
@@ -170,7 +208,7 @@ class TvBuddyRepository(
                     name = name,
                     type = PlaylistType.M3U,
                     sourceUrl = if (isRawContent) "Pasted M3U" else sourceUrlOrContent,
-                    spoofPreset = spoofPreset.name,
+                    spoofPreset = spoof.preset.name,
                     customUserAgent = customUserAgent.ifBlank { null },
                     customHeadersJson = if (customHeaders.isNotEmpty()) JSONObject(customHeaders).toString() else null
                 )
