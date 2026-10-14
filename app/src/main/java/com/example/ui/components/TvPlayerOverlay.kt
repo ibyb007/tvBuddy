@@ -246,24 +246,6 @@ fun TvPlayerOverlay(
 
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = Color(0xFF1E293B),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, AccentCyan),
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable(onClick = onOpenSpoofSettings)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.Security, contentDescription = null, tint = AccentCyan, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("Spoof Profile", color = AccentCyan, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                            }
-                        }
-
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
                             color = Color(0xFF334155),
                             modifier = Modifier
                                 .clip(RoundedCornerShape(8.dp))
@@ -368,44 +350,6 @@ fun TvPlayerOverlay(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            // Spoof badge
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(Color(0xFF6366F1).copy(alpha = 0.25f))
-                                    .border(1.dp, Color(0xFF818CF8), RoundedCornerShape(6.dp))
-                                    .padding(horizontal = 8.dp, vertical = 4.dp)
-                            ) {
-                                Text(
-                                    text = "Spoof: ${spoofProfile.preset.displayName}",
-                                    color = Color(0xFFA5B4FC),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-
-                            // DRM badge
-                            if (streamInfo.isDrmProtected) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(StatusDrm.copy(alpha = 0.2f))
-                                        .border(1.dp, StatusDrm, RoundedCornerShape(6.dp))
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm, modifier = Modifier.size(12.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text(
-                                            text = streamInfo.drmType,
-                                            color = StatusDrm,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold
-                                        )
-                                    }
-                                }
-                            }
-
                             // Aspect Ratio Badge
                             Box(
                                 modifier = Modifier
