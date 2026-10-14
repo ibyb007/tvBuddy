@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -48,6 +49,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -111,6 +113,7 @@ fun HomeScreen(
     val streamInfo by viewModel.streamInfo.collectAsStateWithLifecycle()
     val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
     val videoQuality by viewModel.videoQuality.collectAsStateWithLifecycle()
+    val availableQualities by viewModel.availableQualities.collectAsStateWithLifecycle()
     val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
     val subtitleTracks by viewModel.subtitleTracks.collectAsStateWithLifecycle()
 
@@ -154,6 +157,32 @@ fun HomeScreen(
     LaunchedEffect(isTvMode) {
         if (isTvMode && currentChannel == null && channels.isNotEmpty()) {
             viewModel.playChannel(channels.first())
+        }
+    }
+
+    // Leave fullscreen automatically when playback is closed
+    LaunchedEffect(currentChannel) {
+        if (currentChannel == null) isMobileFullscreen = false
+    }
+
+    // Fullscreen: hide system bars and let the phone rotate freely (portrait <-> landscape)
+    // using the sensor, even if the system auto-rotate toggle is off.
+    val hostActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()
+    DisposableEffect(isMobileFullscreen, isTvMode, hostActivity) {
+        val activity = hostActivity
+        if (activity == null || isTvMode || !isMobileFullscreen) {
+            onDispose { }
+        } else {
+            val window = activity.window
+            val controller = androidx.core.view.WindowCompat.getInsetsController(window, window.decorView)
+            controller.systemBarsBehavior =
+                androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            controller.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+            activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
+            onDispose {
+                controller.show(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+                activity.requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
         }
     }
 
@@ -250,6 +279,7 @@ fun HomeScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .background(DarkSurface)
+                            .statusBarsPadding() // keep the app bar clear of the status bar icons
                             .padding(horizontal = 14.dp, vertical = 10.dp)
                     ) {
                         Row(
@@ -610,6 +640,7 @@ fun HomeScreen(
         QualityPickerDialog(
             currentQuality = videoQuality,
             streamInfo = streamInfo,
+            availableQualities = availableQualities,
             onSelectQuality = { viewModel.setVideoQuality(it) },
             onDismiss = { showQualityDialog = false }
         )
@@ -658,4 +689,13 @@ fun HomeScreen(
             onDismiss = { showSubtitleDialog = false }
         )
     }
+}
+
+private fun android.content.Context.findActivity(): android.app.Activity? {
+    var ctx: android.content.Context? = this
+    while (ctx is android.content.ContextWrapper) {
+        if (ctx is android.app.Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
 }
