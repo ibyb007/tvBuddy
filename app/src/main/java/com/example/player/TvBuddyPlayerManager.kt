@@ -15,12 +15,14 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.dash.DashMediaSource
+import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
 import androidx.media3.exoplayer.hls.HlsMediaSource
 import androidx.media3.exoplayer.rtsp.RtspMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
+import com.example.player.drm.ClearKeyHelper
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.model.DrmConfig
 import com.example.data.model.DrmType
@@ -215,20 +217,9 @@ class TvBuddyPlayerManager(
 
         val drmType = DrmType.fromString(channel.drmType)
         val isDrm = (drmType != DrmType.NONE)
+        var drmSessionManagerProvider: DrmSessionManagerProvider? = null
 
         if (isDrm && drmType.uuid != null) {
-            val isCryptoSupported = try {
-                FrameworkMediaDrm.isCryptoSchemeSupported(drmType.uuid!!)
-            } catch (_: Throwable) {
-                false
-            }
-
-            if (!isCryptoSupported) {
-                _isBuffering.value = false
-                _errorMessage.value = "${drmType.title} hardware crypto is not provisioned in this environment. Hardware DRM playback is supported on certified physical Android TV & mobile devices."
-                return
-            }
-
             val drmHeaders = mutableMapOf<String, String>()
             drmHeaders.putAll(headers)
 
@@ -243,29 +234,57 @@ class TvBuddyPlayerManager(
                 } catch (_: Exception) {}
             }
 
-            var licenseUrl = channel.drmLicenseUrl
-            if (drmType == DrmType.CLEARKEY && licenseUrl.isNullOrBlank() && !channel.drmKeyIdKey.isNullOrBlank()) {
-                val parts = channel.drmKeyIdKey.split(":")
-                if (parts.size == 2) {
-                    licenseUrl = "https://cwip-shaka-proxy.appspot.com/clearkey?key_id=${parts[0]}&key=${parts[1]}"
+            if (drmType == DrmType.CLEARKEY && !channel.drmKeyIdKey.isNullOrBlank()) {
+                // High-performance offline/local ClearKey with user-provided KID:KEY pairs
+                val clearKeySessionManager = ClearKeyHelper.createClearKeyDrmSessionManager(channel.drmKeyIdKey)
+                if (clearKeySessionManager != null) {
+                    drmSessionManagerProvider = DrmSessionManagerProvider { clearKeySessionManager }
+                    mediaItemBuilder.setDrmConfiguration(
+                        MediaItem.DrmConfiguration.Builder(C.CLEARKEY_UUID)
+                            .setMultiSession(true)
+                            .build()
+                    )
+                } else {
+                    val isCryptoSupported = try {
+                        FrameworkMediaDrm.isCryptoSchemeSupported(C.CLEARKEY_UUID)
+                    } catch (_: Throwable) {
+                        false
+                    }
+                    if (!isCryptoSupported) {
+                        _isBuffering.value = false
+                        _errorMessage.value = "ClearKey decryption is not provisioned in this environment's media framework. Standard on certified physical Android TV and mobile devices."
+                        return
+                    }
                 }
+            } else {
+                val isCryptoSupported = try {
+                    FrameworkMediaDrm.isCryptoSchemeSupported(drmType.uuid!!)
+                } catch (_: Throwable) {
+                    false
+                }
+
+                if (!isCryptoSupported) {
+                    _isBuffering.value = false
+                    _errorMessage.value = "${drmType.title} hardware crypto is not provisioned in this environment. Hardware DRM playback is supported on certified physical Android TV & mobile devices."
+                    return
+                }
+
+                val drmBuilder = MediaItem.DrmConfiguration.Builder(drmType.uuid!!)
+                    .setMultiSession(true)
+                    .setLicenseRequestHeaders(drmHeaders)
+
+                if (!channel.drmLicenseUrl.isNullOrBlank()) {
+                    drmBuilder.setLicenseUri(Uri.parse(channel.drmLicenseUrl))
+                }
+
+                mediaItemBuilder.setDrmConfiguration(drmBuilder.build())
             }
-
-            val drmBuilder = MediaItem.DrmConfiguration.Builder(drmType.uuid!!)
-                .setMultiSession(true)
-                .setLicenseRequestHeaders(drmHeaders)
-
-            if (!licenseUrl.isNullOrBlank()) {
-                drmBuilder.setLicenseUri(Uri.parse(licenseUrl))
-            }
-
-            mediaItemBuilder.setDrmConfiguration(drmBuilder.build())
         }
 
         val mediaItem = mediaItemBuilder.build()
 
         // 4. Create appropriate MediaSource
-        val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory)
+        val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory, drmSessionManagerProvider)
 
         _streamInfo.value = StreamInfo(
             isDrmProtected = isDrm,
@@ -280,26 +299,36 @@ class TvBuddyPlayerManager(
     private fun createMediaSource(
         uri: Uri,
         mediaItem: MediaItem,
-        dataSourceFactory: DefaultHttpDataSource.Factory
+        dataSourceFactory: DefaultHttpDataSource.Factory,
+        drmSessionManagerProvider: DrmSessionManagerProvider? = null
     ): MediaSource {
         val path = uri.toString().lowercase()
         return when {
             path.contains(".m3u8") || path.contains("type=m3u") -> {
-                HlsMediaSource.Factory(dataSourceFactory)
+                val factory = HlsMediaSource.Factory(dataSourceFactory)
                     .setAllowChunklessPreparation(true)
-                    .createMediaSource(mediaItem)
+                if (drmSessionManagerProvider != null) {
+                    factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
+                }
+                factory.createMediaSource(mediaItem)
             }
             path.contains(".mpd") -> {
-                DashMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(mediaItem)
+                val factory = DashMediaSource.Factory(dataSourceFactory)
+                if (drmSessionManagerProvider != null) {
+                    factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
+                }
+                factory.createMediaSource(mediaItem)
             }
             path.startsWith("rtsp://") -> {
                 RtspMediaSource.Factory()
                     .createMediaSource(mediaItem)
             }
             else -> {
-                ProgressiveMediaSource.Factory(dataSourceFactory)
-                    .createMediaSource(mediaItem)
+                val factory = ProgressiveMediaSource.Factory(dataSourceFactory)
+                if (drmSessionManagerProvider != null) {
+                    factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
+                }
+                factory.createMediaSource(mediaItem)
             }
         }
     }

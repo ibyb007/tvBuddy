@@ -275,6 +275,17 @@ fun AddPlaylistDialog(
                             ) {
                                 Text("Paste Text", fontWeight = if (m3uIsRaw) FontWeight.Bold else FontWeight.Normal)
                             }
+                            Spacer(modifier = Modifier.weight(1f))
+                            TextButton(
+                                onClick = {
+                                    m3uName = "ibyb007 Merged Playlist"
+                                    m3uSource = "https://gist.githubusercontent.com/ibyb007/ceac7851bdb5932b9bafb42db208df86/raw/merged.m3u"
+                                    m3uIsRaw = false
+                                },
+                                colors = ButtonDefaults.textButtonColors(contentColor = AccentCyan)
+                            ) {
+                                Text("★ Preset Gist", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                            }
                         }
 
                         OutlinedTextField(

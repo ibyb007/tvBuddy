@@ -7,6 +7,15 @@ import java.io.StringReader
 
 object M3uParser {
 
+    fun normalizeM3uContent(rawContent: String): String {
+        var text = rawContent.replace("\r\n", "\n").replace("\r", "\n")
+        // Split tags if they appear joined without preceding newline
+        text = text.replace(Regex("(?<!\n)(#(?:EXTINF|KODIPROP|EXTVLCOPT|EXTGRP|EXT-X-|EXTM3U)):"), "\n$1:")
+        // Split URLs if attached directly after a tag value or channel name without newline
+        text = text.replace(Regex("([^\\s\\n\"=,])(https?://)"), "$1\n$2")
+        return text
+    }
+
     fun parse(
         content: String,
         playlistId: Long,
@@ -14,7 +23,8 @@ object M3uParser {
         defaultHeaders: Map<String, String> = emptyMap()
     ): List<ChannelEntity> {
         val channels = mutableListOf<ChannelEntity>()
-        val reader = BufferedReader(StringReader(content))
+        val normalized = normalizeM3uContent(content)
+        val reader = BufferedReader(StringReader(normalized))
         var line: String?
 
         var currentName = ""
@@ -73,7 +83,7 @@ object M3uParser {
                             currentDrmType = DrmType.fromString(value)
                         }
                         "inputstream.adaptive.license_key" -> {
-                            if (value.contains(":") && !value.startsWith("http")) {
+                            if (value.startsWith("{") || (value.contains(":") && !value.startsWith("http"))) {
                                 currentDrmKeyIdKey = value
                                 if (currentDrmType == DrmType.NONE) currentDrmType = DrmType.CLEARKEY
                             } else {

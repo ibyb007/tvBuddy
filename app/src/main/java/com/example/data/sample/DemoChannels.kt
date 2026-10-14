@@ -14,7 +14,7 @@ object DemoChannels {
         type = PlaylistType.M3U,
         sourceUrl = "local://curated_demo.m3u",
         spoofPreset = "TIVIMATE",
-        channelCount = 8,
+        channelCount = 9,
         isActive = true
     )
 
@@ -106,7 +106,22 @@ object DemoChannels {
                 httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)"
             ),
 
-            // Channel 8: Widevine DRM Test Stream (Tagged for testing on physical devices)
+            // Channel 8: MN+ HD (ClearKey DRM DASH)
+            ChannelEntity(
+                playlistId = playlistId,
+                streamId = "MN+.HD.in",
+                name = "MN+ HD",
+                streamUrl = "https://times-ott-live.akamaized.net/mnplus_wv_drm/index.mpd",
+                logoUrl = "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/india/mn-plus-hd-in.png",
+                groupTitle = "Movies",
+                channelNumber = 8,
+                drmType = DrmType.CLEARKEY.name,
+                drmKeyIdKey = "40f019b86241d23ef075633fd7f1e927:058dec845bd340178a388edd104a015e",
+                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)",
+                isFavorite = true
+            ),
+
+            // Channel 9: Widevine DRM Test Stream (Tagged for testing on physical devices)
             ChannelEntity(
                 playlistId = playlistId,
                 streamId = "drm_widevine_demo",
@@ -114,7 +129,7 @@ object DemoChannels {
                 streamUrl = "https://storage.googleapis.com/shaka-demo-assets/angel-one-widevine/dash.mpd",
                 logoUrl = "https://images.unsplash.com/photo-1550745165-9bc0b252726f?w=200",
                 groupTitle = "DRM Protected Streams",
-                channelNumber = 8,
+                channelNumber = 9,
                 drmType = DrmType.WIDEVINE.name,
                 drmLicenseUrl = "https://cwip-shaka-proxy.appspot.com/no_auth",
                 httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)"
@@ -220,7 +235,17 @@ object DemoChannels {
                 endTimeMs = now + (30 * 60_000L)
             ),
 
-            // Channel 8: Widevine DRM
+            // Channel 8: MN+ HD
+            ProgramEntity(
+                epgChannelId = "MN+.HD.in",
+                title = "Hollywood Blockbuster Prime",
+                description = "High-definition premiere of international cinema and critically acclaimed award-winning feature films in pristine surround audio.",
+                category = "Movies",
+                startTimeMs = now - (30 * 60_000L),
+                endTimeMs = now + (90 * 60_000L)
+            ),
+
+            // Channel 9: Widevine DRM
             ProgramEntity(
                 epgChannelId = "drm_widevine_demo",
                 title = "Widevine Modular Test Broadcast",
