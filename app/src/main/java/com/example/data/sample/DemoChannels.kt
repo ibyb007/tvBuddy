@@ -29,7 +29,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1534447677768-be436bb09401?w=200",
                 groupTitle = "Entertainment",
                 channelNumber = 1,
-                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)",
                 isFavorite = true
             ),
 
@@ -42,7 +41,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?w=200",
                 groupTitle = "Movies & Cinema",
                 channelNumber = 2,
-                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)",
                 isFavorite = true
             ),
 
@@ -55,7 +53,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1578328819058-b69f3a3b0f6b?w=200",
                 groupTitle = "Movies & Cinema",
                 channelNumber = 3,
-                httpUserAgent = "OTT Navigator/1.6.8.5 (Android TV; Android 11; OTT-Nav)"
             ),
 
             // Channel 4: NASA TV Official Live Stream
@@ -67,7 +64,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1451187580459-43490279c0fa?w=200",
                 groupTitle = "Documentary & Science",
                 channelNumber = 4,
-                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)"
             ),
 
             // Channel 5: Apple Advanced BipBop (Multi-bitrate HLS)
@@ -79,7 +75,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1579783902614-a3fb3927b675?w=200",
                 groupTitle = "Entertainment",
                 channelNumber = 5,
-                httpUserAgent = "AppleCoreMedia/1.0.0.19E241 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_us)"
             ),
 
             // Channel 6: Deutsche Welle News English
@@ -91,7 +86,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1504711434969-e33886168f5c?w=200",
                 groupTitle = "News & Info",
                 channelNumber = 6,
-                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)"
             ),
 
             // Channel 7: Angel One Clear DASH (Google Shaka Multi-track)
@@ -103,7 +97,6 @@ object DemoChannels {
                 logoUrl = "https://images.unsplash.com/photo-1518173946687-a4c8892bbd9f?w=200",
                 groupTitle = "Sci-Fi & Series",
                 channelNumber = 7,
-                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)"
             ),
 
             // Channel 8: Widevine DRM Test Stream (Tagged for testing on physical devices)
@@ -117,7 +110,6 @@ object DemoChannels {
                 channelNumber = 8,
                 drmType = DrmType.WIDEVINE.name,
                 drmLicenseUrl = "https://cwip-shaka-proxy.appspot.com/no_auth",
-                httpUserAgent = "TiviMate/5.0.4 (Linux; Android 12)"
             )
         )
     }
