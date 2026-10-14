@@ -12,19 +12,37 @@ object M3uParser {
         // Split tags if they appear joined without preceding newline
         text = text.replace(Regex("(?<!\n)(#(?:EXTINF|KODIPROP|EXTVLCOPT|EXTGRP|EXT-X-|EXTM3U)):"), "\n$1:")
         // Split URLs if attached directly after a tag value or channel name without newline
-        text = text.replace(Regex("([^\\s\\n\"=,])(https?://)"), "$1\n$2")
+        text = text.replace(Regex("([^\\s\\n\"=,/:|])(https?://)"), "$1\n$2")
         return text
     }
 
+    /**
+     * Parses the playlist exactly as the original (known-good) parser did. The aggressive
+     * normalization pass is only used as a fallback when the plain parse clearly missed
+     * channels (e.g. tags/URLs glued together on one line), so well-formed provider
+     * playlists are never rewritten.
+     */
     fun parse(
         content: String,
         playlistId: Long,
         defaultUserAgent: String? = null,
         defaultHeaders: Map<String, String> = emptyMap()
     ): List<ChannelEntity> {
+        val plain = parseLines(content, playlistId, defaultUserAgent, defaultHeaders)
+        val declared = Regex("#EXTINF:", RegexOption.IGNORE_CASE).findAll(content).count()
+        if (plain.isNotEmpty() && plain.size >= declared) return plain
+        val repaired = parseLines(normalizeM3uContent(content), playlistId, defaultUserAgent, defaultHeaders)
+        return if (repaired.size > plain.size) repaired else plain
+    }
+
+    private fun parseLines(
+        content: String,
+        playlistId: Long,
+        defaultUserAgent: String?,
+        defaultHeaders: Map<String, String>
+    ): List<ChannelEntity> {
         val channels = mutableListOf<ChannelEntity>()
-        val normalized = normalizeM3uContent(content)
-        val reader = BufferedReader(StringReader(normalized))
+        val reader = BufferedReader(StringReader(content))
         var line: String?
 
         var currentName = ""
