@@ -13,7 +13,7 @@ android {
   compileSdk { version = release(36) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.tvbuddy.kxyv"
+    applicationId = "com.tvbuddy"
     minSdk = 24
     targetSdk = 36
     // CI passes these in (see .github/workflows/build-apk.yml); local builds use the defaults.
