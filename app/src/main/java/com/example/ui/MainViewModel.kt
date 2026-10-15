@@ -8,6 +8,7 @@ import com.example.data.local.entity.ChannelGroupEntity
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
+import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.repository.TvBuddyRepository
@@ -42,6 +43,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val allPlaylistEpgCrossRefs = repository.allPlaylistEpgCrossRefs.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val allChannelGroups = repository.allChannelGroups.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
+    /** Recently played channels, most recent first (unique). */
+    val recentChannels: StateFlow<List<ChannelEntity>> = combine(repository.playbackHistory, rawChannels) { history, channels ->
+        val byId = channels.associateBy { it.id }
+        val byUrl = channels.associateBy { it.streamUrl }
+        history.mapNotNull { byId[it.channelId] ?: byUrl[it.streamUrl] }
+            .distinctBy { it.id }
+            .take(20)
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
     private val epgPrefs = application.getSharedPreferences("tvbuddy_epg_settings", android.content.Context.MODE_PRIVATE)
 
     private val _epgSettings = MutableStateFlow(
@@ -64,23 +74,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val pendingResumeUrl: String? = prefs.getString(KEY_RESUME_URL, null)
     private var resumeHandled = false
 
-    init {
-        prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
-        viewModelScope.launch {
-            repository.initializeDefaultsIfNeeded()
-        }
-    }
-
-    fun resumeLastPlayback(channels: List<ChannelEntity>) {
-        if (resumeHandled || channels.isEmpty() || currentChannel.value != null) return
-        resumeHandled = true
-        if (pendingResumeId < 0L && pendingResumeUrl.isNullOrBlank()) return
-        val target = channels.firstOrNull { it.id == pendingResumeId }
-            ?: channels.firstOrNull { !pendingResumeUrl.isNullOrBlank() && it.streamUrl == pendingResumeUrl }
-            ?: return
-        playChannel(target)
-    }
-
     private val _selectedCategory = MutableStateFlow("All")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
@@ -99,6 +92,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    // Player state forwards
     val currentChannel: StateFlow<ChannelEntity?> = playerManager.currentChannel
     val isPlaying: StateFlow<Boolean> = playerManager.isPlaying
     val isBuffering: StateFlow<Boolean> = playerManager.isBuffering
@@ -110,20 +104,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val audioTracks: StateFlow<List<TrackInfo>> = playerManager.audioTracks
     val subtitleTracks: StateFlow<List<TrackInfo>> = playerManager.subtitleTracks
     val videoTracks: StateFlow<List<com.example.player.VideoTrackOption>> = playerManager.videoTracks
-    val allCurrentPrograms: StateFlow<List<com.example.data.local.entity.ProgramEntity>> =
-        repository.allCurrentPrograms as StateFlow<List<com.example.data.local.entity.ProgramEntity>>
+    val allCurrentPrograms: StateFlow<List<ProgramEntity>> =
+        repository.allCurrentPrograms.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    // Filtered categories respecting active playlists and group visibility
+    init {
+        prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
+        viewModelScope.launch {
+            repository.initializeDefaultsIfNeeded()
+        }
+        repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
+    }
+
+    fun resumeLastPlayback(channels: List<ChannelEntity>) {
+        if (resumeHandled || channels.isEmpty() || currentChannel.value != null) return
+        resumeHandled = true
+        if (pendingResumeId < 0L && pendingResumeUrl.isNullOrBlank()) return
+        val target = channels.firstOrNull { it.id == pendingResumeId }
+            ?: channels.firstOrNull { !pendingResumeUrl.isNullOrBlank() && it.streamUrl == pendingResumeUrl }
+            ?: return
+        playChannel(target)
+    }
+
+    // Filtered categories respecting active playlists and group visibility (with fallback if groups table hasn't synced yet)
     val categories: StateFlow<List<String>> = combine(
         rawChannels,
         allPlaylists,
         allChannelGroups
     ) { channels, playlists, groups ->
-        val activePlaylistIds = playlists.filter { it.isActive }.map { it.id }.toSet()
-        val visibleGroupKeys = groups.filter { it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
+        val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
+        val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
 
         val filteredGroups = channels
-            .filter { it.playlistId in activePlaylistIds && "${it.playlistId}_${it.groupTitle}" in visibleGroupKeys }
+            .filter { ch ->
+                (activePlaylistIds == null || ch.playlistId in activePlaylistIds) &&
+                    "${ch.playlistId}_${ch.groupTitle}" !in hiddenGroupKeys
+            }
             .map { it.groupTitle }
             .distinct()
             .filter { it.isNotBlank() }
@@ -140,12 +155,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _selectedCategory,
         _searchQuery
     ) { channels, playlists, groups, category, query ->
-        val activePlaylistIds = playlists.filter { it.isActive }.map { it.id }.toSet()
-        val visibleGroupKeys = groups.filter { it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
+        val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
+        val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
 
         channels.filter { channel ->
-            if (channel.playlistId !in activePlaylistIds) return@filter false
-            if ("${channel.playlistId}_${channel.groupTitle}" !in visibleGroupKeys) return@filter false
+            if (activePlaylistIds != null && channel.playlistId !in activePlaylistIds) return@filter false
+            if ("${channel.playlistId}_${channel.groupTitle}" in hiddenGroupKeys) return@filter false
 
             val matchesCategory = when (category) {
                 "All" -> true
@@ -285,6 +300,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .putBoolean("update_on_start", newState.updateOnAppStart)
             .putBoolean("update_on_pl_change", newState.updateOnPlaylistsChange)
             .apply()
+    }
+
+    fun importXmltv(source: String, isRaw: Boolean) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val settings = _epgSettings.value
+            val result = repository.importXmltv(
+                urlOrContent = source,
+                isRawText = isRaw,
+                userAgent = _globalSpoof.value.getUserAgent(),
+                pastDaysToKeep = settings.pastDaysToKeep,
+                storeDescriptions = settings.storeProgramDescriptions
+            )
+            _isLoading.value = false
+            _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
+            result.fold(
+                onSuccess = { count ->
+                    _uiMessage.value = UiMessage(text = "Imported $count EPG programs successfully!")
+                },
+                onFailure = { err ->
+                    _uiMessage.value = UiMessage(text = "EPG Import error: ${err.localizedMessage}", isError = true)
+                }
+            )
+        }
     }
 
     fun triggerUpdateEpg() {
