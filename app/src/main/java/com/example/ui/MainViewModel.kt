@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -35,6 +36,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val allPlaylists = repository.allPlaylists.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     private val rawChannels = repository.allChannels.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val playbackHistory = repository.playbackHistory.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    /** Recently played channels, most recent first (unique). */
+    val recentChannels: StateFlow<List<ChannelEntity>> = combine(repository.playbackHistory, rawChannels) { history, channels ->
+        val byId = channels.associateBy { it.id }
+        val byUrl = channels.associateBy { it.streamUrl }
+        history.mapNotNull { byId[it.channelId] ?: byUrl[it.streamUrl] }
+            .distinctBy { it.id }
+            .take(20)
+    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private var resolvingStartup = false
+
+    /** Starts the last played channel (falls back to the first channel). */
+    fun playLastOrFirst(channels: List<ChannelEntity>) {
+        if (resolvingStartup || channels.isEmpty() || currentChannel.value != null) return
+        resolvingStartup = true
+        viewModelScope.launch {
+            try {
+                val history = repository.playbackHistory.first()
+                val byId = channels.associateBy { it.id }
+                val byUrl = channels.associateBy { it.streamUrl }
+                val last = history.firstNotNullOfOrNull { byId[it.channelId] ?: byUrl[it.streamUrl] }
+                if (currentChannel.value == null) playChannel(last ?: channels.first())
+            } finally {
+                resolvingStartup = false
+            }
+        }
+    }
 
     private val _selectedCategory = MutableStateFlow("All")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
