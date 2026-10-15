@@ -15,6 +15,9 @@ import com.example.data.network.XtreamClient
 import com.example.data.parser.JsonPlaylistParser
 import com.example.data.parser.M3uParser
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
@@ -37,6 +40,37 @@ class TvBuddyRepository(
     private val channelDao = database.channelDao()
     private val historyDao = database.historyDao()
     private val programDao = database.programDao()
+
+    // EPG sources declared by playlists (#EXTM3U url-tvg="...") are fetched in the background
+    private val epgScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val epgPrefs by lazy { context.getSharedPreferences("tvbuddy_epg", Context.MODE_PRIVATE) }
+
+    private fun startPlaylistEpgImport(playlistId: Long, urls: List<String>, userAgent: String) {
+        if (urls.isEmpty()) return
+        epgPrefs.edit().putStringSet("urls_$playlistId", urls.toSet()).apply()
+        epgScope.launch { fetchEpgUrls(playlistId, urls, userAgent) }
+    }
+
+    private suspend fun fetchEpgUrls(playlistId: Long, urls: List<String>, userAgent: String) {
+        var anyOk = false
+        for (u in urls) {
+            if (importXmltv(u, false, userAgent).isSuccess) anyOk = true
+        }
+        if (anyOk) epgPrefs.edit().putLong("ts_$playlistId", System.currentTimeMillis()).apply()
+    }
+
+    /** Re-downloads playlist EPG sources that have not been refreshed for 12 hours. */
+    fun refreshStaleEpgs(userAgent: String) {
+        epgScope.launch {
+            val now = System.currentTimeMillis()
+            for (p in playlistDao.getAllPlaylists().first()) {
+                val urls = epgPrefs.getStringSet("urls_${p.id}", null)?.toList() ?: continue
+                if (now - epgPrefs.getLong("ts_${p.id}", 0L) > 12L * 60 * 60 * 1000) {
+                    fetchEpgUrls(p.id, urls, userAgent)
+                }
+            }
+        }
+    }
 
     val allPlaylists: Flow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
     val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
@@ -71,8 +105,14 @@ class TvBuddyRepository(
                 val req = Request.Builder().url(urlOrContent).header("User-Agent", userAgent).build()
                 okHttpClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
-                    val bodyStream = resp.body?.byteStream() ?: throw Exception("Empty response body")
-                    if (urlOrContent.endsWith(".gz", ignoreCase = true)) {
+                    val rawStream = resp.body?.byteStream() ?: throw Exception("Empty response body")
+                    val bodyStream = java.io.BufferedInputStream(rawStream)
+                    bodyStream.mark(2)
+                    val b0 = bodyStream.read()
+                    val b1 = bodyStream.read()
+                    bodyStream.reset()
+                    val isGzip = b0 == 0x1f && b1 == 0x8b
+                    if (isGzip) {
                         java.util.zip.GZIPInputStream(bodyStream).use { gzStream ->
                             com.example.data.parser.XmltvParser.parse(gzStream)
                         }
@@ -83,6 +123,10 @@ class TvBuddyRepository(
             }
 
             if (programs.isNotEmpty()) {
+                // Replace (not duplicate) the schedule of every channel contained in this import
+                programs.map { it.epgChannelId }.distinct().chunked(500).forEach {
+                    programDao.deleteProgramsForChannels(it)
+                }
                 programDao.insertPrograms(programs)
             }
             Result.success(programs.size)
@@ -124,6 +168,7 @@ class TvBuddyRepository(
     suspend fun deletePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
         channelDao.deleteChannelsByPlaylist(playlist.id)
         playlistDao.deletePlaylist(playlist)
+        epgPrefs.edit().remove("urls_${playlist.id}").remove("ts_${playlist.id}").apply()
     }
 
     suspend fun addM3uPlaylist(
@@ -209,6 +254,9 @@ class TvBuddyRepository(
                 channelDao.insertChannels(channels)
                 playlistDao.updateChannelCount(playlistId, channels.size)
             }
+
+            // url-tvg="..." in the #EXTM3U header = this playlist's EPG source
+            startPlaylistEpgImport(playlistId, M3uParser.extractEpgUrls(content), spoof.getUserAgent())
 
             Result.success(channels.size)
         } catch (e: Exception) {
