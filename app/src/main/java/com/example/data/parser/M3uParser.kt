@@ -7,6 +7,31 @@ import java.io.StringReader
 
 object M3uParser {
 
+    private val epgAttrRegex = Regex(
+        "(?:url-tvg|x-tvg-url|tvg-url)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s,]+))",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * EPG (XMLTV) sources declared in the playlist header, e.g.
+     * `#EXTM3U url-tvg="https://host/epg.xml.gz"` (several URLs may be comma separated).
+     */
+    fun extractEpgUrls(content: String): List<String> {
+        val header = content.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("#EXTM3U", ignoreCase = true) }
+            ?: return emptyList()
+        return epgAttrRegex.findAll(header)
+            .flatMap { m ->
+                val value = m.groups[1]?.value ?: m.groups[2]?.value ?: m.groups[3]?.value ?: ""
+                value.split(',').asSequence()
+            }
+            .map { it.trim() }
+            .filter { it.startsWith("http://", true) || it.startsWith("https://", true) }
+            .distinct()
+            .toList()
+    }
+
     fun normalizeM3uContent(rawContent: String): String {
         var text = rawContent.replace("\r\n", "\n").replace("\r", "\n")
         // Split tags if they appear joined without preceding newline
