@@ -14,6 +14,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
 import androidx.media3.exoplayer.drm.FrameworkMediaDrm
@@ -38,6 +39,7 @@ data class StreamInfo(
     val width: Int = 0,
     val height: Int = 0,
     val bitrate: Int = 0,
+    val frameRate: Float = 0f,
     val mimeType: String = "",
     val isDrmProtected: Boolean = false,
     val drmType: String = "None"
@@ -172,7 +174,62 @@ class TvBuddyPlayerManager(
                         )
                     }
                 })
+                addAnalyticsListener(object : AnalyticsListener {
+                    override fun onVideoInputFormatChanged(
+                        eventTime: AnalyticsListener.EventTime,
+                        format: Format,
+                        decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
+                    ) {
+                        applyVideoFormat(format)
+                    }
+
+                    override fun onBandwidthEstimate(
+                        eventTime: AnalyticsListener.EventTime,
+                        totalLoadTimeMs: Int,
+                        totalBytesLoaded: Long,
+                        bitrateEstimate: Long
+                    ) {
+                        // Fallback for streams (e.g. raw MPEG-TS) that don't declare a bitrate
+                        if (formatBitrate > 0 || bitrateEstimate <= 0) return
+                        val newValue = bitrateEstimate.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+                        val old = measuredBitrate
+                        if (old == 0 || kotlin.math.abs(newValue - old) > old / 10) {
+                            measuredBitrate = newValue
+                            publishBitrate()
+                        }
+                    }
+                })
             }
+    }
+
+    // Bitrate declared by the stream's video format (preferred) and the measured fallback
+    private var formatBitrate = 0
+    private var measuredBitrate = 0
+
+    private fun publishBitrate() {
+        val best = if (formatBitrate > 0) formatBitrate else measuredBitrate
+        val current = _streamInfo.value
+        if (current.bitrate != best) _streamInfo.value = current.copy(bitrate = best)
+    }
+
+    /** Picks up frame rate and bitrate of the video track that is actually being decoded. */
+    private fun applyVideoFormat(format: Format) {
+        val fps = if (format.frameRate > 0f) format.frameRate else 0f
+        val declared = when {
+            format.averageBitrate > 0 -> format.averageBitrate
+            format.bitrate > 0 -> format.bitrate
+            format.peakBitrate > 0 -> format.peakBitrate
+            else -> 0
+        }
+        formatBitrate = declared
+        val current = _streamInfo.value
+        val best = if (declared > 0) declared else measuredBitrate
+        if (current.bitrate != best || (fps > 0f && current.frameRate != fps)) {
+            _streamInfo.value = current.copy(
+                bitrate = best,
+                frameRate = if (fps > 0f) fps else current.frameRate
+            )
+        }
     }
 
     fun playChannel(
@@ -286,6 +343,8 @@ class TvBuddyPlayerManager(
         // 4. Create appropriate MediaSource
         val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory, drmSessionManagerProvider)
 
+        formatBitrate = 0
+        measuredBitrate = 0
         _streamInfo.value = StreamInfo(
             isDrmProtected = isDrm,
             drmType = if (isDrm) drmType.title else "None"
@@ -337,6 +396,7 @@ class TvBuddyPlayerManager(
         val audio = mutableListOf<TrackInfo>()
         val subtitles = mutableListOf<TrackInfo>()
         val videoHeights = mutableSetOf<Int>()
+        var selectedVideoFormat: Format? = null
 
         for (groupIndex in 0 until tracks.groups.size) {
             val group = tracks.groups[groupIndex]
@@ -345,8 +405,9 @@ class TvBuddyPlayerManager(
             if (trackType == C.TRACK_TYPE_VIDEO) {
                 for (trackIndex in 0 until group.length) {
                     if (!group.isTrackSupported(trackIndex)) continue
-                    val h = group.getTrackFormat(trackIndex).height
-                    if (h > 0) videoHeights.add(h)
+                    val vf = group.getTrackFormat(trackIndex)
+                    if (vf.height > 0) videoHeights.add(vf.height)
+                    if (group.isTrackSelected(trackIndex)) selectedVideoFormat = vf
                 }
                 continue
             }
@@ -379,6 +440,7 @@ class TvBuddyPlayerManager(
             }
         }
 
+        selectedVideoFormat?.let { applyVideoFormat(it) }
         _audioTracks.value = audio
         _subtitleTracks.value = subtitles
         _availableQualities.value = computeAvailableQualities(videoHeights)
