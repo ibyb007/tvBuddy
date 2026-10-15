@@ -2,6 +2,9 @@ package com.example.player
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.Format
@@ -43,6 +46,16 @@ data class StreamInfo(
     val mimeType: String = "",
     val isDrmProtected: Boolean = false,
     val drmType: String = "None"
+)
+
+/** One selectable video rendition (resolution + bitrate when the stream declares it). */
+data class VideoTrackOption(
+    val groupIndex: Int,
+    val trackIndex: Int,
+    val width: Int,
+    val height: Int,
+    val bitrate: Int,        // 0 when unknown
+    val isSelected: Boolean  // true only when the user forced this rendition
 )
 
 data class TrackInfo(
@@ -108,6 +121,10 @@ class TvBuddyPlayerManager(
 
     private val _subtitleTracks = MutableStateFlow<List<TrackInfo>>(emptyList())
     val subtitleTracks: StateFlow<List<TrackInfo>> = _subtitleTracks.asStateFlow()
+
+    private val _videoTracks = MutableStateFlow<List<VideoTrackOption>>(emptyList())
+    /** Every video rendition of the current stream, lowest first. */
+    val videoTracks: StateFlow<List<VideoTrackOption>> = _videoTracks.asStateFlow()
 
     fun getPlayer(): ExoPlayer {
         return exoPlayer ?: createPlayer().also { exoPlayer = it }
@@ -182,54 +199,64 @@ class TvBuddyPlayerManager(
                     ) {
                         applyVideoFormat(format)
                     }
-
-                    override fun onBandwidthEstimate(
-                        eventTime: AnalyticsListener.EventTime,
-                        totalLoadTimeMs: Int,
-                        totalBytesLoaded: Long,
-                        bitrateEstimate: Long
-                    ) {
-                        // Fallback for streams (e.g. raw MPEG-TS) that don't declare a bitrate
-                        if (formatBitrate > 0 || bitrateEstimate <= 0) return
-                        val newValue = bitrateEstimate.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-                        val old = measuredBitrate
-                        if (old == 0 || kotlin.math.abs(newValue - old) > old / 10) {
-                            measuredBitrate = newValue
-                            publishBitrate()
-                        }
-                    }
                 })
+                mainHandler.removeCallbacks(fpsRunnable)
+                mainHandler.postDelayed(fpsRunnable, FPS_SAMPLE_MS)
             }
     }
 
-    // Bitrate declared by the stream's video format (preferred) and the measured fallback
-    private var formatBitrate = 0
-    private var measuredBitrate = 0
+    // ---- Frame rate / bitrate ----
+    // Like TiviMate: bitrate only when the stream's video format declares it (no guessing from
+    // network speed); frame rate from the format, else measured from the frames actually rendered.
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var declaredFps = false
+    private var fpsLastCount = -1
+    private var fpsLastTime = 0L
+    private val fpsRunnable = object : Runnable {
+        override fun run() {
+            try { sampleFps() } catch (_: Throwable) {}
+            mainHandler.postDelayed(this, FPS_SAMPLE_MS)
+        }
+    }
 
-    private fun publishBitrate() {
-        val best = if (formatBitrate > 0) formatBitrate else measuredBitrate
-        val current = _streamInfo.value
-        if (current.bitrate != best) _streamInfo.value = current.copy(bitrate = best)
+    private fun sampleFps() {
+        val p = exoPlayer ?: return
+        if (declaredFps || !p.isPlaying) { fpsLastCount = -1; return }
+        val counters = p.videoDecoderCounters ?: run { fpsLastCount = -1; return }
+        counters.ensureUpdated()
+        val now = SystemClock.elapsedRealtime()
+        val count = counters.renderedOutputBufferCount
+        if (fpsLastCount in 0..count && now - fpsLastTime >= 1500) {
+            val fps = (count - fpsLastCount) * 1000f / (now - fpsLastTime)
+            if (fps in 10f..130f) {
+                val snapped = STANDARD_FPS.minByOrNull { kotlin.math.abs(it - fps) }
+                    ?.takeIf { kotlin.math.abs(it - fps) / it < 0.04f }
+                    ?: (Math.round(fps * 10) / 10f)
+                val current = _streamInfo.value
+                if (current.frameRate != snapped) _streamInfo.value = current.copy(frameRate = snapped)
+            }
+        }
+        fpsLastCount = count
+        fpsLastTime = now
     }
 
     /** Picks up frame rate and bitrate of the video track that is actually being decoded. */
     private fun applyVideoFormat(format: Format) {
         val fps = if (format.frameRate > 0f) format.frameRate else 0f
-        val declared = when {
-            format.averageBitrate > 0 -> format.averageBitrate
-            format.bitrate > 0 -> format.bitrate
-            format.peakBitrate > 0 -> format.peakBitrate
-            else -> 0
-        }
-        formatBitrate = declared
+        val bitrate = if (format.bitrate > 0) format.bitrate else 0
+        if (fps > 0f) declaredFps = true
         val current = _streamInfo.value
-        val best = if (declared > 0) declared else measuredBitrate
-        if (current.bitrate != best || (fps > 0f && current.frameRate != fps)) {
+        if (current.bitrate != bitrate || (fps > 0f && current.frameRate != fps)) {
             _streamInfo.value = current.copy(
-                bitrate = best,
+                bitrate = bitrate,
                 frameRate = if (fps > 0f) fps else current.frameRate
             )
         }
+    }
+
+    private companion object {
+        const val FPS_SAMPLE_MS = 2000L
+        val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 50f, 59.94f, 60f)
     }
 
     fun playChannel(
@@ -343,8 +370,13 @@ class TvBuddyPlayerManager(
         // 4. Create appropriate MediaSource
         val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory, drmSessionManagerProvider)
 
-        formatBitrate = 0
-        measuredBitrate = 0
+        declaredFps = false
+        fpsLastCount = -1
+        _videoTracks.value = emptyList()
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+            .build()
         _streamInfo.value = StreamInfo(
             isDrmProtected = isDrm,
             drmType = if (isDrm) drmType.title else "None"
@@ -397,6 +429,9 @@ class TvBuddyPlayerManager(
         val subtitles = mutableListOf<TrackInfo>()
         val videoHeights = mutableSetOf<Int>()
         var selectedVideoFormat: Format? = null
+        val videoOptions = mutableListOf<VideoTrackOption>()
+        val forcedVideo = exoPlayer?.trackSelectionParameters?.overrides?.values
+            ?.any { it.type == C.TRACK_TYPE_VIDEO } == true
 
         for (groupIndex in 0 until tracks.groups.size) {
             val group = tracks.groups[groupIndex]
@@ -408,6 +443,18 @@ class TvBuddyPlayerManager(
                     val vf = group.getTrackFormat(trackIndex)
                     if (vf.height > 0) videoHeights.add(vf.height)
                     if (group.isTrackSelected(trackIndex)) selectedVideoFormat = vf
+                    if (vf.width > 0 && vf.height > 0) {
+                        videoOptions.add(
+                            VideoTrackOption(
+                                groupIndex = groupIndex,
+                                trackIndex = trackIndex,
+                                width = vf.width,
+                                height = vf.height,
+                                bitrate = if (vf.bitrate > 0) vf.bitrate else 0,
+                                isSelected = forcedVideo && group.isTrackSelected(trackIndex)
+                            )
+                        )
+                    }
                 }
                 continue
             }
@@ -441,6 +488,7 @@ class TvBuddyPlayerManager(
         }
 
         selectedVideoFormat?.let { applyVideoFormat(it) }
+        _videoTracks.value = videoOptions.sortedWith(compareBy({ it.height }, { it.width }, { it.bitrate }))
         _audioTracks.value = audio
         _subtitleTracks.value = subtitles
         _availableQualities.value = computeAvailableQualities(videoHeights)
@@ -476,6 +524,22 @@ class TvBuddyPlayerManager(
                 )
                 .build()
         }
+    }
+
+    /** Forces one rendition, or returns to automatic (adaptive) selection when [option] is null. */
+    fun selectVideoTrack(option: VideoTrackOption?) {
+        val player = exoPlayer ?: return
+        val params = player.trackSelectionParameters.buildUpon()
+        if (option == null) {
+            params.clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+        } else {
+            val groups = player.currentTracks.groups
+            if (option.groupIndex >= groups.size) return
+            params.setOverrideForType(
+                TrackSelectionOverride(groups[option.groupIndex].mediaTrackGroup, listOf(option.trackIndex))
+            )
+        }
+        player.trackSelectionParameters = params.build()
     }
 
     fun disableSubtitles() {
@@ -531,6 +595,7 @@ class TvBuddyPlayerManager(
     }
 
     fun release() {
+        mainHandler.removeCallbacks(fpsRunnable)
         exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
