@@ -19,6 +19,13 @@ data class PlaylistEntity(
     val customHeadersJson: String? = null,
     val channelCount: Int = 0,
     val isActive: Boolean = true,
+    val sortOrder: Int = 0,
+    val logosPriority: String = "Prefer logos from playlist",
+    val catchUpType: String = "None",
+    val updateIntervalHours: Int = 24,
+    val updateOnStart: Boolean = true,
+    val groupsSorting: String = "By order in playlist",
+    val showNewlyAddedGroups: Boolean = true,
     val createdAt: Long = System.currentTimeMillis(),
     val lastUpdated: Long = System.currentTimeMillis()
 )
