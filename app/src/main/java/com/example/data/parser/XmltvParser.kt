@@ -8,7 +8,6 @@ import java.io.StringReader
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
-import java.util.zip.GZIPInputStream
 
 object XmltvParser {
 
@@ -30,19 +29,31 @@ object XmltvParser {
         return 0L
     }
 
-    fun parse(inputStream: InputStream): List<ProgramEntity> {
+    fun parse(
+        inputStream: InputStream,
+        storeDescriptions: Boolean = true,
+        minEndTimeMs: Long = 0L
+    ): List<ProgramEntity> {
         val parser = Xml.newPullParser()
         parser.setInput(inputStream, "UTF-8")
-        return parseXmlPull(parser)
+        return parseXmlPull(parser, storeDescriptions, minEndTimeMs)
     }
 
-    fun parseString(xmlContent: String): List<ProgramEntity> {
+    fun parseString(
+        xmlContent: String,
+        storeDescriptions: Boolean = true,
+        minEndTimeMs: Long = 0L
+    ): List<ProgramEntity> {
         val parser = Xml.newPullParser()
         parser.setInput(StringReader(xmlContent))
-        return parseXmlPull(parser)
+        return parseXmlPull(parser, storeDescriptions, minEndTimeMs)
     }
 
-    private fun parseXmlPull(parser: XmlPullParser): List<ProgramEntity> {
+    private fun parseXmlPull(
+        parser: XmlPullParser,
+        storeDescriptions: Boolean,
+        minEndTimeMs: Long
+    ): List<ProgramEntity> {
         val programs = mutableListOf<ProgramEntity>()
         var eventType = parser.eventType
 
@@ -71,7 +82,10 @@ object XmltvParser {
                             currentTitle = parser.nextText().trim()
                         }
                         "desc" -> {
-                            currentDesc = parser.nextText().trim()
+                            val descText = parser.nextText().trim()
+                            if (storeDescriptions) {
+                                currentDesc = descText
+                            }
                         }
                         "category" -> {
                             currentCategory = parser.nextText().trim()
@@ -84,17 +98,20 @@ object XmltvParser {
                 XmlPullParser.END_TAG -> {
                     if (parser.name.equals("programme", ignoreCase = true)) {
                         if (!currentChannelId.isNullOrBlank() && currentTitle.isNotBlank()) {
-                            programs.add(
-                                ProgramEntity(
-                                    epgChannelId = currentChannelId,
-                                    title = currentTitle,
-                                    description = currentDesc.ifBlank { null },
-                                    category = currentCategory.ifBlank { null },
-                                    startTimeMs = currentStart,
-                                    endTimeMs = currentStop,
-                                    iconUrl = currentIcon
+                            // If retention threshold is set, skip programs that ended before minEndTimeMs
+                            if (minEndTimeMs <= 0L || currentStop >= minEndTimeMs) {
+                                programs.add(
+                                    ProgramEntity(
+                                        epgChannelId = currentChannelId,
+                                        title = currentTitle,
+                                        description = if (storeDescriptions) currentDesc.ifBlank { null } else null,
+                                        category = currentCategory.ifBlank { null },
+                                        startTimeMs = currentStart,
+                                        endTimeMs = currentStop,
+                                        iconUrl = currentIcon
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }
