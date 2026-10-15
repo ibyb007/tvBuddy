@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.HighQuality
@@ -69,6 +71,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.data.local.entity.ChannelEntity
+import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.SpoofProfile
 import com.example.player.AspectMode
@@ -79,7 +82,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class TvPanel { NONE, INFO, MENU, CHANNELS, SETTINGS }
+private enum class TvPanel { NONE, INFO, MENU, CHANNELS, SETTINGS, PLAYLISTS }
 
 private class TvMenuItem(
     val label: String,
@@ -121,6 +124,8 @@ fun TvPlayerOverlay(
     channelsList: List<ChannelEntity>,
     allPrograms: List<ProgramEntity> = emptyList(),
     recentChannels: List<ChannelEntity> = emptyList(),
+    playlists: List<PlaylistEntity> = emptyList(),
+    onAddPlaylist: () -> Unit = {},
     onTogglePlayPause: () -> Unit,
     onNextChannel: () -> Unit,
     onPreviousChannel: () -> Unit,
@@ -142,6 +147,7 @@ fun TvPlayerOverlay(
     var menuIndex by remember { mutableIntStateOf(0) }
     var listIndex by remember { mutableIntStateOf(0) }
     var settingsIndex by remember { mutableIntStateOf(0) }
+    var playlistIndex by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
 
     // Remember the previously played channel for the RIGHT key
@@ -189,7 +195,9 @@ fun TvPlayerOverlay(
         }
     }
 
-    BackHandler(enabled = panel != TvPanel.NONE) { panel = TvPanel.NONE }
+    BackHandler(enabled = panel != TvPanel.NONE) {
+        panel = if (panel == TvPanel.PLAYLISTS) TvPanel.SETTINGS else TvPanel.NONE
+    }
 
     fun openInfo() {
         stripIndex = 0
@@ -231,11 +239,17 @@ fun TvPlayerOverlay(
                 strip.getOrNull(stripIndex)?.let { onSelectChannel(it); panel = TvPanel.NONE }
             }
             TvPanel.SETTINGS -> {
-                panel = TvPanel.NONE
                 when (settingsIndex) {
-                    0 -> onOpenPlaylists()
-                    1 -> onOpenSpoofSettings()
-                    else -> onOpenEpgGuide()
+                    0 -> { playlistIndex = 0; panel = TvPanel.PLAYLISTS }
+                    1 -> { panel = TvPanel.NONE; onOpenSpoofSettings() }
+                    else -> { panel = TvPanel.NONE; onOpenEpgGuide() }
+                }
+            }
+            TvPanel.PLAYLISTS -> {
+                when {
+                    playlistIndex < playlists.size -> { panel = TvPanel.NONE; onOpenPlaylists() }
+                    playlistIndex == playlists.size -> { panel = TvPanel.NONE; onAddPlaylist() }
+                    else -> { panel = TvPanel.NONE; onOpenPlaylists() }
                 }
             }
             TvPanel.MENU -> menuItems().getOrNull(menuIndex)?.action?.invoke()
@@ -292,6 +306,13 @@ fun TvPlayerOverlay(
                 Key.DirectionUp -> settingsIndex = (settingsIndex - 1).coerceAtLeast(0)
                 Key.DirectionDown -> settingsIndex = (settingsIndex + 1).coerceAtMost(SETTINGS_ITEMS.size - 1)
                 Key.DirectionLeft -> if (!isRepeat) panel = TvPanel.MENU
+                Key.DirectionRight -> {}
+                else -> return false
+            }
+            TvPanel.PLAYLISTS -> when (key) {
+                Key.DirectionUp -> playlistIndex = (playlistIndex - 1).coerceAtLeast(0)
+                Key.DirectionDown -> playlistIndex = (playlistIndex + 1).coerceAtMost(playlists.size + 1)
+                Key.DirectionLeft -> if (!isRepeat) panel = TvPanel.SETTINGS
                 Key.DirectionRight -> {}
                 else -> return false
             }
@@ -477,43 +498,17 @@ fun TvPlayerOverlay(
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.CenterEnd)
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .width(520.dp)
-                    .background(TvPanelBg)
-                    .padding(horizontal = 16.dp, vertical = 24.dp)
-            ) {
-                Text(
-                    "Settings",
-                    color = Color.White,
-                    fontSize = 32.sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(start = 16.dp, bottom = 24.dp)
-                )
-                SETTINGS_ITEMS.forEachIndexed { i, (title, subtitle) ->
-                    val sel = i == settingsIndex
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 3.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(if (sel) TvSelected else Color.Transparent)
-                            .padding(horizontal = 16.dp, vertical = 18.dp)
-                    ) {
-                        Text(
-                            title,
-                            color = if (sel) Color.Black else Color.White,
-                            fontSize = 22.sp
-                        )
-                        Text(
-                            subtitle,
-                            color = (if (sel) Color.Black else Color.White).copy(alpha = 0.6f),
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
+            SettingsPanel(settingsIndex)
+        }
+
+        // ---------- Playlists sub-menu ----------
+        AnimatedVisibility(
+            visible = panel == TvPanel.PLAYLISTS,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            PlaylistsPanel(playlists = playlists, selectedIndex = playlistIndex)
         }
 
         // ---------- Channel list (LEFT) ----------
@@ -848,6 +843,235 @@ private fun ChannelListPanel(
                     }
                 }
             }
+        }
+    }
+}
+
+
+@Composable
+private fun SettingsPanel(settingsIndex: Int) {
+    Column(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(520.dp)
+            .background(TvPanelBg)
+            .padding(horizontal = 16.dp, vertical = 24.dp)
+    ) {
+        Text(
+            "Settings",
+            color = Color.White,
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(start = 16.dp, bottom = 24.dp)
+        )
+        SETTINGS_ITEMS.forEachIndexed { i, (title, subtitle) ->
+            val sel = i == settingsIndex
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 3.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (sel) TvSelected else Color.Transparent)
+                    .padding(horizontal = 16.dp, vertical = 18.dp)
+            ) {
+                Text(title, color = if (sel) Color.Black else Color.White, fontSize = 22.sp)
+                Text(
+                    subtitle,
+                    color = (if (sel) Color.Black else Color.White).copy(alpha = 0.6f),
+                    fontSize = 14.sp
+                )
+            }
+        }
+    }
+}
+
+/** TiviMate-style playlist list: every added playlist, then "Add playlist" / "Manage playlists". */
+@Composable
+private fun PlaylistsPanel(playlists: List<PlaylistEntity>, selectedIndex: Int) {
+    Column(
+        modifier = Modifier
+            .fillMaxHeight()
+            .width(640.dp)
+            .background(TvPanelBg)
+            .padding(horizontal = 16.dp, vertical = 24.dp)
+    ) {
+        Text(
+            "Playlists",
+            color = Color.White,
+            fontSize = 32.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(start = 16.dp, bottom = 20.dp)
+        )
+        LazyColumn(modifier = Modifier.fillMaxSize()) {
+            itemsIndexed(playlists) { i, pl ->
+                val sel = i == selectedIndex
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (sel) TvSelected else Color.Transparent)
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = if (sel) Color.Black else Color(0xFF2196F3),
+                        modifier = Modifier.size(34.dp)
+                    )
+                    Spacer(Modifier.width(18.dp))
+                    Column {
+                        Text(
+                            pl.name,
+                            color = if (sel) Color.Black else Color.White,
+                            fontSize = 22.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "Channels: ${pl.channelCount}",
+                            color = (if (sel) Color.Black else Color.White).copy(alpha = 0.65f),
+                            fontSize = 16.sp
+                        )
+                    }
+                }
+            }
+            item {
+                val sel = selectedIndex == playlists.size
+                Text(
+                    "Add playlist",
+                    color = if (sel) Color.Black else Color.White,
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (sel) TvSelected else Color.Transparent)
+                        .padding(horizontal = 16.dp, vertical = 18.dp)
+                )
+            }
+            item {
+                val sel = selectedIndex == playlists.size + 1
+                Text(
+                    "Manage playlists",
+                    color = if (sel) Color.Black else Color.White,
+                    fontSize = 22.sp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 3.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (sel) TvSelected else Color.Transparent)
+                        .padding(horizontal = 16.dp, vertical = 18.dp)
+                )
+            }
+        }
+    }
+}
+
+/**
+ * First-launch / no-content screen (TiviMate style). LEFT/RIGHT picks a button, OK activates.
+ * "Settings" opens the same settings list (Playlists, spoofing engine, EPG).
+ */
+@Composable
+fun TvEmptyState(
+    onAddPlaylist: () -> Unit,
+    onOpenPlaylists: () -> Unit,
+    onOpenSpoofSettings: () -> Unit,
+    onOpenEpgGuide: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    var selected by remember { mutableIntStateOf(0) }       // 0 = Add playlist, 1 = Settings
+    var showSettings by remember { mutableStateOf(false) }
+    var settingsIndex by remember { mutableIntStateOf(0) }
+    val focusRequester = remember { FocusRequester() }
+    var hasFocus by remember { mutableStateOf(false) }
+
+    LaunchedEffect(showSettings) {
+        try { focusRequester.requestFocus() } catch (_: Exception) {}
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            if (!hasFocus) {
+                try { focusRequester.requestFocus() } catch (_: Exception) {}
+            }
+        }
+    }
+    BackHandler(enabled = showSettings) { showSettings = false }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .background(Color(0xFF14181B))
+            .focusRequester(focusRequester)
+            .onFocusChanged { hasFocus = it.isFocused }
+            .focusable()
+            .onPreviewKeyEvent { e ->
+                val k = e.key
+                val isOk = k == Key.DirectionCenter || k == Key.Enter || k == Key.NumPadEnter
+                when {
+                    isOk -> {
+                        if (e.type == KeyEventType.KeyUp) {
+                            if (showSettings) {
+                                when (settingsIndex) {
+                                    0 -> onOpenPlaylists()
+                                    1 -> onOpenSpoofSettings()
+                                    else -> onOpenEpgGuide()
+                                }
+                            } else if (selected == 0) {
+                                onAddPlaylist()
+                            } else {
+                                showSettings = true
+                                settingsIndex = 0
+                            }
+                        }
+                        true
+                    }
+                    e.type != KeyEventType.KeyDown -> false
+                    showSettings -> when (k) {
+                        Key.DirectionUp -> { settingsIndex = (settingsIndex - 1).coerceAtLeast(0); true }
+                        Key.DirectionDown -> { settingsIndex = (settingsIndex + 1).coerceAtMost(SETTINGS_ITEMS.size - 1); true }
+                        Key.DirectionLeft -> { showSettings = false; true }
+                        else -> false
+                    }
+                    else -> when (k) {
+                        Key.DirectionLeft -> { selected = 0; true }
+                        Key.DirectionRight -> { selected = 1; true }
+                        else -> false
+                    }
+                }
+            }
+    ) {
+        Column(
+            modifier = Modifier.align(Alignment.Center),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("tvBuddy does not provide any content", color = Color.White, fontSize = 32.sp)
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "Add your own playlist to start watching",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = 26.sp
+            )
+            Spacer(Modifier.height(48.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+                listOf("Add playlist", "Settings").forEachIndexed { i, label ->
+                    val sel = selected == i && !showSettings
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { if (i == 0) onAddPlaylist() else { showSettings = true; settingsIndex = 0 } }
+                            .background(if (sel) TvSelected else Color(0xFF25292D))
+                            .padding(horizontal = 32.dp, vertical = 20.dp)
+                    ) {
+                        Text(label, color = if (sel) Color.Black else Color.White, fontSize = 24.sp)
+                    }
+                }
+            }
+        }
+        if (showSettings) {
+            Box(Modifier.align(Alignment.CenterEnd)) { SettingsPanel(settingsIndex) }
         }
     }
 }
