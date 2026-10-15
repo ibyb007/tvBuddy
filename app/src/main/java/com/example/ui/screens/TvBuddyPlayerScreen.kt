@@ -343,26 +343,6 @@ fun TvBuddyPlayerScreen(
                             }
                         }
 
-                        // Right Badges & Controls
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            // Fullscreen toggle (auto-rotates with the phone while fullscreen)
-                            IconButton(
-                                onClick = onToggleFullscreen,
-                                modifier = Modifier
-                                    .size(36.dp)
-                                    .testTag("fullscreen_toggle_btn")
-                            ) {
-                                Icon(
-                                    imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                    contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
                     }
                 }
 
@@ -509,6 +489,19 @@ fun TvBuddyPlayerScreen(
                                 // Aspect ratio / resize
                                 IconButton(onClick = onCycleAspect, modifier = Modifier.size(36.dp)) {
                                     Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(20.dp))
+                                }
+
+                                // Fullscreen toggle: bottom-right corner (auto-rotates with the phone)
+                                IconButton(
+                                    onClick = onToggleFullscreen,
+                                    modifier = Modifier.size(36.dp).testTag("fullscreen_toggle_btn")
+                                ) {
+                                    Icon(
+                                        imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                        contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(22.dp)
+                                    )
                                 }
                             }
                         }
