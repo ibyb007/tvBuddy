@@ -167,7 +167,13 @@ fun HomeScreen(
 
     // Fullscreen: hide system bars and let the phone rotate freely (portrait <-> landscape)
     // using the sensor, even if the system auto-rotate toggle is off.
-    val hostActivity = androidx.compose.ui.platform.LocalContext.current.findActivity()
+    val hostContext = androidx.compose.ui.platform.LocalContext.current
+    val hostActivity = hostContext.findActivity()
+    val isTvDevice = remember(hostContext) {
+        val uiMode = hostContext.getSystemService(android.content.Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+        uiMode?.currentModeType == Configuration.UI_MODE_TYPE_TELEVISION ||
+            hostContext.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
+    }
     DisposableEffect(isMobileFullscreen, isTvMode, hostActivity) {
         val activity = hostActivity
         if (activity == null || isTvMode || !isMobileFullscreen) {
@@ -207,8 +213,13 @@ fun HomeScreen(
                 isSearchActive = false
             }
             isTvMode -> {
-                viewModel.setTvMode(false)
-                viewModel.closePlayer()
+                if (isTvDevice) {
+                    viewModel.closePlayer()
+                    hostActivity?.finish()
+                } else {
+                    viewModel.setTvMode(false)
+                    viewModel.closePlayer()
+                }
             }
             currentChannel != null -> {
                 viewModel.closePlayer()
@@ -216,8 +227,8 @@ fun HomeScreen(
         }
     }
 
-    if (isTvMode) {
-        // TV Fullscreen Leanback Mode
+    if (isTvMode && (channels.isNotEmpty() || currentChannel != null)) {
+        // TV Fullscreen Leanback Mode (TiviMate-style)
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             val player = viewModel.playerManager.getPlayer()
             VideoPlayerSurface(
@@ -247,11 +258,18 @@ fun HomeScreen(
                 onOpenEpgGuide = { showEpgGuideDialog = true },
                 onOpenAudioTracks = { showAudioDialog = true },
                 onOpenSubtitles = { showSubtitleDialog = true },
+                allPrograms = allCurrentPrograms,
                 onClosePlayer = {
-                    viewModel.setTvMode(false)
-                    viewModel.closePlayer()
+                    if (isTvDevice) {
+                        viewModel.closePlayer()
+                        hostActivity?.finish()
+                    } else {
+                        viewModel.setTvMode(false)
+                        viewModel.closePlayer()
+                    }
                 },
                 onOpenSpoofSettings = { showSpoofDialog = true },
+                onOpenPlaylists = { showPlaylistManager = true },
                 modifier = Modifier.fillMaxSize()
             )
         }
