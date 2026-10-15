@@ -65,6 +65,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -470,7 +471,6 @@ fun TvPlayerOverlay(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.94f))
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.Top
@@ -491,16 +491,23 @@ fun TvPlayerOverlay(
                             Icon(
                                 item.icon,
                                 contentDescription = item.label,
-                                tint = if (selected) Color.Black else Color.White.copy(alpha = 0.6f),
+                                tint = if (selected) Color.Black else Color.White.copy(alpha = 0.9f),
                                 modifier = Modifier.size(20.dp)
                             )
                         }
                         Spacer(Modifier.height(2.dp))
                         Text(
                             item.label,
-                            color = if (selected) Color.White else Color.White.copy(alpha = 0.6f),
+                            color = if (selected) Color.White else Color.White.copy(alpha = 0.85f),
                             fontSize = 11.sp,
                             lineHeight = 13.sp,
+                            style = androidx.compose.ui.text.TextStyle(
+                                shadow = androidx.compose.ui.graphics.Shadow(
+                                    color = Color.Black,
+                                    offset = androidx.compose.ui.geometry.Offset(0f, 1f),
+                                    blurRadius = 6f
+                                )
+                            ),
                             textAlign = TextAlign.Center,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
@@ -762,6 +769,10 @@ private fun Badge(text: String) {
     }
 }
 
+/** Scale so panel sizes match TiviMate's proportions on any TV density (design grid: 1080 px tall). */
+@Composable
+private fun rememberUiScale(): Float = LocalConfiguration.current.screenHeightDp / 1080f
+
 @Composable
 private fun ChannelListPanel(
     channelsList: List<ChannelEntity>,
@@ -769,6 +780,7 @@ private fun ChannelListPanel(
     playingId: Long?,
     programFor: (ChannelEntity) -> ProgramEntity?
 ) {
+    val k = rememberUiScale()
     val listState = rememberLazyListState()
     LaunchedEffect(selectedIndex) {
         listState.animateScrollToItem((selectedIndex - 3).coerceAtLeast(0))
@@ -777,34 +789,38 @@ private fun ChannelListPanel(
     val selectedProgram = selected?.let(programFor)
 
     Row(modifier = Modifier.fillMaxSize()) {
-        // Left: channels
+        // Left: channels (8 rows fit on screen, like TiviMate)
         Column(
             modifier = Modifier
                 .fillMaxHeight()
-                .width(420.dp)
+                .width((600 * k).dp)
                 .background(TvPanelBg)
         ) {
             Text(
                 selected?.groupTitle ?: "All channels",
                 color = Color.White,
-                fontSize = 22.sp,
+                fontSize = (30 * k).sp,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 18.dp)
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = (32 * k).dp, vertical = (20 * k).dp)
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
                     val isSel = i == selectedIndex
                     val prog = programFor(ch)
+                    val fg = if (isSel) Color.Black else Color.White
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 10.dp, vertical = 2.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                            .padding(horizontal = (16 * k).dp, vertical = (4 * k).dp)
+                            .height((117 * k).dp)
+                            .clip(RoundedCornerShape((14 * k).dp))
                             .background(if (isSel) TvSelected else Color.Transparent)
-                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                            .padding(horizontal = (24 * k).dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(Modifier.size(width = 72.dp, height = 48.dp), contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(width = (96 * k).dp, height = (72 * k).dp), contentAlignment = Alignment.Center) {
                             if (!ch.logoUrl.isNullOrBlank()) {
                                 AsyncImage(
                                     model = ch.logoUrl,
@@ -813,47 +829,52 @@ private fun ChannelListPanel(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             } else {
-                                Text(ch.name.take(2).uppercase(), color = if (isSel) Color.Black else Color.White, fontWeight = FontWeight.Bold)
+                                Text(
+                                    ch.name.take(2).uppercase(),
+                                    color = fg,
+                                    fontSize = (28 * k).sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
-                        Spacer(Modifier.width(14.dp))
+                        Spacer(Modifier.width((24 * k).dp))
                         Column(modifier = Modifier.weight(1f)) {
                             val num = ch.channelNumber.takeIf { it > 0 } ?: (i + 1)
                             Text(
                                 "$num  ${ch.name}",
-                                color = if (isSel) Color.Black else Color.White,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.SemiBold,
+                                color = fg,
+                                fontSize = (28 * k).sp,
+                                fontWeight = FontWeight.Medium,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
                                 prog?.title ?: "No information",
-                                color = (if (isSel) Color.Black else Color.White).copy(alpha = 0.65f),
-                                fontSize = 15.sp,
+                                color = fg.copy(alpha = 0.65f),
+                                fontSize = (26 * k).sp,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            Spacer(Modifier.height(4.dp))
+                            Spacer(Modifier.height((8 * k).dp))
                             Box(
-                                Modifier.fillMaxWidth().height(2.dp)
-                                    .background((if (isSel) Color.Black else Color.White).copy(alpha = 0.25f))
+                                Modifier.fillMaxWidth().height((4 * k).dp)
+                                    .background(fg.copy(alpha = 0.25f))
                             ) {
                                 if (prog != null) {
                                     Box(
-                                        Modifier.fillMaxWidth(prog.progress.coerceIn(0f, 1f)).height(2.dp)
-                                            .background(if (isSel) Color.Black else Color.White)
+                                        Modifier.fillMaxWidth(prog.progress.coerceIn(0f, 1f)).height((4 * k).dp)
+                                            .background(fg)
                                     )
                                 }
                             }
                         }
                         if (ch.id == playingId) {
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width((8 * k).dp))
                             Icon(
                                 Icons.Default.PlayArrow,
                                 contentDescription = "Playing",
-                                tint = if (isSel) Color.Black else Color.White,
-                                modifier = Modifier.size(22.dp)
+                                tint = fg,
+                                modifier = Modifier.size((40 * k).dp)
                             )
                         }
                     }
@@ -867,37 +888,37 @@ private fun ChannelListPanel(
                 .fillMaxHeight()
                 .weight(1f)
                 .background(Brush.horizontalGradient(listOf(Color(0xCC000000), Color(0x55000000))))
-                .padding(32.dp)
+                .padding(top = (48 * k).dp, end = (48 * k).dp, start = (32 * k).dp)
         ) {
             if (selected != null) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .width(560.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .width((720 * k).dp)
+                        .clip(RoundedCornerShape((20 * k).dp))
                         .background(Color(0x66FFFFFF).copy(alpha = 0.18f))
-                        .padding(24.dp)
+                        .padding((32 * k).dp)
                 ) {
                     Text(
                         selectedProgram?.title ?: selected.name,
                         color = Color.White,
-                        fontSize = 26.sp,
+                        fontSize = (40 * k).sp,
                         fontWeight = FontWeight.Medium
                     )
                     if (selectedProgram != null) {
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height((8 * k).dp))
                         Text(
                             "${fmtTime(selectedProgram.startTimeMs)} — ${fmtTime(selectedProgram.endTimeMs)}",
                             color = Color.White.copy(alpha = 0.7f),
-                            fontSize = 17.sp
+                            fontSize = (28 * k).sp
                         )
                         selectedProgram.description?.takeIf { it.isNotBlank() }?.let {
-                            Spacer(Modifier.height(8.dp))
-                            Text(it, color = Color.White.copy(alpha = 0.75f), fontSize = 16.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
+                            Spacer(Modifier.height((12 * k).dp))
+                            Text(it, color = Color.White.copy(alpha = 0.75f), fontSize = (28 * k).sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
                         }
                     } else {
-                        Spacer(Modifier.height(4.dp))
-                        Text("No information", color = Color.White.copy(alpha = 0.6f), fontSize = 17.sp)
+                        Spacer(Modifier.height((8 * k).dp))
+                        Text("No information", color = Color.White.copy(alpha = 0.6f), fontSize = (28 * k).sp)
                     }
                 }
             }
@@ -908,35 +929,38 @@ private fun ChannelListPanel(
 
 @Composable
 private fun SettingsPanel(settingsIndex: Int) {
+    val k = rememberUiScale()
     Column(
         modifier = Modifier
             .fillMaxHeight()
-            .width(520.dp)
+            .width((720 * k).dp)
             .background(TvPanelBg)
-            .padding(horizontal = 16.dp, vertical = 24.dp)
+            .padding(horizontal = (16 * k).dp, vertical = (24 * k).dp)
     ) {
         Text(
             "Settings",
             color = Color.White,
-            fontSize = 32.sp,
+            fontSize = (40 * k).sp,
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(start = 16.dp, bottom = 24.dp)
+            modifier = Modifier.padding(start = (32 * k).dp, top = (8 * k).dp, bottom = (28 * k).dp)
         )
         SETTINGS_ITEMS.forEachIndexed { i, (title, subtitle) ->
             val sel = i == settingsIndex
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 3.dp)
-                    .clip(RoundedCornerShape(8.dp))
+                    .padding(vertical = (3 * k).dp)
+                    .clip(RoundedCornerShape((10 * k).dp))
                     .background(if (sel) TvSelected else Color.Transparent)
-                    .padding(horizontal = 16.dp, vertical = 18.dp)
+                    .padding(horizontal = (32 * k).dp, vertical = (16 * k).dp)
             ) {
-                Text(title, color = if (sel) Color.Black else Color.White, fontSize = 22.sp)
+                Text(title, color = if (sel) Color.Black else Color.White, fontSize = (28 * k).sp)
                 Text(
                     subtitle,
                     color = (if (sel) Color.Black else Color.White).copy(alpha = 0.6f),
-                    fontSize = 14.sp
+                    fontSize = (20 * k).sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
             }
         }
@@ -946,19 +970,20 @@ private fun SettingsPanel(settingsIndex: Int) {
 /** TiviMate-style playlist list: every added playlist, then "Add playlist" / "Manage playlists". */
 @Composable
 private fun PlaylistsPanel(playlists: List<PlaylistEntity>, selectedIndex: Int) {
+    val k = rememberUiScale()
     Column(
         modifier = Modifier
             .fillMaxHeight()
-            .width(640.dp)
+            .width((720 * k).dp)
             .background(TvPanelBg)
-            .padding(horizontal = 16.dp, vertical = 24.dp)
+            .padding(horizontal = (16 * k).dp, vertical = (24 * k).dp)
     ) {
         Text(
             "Playlists",
             color = Color.White,
-            fontSize = 32.sp,
+            fontSize = (40 * k).sp,
             fontWeight = FontWeight.Medium,
-            modifier = Modifier.padding(start = 16.dp, bottom = 20.dp)
+            modifier = Modifier.padding(start = (32 * k).dp, top = (8 * k).dp, bottom = (24 * k).dp)
         )
         LazyColumn(modifier = Modifier.fillMaxSize()) {
             itemsIndexed(playlists) { i, pl ->
@@ -966,31 +991,31 @@ private fun PlaylistsPanel(playlists: List<PlaylistEntity>, selectedIndex: Int) 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 3.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .padding(vertical = (3 * k).dp)
+                        .clip(RoundedCornerShape((10 * k).dp))
                         .background(if (sel) TvSelected else Color.Transparent)
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                        .padding(horizontal = (32 * k).dp, vertical = (16 * k).dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
                         Icons.Default.CheckCircle,
                         contentDescription = null,
                         tint = if (sel) Color.Black else Color(0xFF2196F3),
-                        modifier = Modifier.size(34.dp)
+                        modifier = Modifier.size((44 * k).dp)
                     )
-                    Spacer(Modifier.width(18.dp))
+                    Spacer(Modifier.width((24 * k).dp))
                     Column {
                         Text(
                             pl.name,
                             color = if (sel) Color.Black else Color.White,
-                            fontSize = 22.sp,
+                            fontSize = (28 * k).sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
                             "Channels: ${pl.channelCount}",
                             color = (if (sel) Color.Black else Color.White).copy(alpha = 0.65f),
-                            fontSize = 16.sp
+                            fontSize = (22 * k).sp
                         )
                     }
                 }
@@ -1000,13 +1025,13 @@ private fun PlaylistsPanel(playlists: List<PlaylistEntity>, selectedIndex: Int) 
                 Text(
                     "Add playlist",
                     color = if (sel) Color.Black else Color.White,
-                    fontSize = 22.sp,
+                    fontSize = (28 * k).sp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 3.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .padding(vertical = (3 * k).dp)
+                        .clip(RoundedCornerShape((10 * k).dp))
                         .background(if (sel) TvSelected else Color.Transparent)
-                        .padding(horizontal = 16.dp, vertical = 18.dp)
+                        .padding(horizontal = (32 * k).dp, vertical = (24 * k).dp)
                 )
             }
             item {
@@ -1014,13 +1039,13 @@ private fun PlaylistsPanel(playlists: List<PlaylistEntity>, selectedIndex: Int) 
                 Text(
                     "Manage playlists",
                     color = if (sel) Color.Black else Color.White,
-                    fontSize = 22.sp,
+                    fontSize = (28 * k).sp,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 3.dp)
-                        .clip(RoundedCornerShape(8.dp))
+                        .padding(vertical = (3 * k).dp)
+                        .clip(RoundedCornerShape((10 * k).dp))
                         .background(if (sel) TvSelected else Color.Transparent)
-                        .padding(horizontal = 16.dp, vertical = 18.dp)
+                        .padding(horizontal = (32 * k).dp, vertical = (24 * k).dp)
                 )
             }
         }
