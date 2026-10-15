@@ -216,3 +216,1324 @@ fun PlaylistManagerDialog(
                             is TiviSettingsRoute.Playlists -> PlaylistsSubMenu(
                                 playlists = playlists,
                                 playlistsSorting = playlistsSorting,
+                                onSelectPlaylist = { pl -> navigateTo(TiviSettingsRoute.PlaylistDetail(pl.id)) },
+                                onAddPlaylist = {
+                                    onDismiss()
+                                    onAddNewPlaylist()
+                                },
+                                onUpdateAllPlaylists = onUpdateAllPlaylists,
+                                onCycleSorting = {
+                                    val next = if (playlistsSorting == "By name") "Custom" else "By name"
+                                    onChangePlaylistsSorting(next)
+                                },
+                                onReorderPlaylists = { navigateTo(TiviSettingsRoute.ReorderPlaylists) }
+                            )
+
+                            is TiviSettingsRoute.ReorderPlaylists -> ReorderPlaylistsSubMenu(
+                                playlists = playlists,
+                                onSaveOrder = onReorderPlaylists
+                            )
+
+                            is TiviSettingsRoute.PlaylistDetail -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist == null) {
+                                    navigateBack()
+                                } else {
+                                    val assignedCount = playlistEpgCrossRefs.count { it.playlistId == playlist.id }
+                                    PlaylistDetailSubMenu(
+                                        playlist = playlist,
+                                        assignedEpgCount = assignedCount,
+                                        onUpdatePlaylistEntity = onUpdatePlaylist,
+                                        onEditName = {
+                                            textEditDialogState = TextEditPrompt(
+                                                title = "Playlist name",
+                                                initialValue = playlist.name,
+                                                onConfirm = { newName ->
+                                                    if (newName.isNotBlank()) {
+                                                        onUpdatePlaylist(playlist.copy(name = newName.trim()))
+                                                    }
+                                                }
+                                            )
+                                        },
+                                        onEditUrl = {
+                                            textEditDialogState = TextEditPrompt(
+                                                title = "Playlist URL",
+                                                initialValue = playlist.sourceUrl,
+                                                onConfirm = { newUrl ->
+                                                    if (newUrl.isNotBlank()) {
+                                                        onUpdatePlaylist(playlist.copy(sourceUrl = newUrl.trim()))
+                                                    }
+                                                }
+                                            )
+                                        },
+                                        onEditUserAgent = {
+                                            textEditDialogState = TextEditPrompt(
+                                                title = "User-Agent",
+                                                initialValue = playlist.customUserAgent ?: "",
+                                                onConfirm = { ua ->
+                                                    onUpdatePlaylist(playlist.copy(customUserAgent = ua.trim().ifBlank { null }))
+                                                }
+                                            )
+                                        },
+                                        onOpenPlaylistEpgSources = {
+                                            navigateTo(TiviSettingsRoute.PlaylistEpgSources(playlist.id))
+                                        },
+                                        onOpenManageGroups = {
+                                            navigateTo(TiviSettingsRoute.ManageGroups(playlist.id))
+                                        },
+                                        onRefreshPlaylist = { onRefreshSinglePlaylist(playlist.id) },
+                                        onDeletePlaylist = {
+                                            onDeletePlaylist(playlist)
+                                            navigateBack()
+                                        }
+                                    )
+                                }
+                            }
+
+                            is TiviSettingsRoute.PlaylistEpgSources -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist != null) {
+                                    val assignedIds = playlistEpgCrossRefs
+                                        .filter { it.playlistId == playlist.id }
+                                        .sortedBy { it.priority }
+                                        .map { it.epgSourceId }
+
+                                    PlaylistEpgSourcesSubMenu(
+                                        playlist = playlist,
+                                        allSources = epgSources,
+                                        assignedSourceIds = assignedIds,
+                                        onManageSources = { navigateTo(TiviSettingsRoute.EpgSources) },
+                                        onChangePriority = {
+                                            navigateTo(TiviSettingsRoute.PlaylistEpgPriority(playlist.id))
+                                        },
+                                        onToggleAssignment = { sourceId, assign ->
+                                            onTogglePlaylistEpgAssignment(playlist.id, sourceId, assign)
+                                        }
+                                    )
+                                }
+                            }
+
+                            is TiviSettingsRoute.PlaylistEpgPriority -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist != null) {
+                                    val assignedSources = playlistEpgCrossRefs
+                                        .filter { it.playlistId == playlist.id }
+                                        .sortedBy { it.priority }
+                                        .mapNotNull { ref -> epgSources.find { it.id == ref.epgSourceId } }
+
+                                    PlaylistEpgPrioritySubMenu(
+                                        playlistName = playlist.name,
+                                        assignedSources = assignedSources,
+                                        onSaveOrder = { orderedIds ->
+                                            onReorderPlaylistEpgPriority(playlist.id, orderedIds)
+                                        }
+                                    )
+                                }
+                            }
+
+                            is TiviSettingsRoute.ManageGroups -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist != null) {
+                                    val playlistGroups = allGroups.filter { it.playlistId == playlist.id }
+                                    ManageGroupsSubMenu(
+                                        playlist = playlist,
+                                        groups = playlistGroups,
+                                        onUpdatePlaylistEntity = onUpdatePlaylist,
+                                        onReorderGroups = {
+                                            navigateTo(TiviSettingsRoute.ReorderGroups(playlist.id))
+                                        },
+                                        onShowAllGroups = { onSetAllGroupsVisibility(playlist.id, true) },
+                                        onHideAllGroups = { onSetAllGroupsVisibility(playlist.id, false) },
+                                        onToggleGroup = { groupTitle, visible ->
+                                            onSetGroupVisibility(playlist.id, groupTitle, visible)
+                                        }
+                                    )
+                                }
+                            }
+
+                            is TiviSettingsRoute.ReorderGroups -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist != null) {
+                                    val playlistGroups = allGroups
+                                        .filter { it.playlistId == playlist.id }
+                                        .sortedBy { it.sortOrder }
+                                    ReorderGroupsSubMenu(
+                                        groups = playlistGroups,
+                                        onSaveOrder = { orderedTitles ->
+                                            onReorderGroups(playlist.id, orderedTitles)
+                                        }
+                                    )
+                                }
+                            }
+
+                            is TiviSettingsRoute.Epg -> EpgSettingsSubMenu(
+                                state = epgSettings,
+                                onOpenEpgSources = { navigateTo(TiviSettingsRoute.EpgSources) },
+                                onChangeState = onUpdateEpgSettings,
+                                onUpdateEpg = onTriggerUpdateEpg,
+                                onClearEpg = onTriggerClearEpg
+                            )
+
+                            is TiviSettingsRoute.EpgSources -> EpgSourcesSubMenu(
+                                sources = epgSources,
+                                onAddSource = { navigateTo(TiviSettingsRoute.AddEpgSourceUrl) },
+                                onSelectSource = { src ->
+                                    onSetDefaultEpgSource(src.id)
+                                },
+                                onDeleteSource = onDeleteEpgSource
+                            )
+
+                            is TiviSettingsRoute.AddEpgSourceUrl -> Unit
+                        }
+                    }
+                }
+            }
+        }
+
+        // Inline Edit Dialog for Name / URL / User-Agent
+        textEditDialogState?.let { prompt ->
+            var currentText by remember(prompt) { mutableStateOf(prompt.initialValue) }
+            AlertDialog(
+                onDismissRequest = { textEditDialogState = null },
+                containerColor = TiviModalBg,
+                titleContentColor = TiviPrimaryText,
+                title = { Text(prompt.title, fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+                text = {
+                    OutlinedTextField(
+                        value = currentText,
+                        onValueChange = { currentText = it },
+                        singleLine = true,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = TiviPrimaryText,
+                            unfocusedTextColor = TiviPrimaryText,
+                            focusedBorderColor = TiviAccentBlue,
+                            unfocusedBorderColor = TiviSecondaryText
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            prompt.onConfirm(currentText)
+                            textEditDialogState = null
+                        }
+                    ) {
+                        Text("OK", color = TiviAccentBlue)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { textEditDialogState = null }) {
+                        Text("Cancel", color = TiviSecondaryText)
+                    }
+                }
+            )
+        }
+    }
+}
+
+private data class TextEditPrompt(
+    val title: String,
+    val initialValue: String,
+    val onConfirm: (String) -> Unit
+)
+
+// ============================================================================
+// 1. MAIN SETTINGS MENU ("Settings")
+// ============================================================================
+
+@Composable
+private fun MainSettingsMenu(
+    onOpenPlaylists: () -> Unit,
+    onOpenEpg: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Settings")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            item {
+                TiviMenuRow(
+                    title = "Playlists",
+                    onClick = onOpenPlaylists
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "EPG",
+                    onClick = onOpenEpg
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 2. PLAYLISTS SUBMENU ("Playlists")
+// ============================================================================
+
+@Composable
+private fun PlaylistsSubMenu(
+    playlists: List<PlaylistEntity>,
+    playlistsSorting: String,
+    onSelectPlaylist: (PlaylistEntity) -> Unit,
+    onAddPlaylist: () -> Unit,
+    onUpdateAllPlaylists: () -> Unit,
+    onCycleSorting: () -> Unit,
+    onReorderPlaylists: () -> Unit
+) {
+    val displayedPlaylists = remember(playlists, playlistsSorting) {
+        if (playlistsSorting.equals("By name", ignoreCase = true)) {
+            playlists.sortedBy { it.name.lowercase() }
+        } else {
+            playlists
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Playlists")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            items(displayedPlaylists, key = { it.id }) { pl ->
+                TiviMenuRow(
+                    title = pl.name,
+                    subtitle = "Channels: ${pl.channelCount}",
+                    leadingIcon = { focused ->
+                        if (pl.isActive) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Enabled",
+                                tint = if (focused) TiviFocusText else TiviAccentBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.size(20.dp))
+                        }
+                    },
+                    onClick = { onSelectPlaylist(pl) }
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(8.dp)) }
+
+            item {
+                TiviMenuRow(
+                    title = "Add playlist",
+                    onClick = onAddPlaylist
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Update all playlists",
+                    onClick = onUpdateAllPlaylists
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Playlists sorting",
+                    subtitle = playlistsSorting,
+                    onClick = onCycleSorting
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Reorder playlists",
+                    onClick = onReorderPlaylists
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 3. REORDER PLAYLISTS SUBMENU ("Reorder playlists")
+// ============================================================================
+
+@Composable
+private fun ReorderPlaylistsSubMenu(
+    playlists: List<PlaylistEntity>,
+    onSaveOrder: (List<Long>) -> Unit
+) {
+    var mutableList by remember(playlists) { mutableStateOf(playlists) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Reorder playlists")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            itemsIndexed(mutableList, key = { _, item -> item.id }) { index, item ->
+                TiviReorderRow(
+                    title = item.name,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < mutableList.lastIndex,
+                    onMoveUp = {
+                        if (index > 0) {
+                            val copy = mutableList.toMutableList()
+                            val moved = copy.removeAt(index)
+                            copy.add(index - 1, moved)
+                            mutableList = copy
+                            onSaveOrder(copy.map { it.id })
+                        }
+                    },
+                    onMoveDown = {
+                        if (index < mutableList.lastIndex) {
+                            val copy = mutableList.toMutableList()
+                            val moved = copy.removeAt(index)
+                            copy.add(index + 1, moved)
+                            mutableList = copy
+                            onSaveOrder(copy.map { it.id })
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 4. PER-PLAYLIST DETAIL SUBMENU (e.g., "My")
+// ============================================================================
+
+@Composable
+private fun PlaylistDetailSubMenu(
+    playlist: PlaylistEntity,
+    assignedEpgCount: Int,
+    onUpdatePlaylistEntity: (PlaylistEntity) -> Unit,
+    onEditName: () -> Unit,
+    onEditUrl: () -> Unit,
+    onEditUserAgent: () -> Unit,
+    onOpenPlaylistEpgSources: () -> Unit,
+    onOpenManageGroups: () -> Unit,
+    onRefreshPlaylist: () -> Unit,
+    onDeletePlaylist: () -> Unit
+) {
+    // Read extended properties safely via reflection or default helpers so it compiles before & after PlaylistEntity update
+    val logosPriority = remember(playlist) { playlist.readStringProp("logosPriority", "Prefer logos from playlist") }
+    val catchUpType = remember(playlist) { playlist.readStringProp("catchUpType", "None") }
+    val updateIntervalHours = remember(playlist) { playlist.readIntProp("updateIntervalHours", 24) }
+    val updateOnStart = remember(playlist) { playlist.readBooleanProp("updateOnStart", true) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = playlist.name)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item {
+                TiviSwitchRow(
+                    title = "Enable playlist",
+                    checked = playlist.isActive,
+                    onCheckedChange = { enabled ->
+                        onUpdatePlaylistEntity(playlist.copy(isActive = enabled))
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Playlist name",
+                    subtitle = playlist.name,
+                    onClick = onEditName
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Playlist URL",
+                    subtitle = playlist.sourceUrl,
+                    onClick = onEditUrl
+                )
+            }
+            item {
+                val epgSummary = when (assignedEpgCount) {
+                    0 -> "Not assigned"
+                    1 -> "1 source"
+                    else -> "$assignedEpgCount sources"
+                }
+                TiviMenuRow(
+                    title = "EPG sources",
+                    subtitle = epgSummary,
+                    onClick = onOpenPlaylistEpgSources
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Logos priority",
+                    subtitle = logosPriority,
+                    onClick = {
+                        val next = when (logosPriority) {
+                            "Prefer logos from playlist" -> "Prefer logos from EPG"
+                            else -> "Prefer logos from playlist"
+                        }
+                        onUpdatePlaylistEntity(playlist.withUpdatedProp("logosPriority", next))
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Catch-up",
+                    subtitle = catchUpType,
+                    onClick = {
+                        val options = listOf("None", "Auto", "Xtream Codes", "Flussonic")
+                        val next = options[(options.indexOf(catchUpType) + 1) % options.size]
+                        onUpdatePlaylistEntity(playlist.withUpdatedProp("catchUpType", next))
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "User-Agent",
+                    subtitle = playlist.customUserAgent?.ifBlank { "Not set" } ?: "Not set",
+                    onClick = onEditUserAgent
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Manage groups",
+                    onClick = onOpenManageGroups
+                )
+            }
+
+            item {
+                DrawerSectionHeader(title = "Update options")
+            }
+
+            item {
+                TiviMenuRow(
+                    title = "Update interval, hours",
+                    subtitle = if (updateIntervalHours <= 0) "Off" else updateIntervalHours.toString(),
+                    onClick = {
+                        val intervals = listOf(0, 2, 6, 12, 24, 48)
+                        val next = intervals[(intervals.indexOf(updateIntervalHours) + 1) % intervals.size]
+                        onUpdatePlaylistEntity(playlist.withUpdatedProp("updateIntervalHours", next))
+                    }
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Update on app start",
+                    checked = updateOnStart,
+                    onCheckedChange = { enabled ->
+                        onUpdatePlaylistEntity(playlist.withUpdatedProp("updateOnStart", enabled))
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Update playlist",
+                    onClick = onRefreshPlaylist
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Delete playlist",
+                    onClick = onDeletePlaylist
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 5. PER-PLAYLIST EPG SOURCES ("EPG sources (My)")
+// ============================================================================
+
+@Composable
+private fun PlaylistEpgSourcesSubMenu(
+    playlist: PlaylistEntity,
+    allSources: List<EpgSourceEntity>,
+    assignedSourceIds: List<Long>,
+    onManageSources: () -> Unit,
+    onChangePriority: () -> Unit,
+    onToggleAssignment: (Long, Boolean) -> Unit
+) {
+    val assignedSources = remember(allSources, assignedSourceIds) {
+        assignedSourceIds.mapNotNull { id -> allSources.find { it.id == id } }
+    }
+    val unassignedSources = remember(allSources, assignedSourceIds) {
+        allSources.filter { it.id !in assignedSourceIds }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "EPG sources (${playlist.name})")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item {
+                TiviMenuRow(
+                    title = "Manage sources",
+                    onClick = onManageSources
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Change sources priority",
+                    enabled = assignedSources.size > 1,
+                    onClick = onChangePriority
+                )
+            }
+
+            if (assignedSources.isNotEmpty()) {
+                item { DrawerSectionHeader(title = "Assigned sources") }
+                items(assignedSources, key = { "assigned_${it.id}" }) { src ->
+                    val label = if (src.isDefault) "Default (${src.name})" else src.name
+                    TiviSwitchRow(
+                        title = label,
+                        subtitle = src.url,
+                        checked = true,
+                        onCheckedChange = { checked -> onToggleAssignment(src.id, checked) }
+                    )
+                }
+            }
+
+            if (unassignedSources.isNotEmpty()) {
+                item { DrawerSectionHeader(title = "Unassigned sources") }
+                items(unassignedSources, key = { "unassigned_${it.id}" }) { src ->
+                    val label = if (src.isDefault) "Default (${src.name})" else src.name
+                    TiviSwitchRow(
+                        title = label,
+                        subtitle = src.url,
+                        checked = false,
+                        onCheckedChange = { checked -> onToggleAssignment(src.id, checked) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistEpgPrioritySubMenu(
+    playlistName: String,
+    assignedSources: List<EpgSourceEntity>,
+    onSaveOrder: (List<Long>) -> Unit
+) {
+    var mutableList by remember(assignedSources) { mutableStateOf(assignedSources) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Change sources priority ($playlistName)")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            itemsIndexed(mutableList, key = { _, item -> item.id }) { index, src ->
+                TiviReorderRow(
+                    title = src.name,
+                    subtitle = src.url,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < mutableList.lastIndex,
+                    onMoveUp = {
+                        if (index > 0) {
+                            val copy = mutableList.toMutableList()
+                            val moved = copy.removeAt(index)
+                            copy.add(index - 1, moved)
+                            mutableList = copy
+                            onSaveOrder(copy.map { it.id })
+                        }
+                    },
+                    onMoveDown = {
+                        if (index < mutableList.lastIndex) {
+                            val copy = mutableList.toMutableList()
+                            val moved = copy.removeAt(index)
+                            copy.add(index + 1, moved)
+                            mutableList = copy
+                            onSaveOrder(copy.map { it.id })
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 6. MANAGE GROUPS SUBMENU ("Manage groups")
+// ============================================================================
+
+@Composable
+private fun ManageGroupsSubMenu(
+    playlist: PlaylistEntity,
+    groups: List<ChannelGroupEntity>,
+    onUpdatePlaylistEntity: (PlaylistEntity) -> Unit,
+    onReorderGroups: () -> Unit,
+    onShowAllGroups: () -> Unit,
+    onHideAllGroups: () -> Unit,
+    onToggleGroup: (String, Boolean) -> Unit
+) {
+    val groupsSorting = remember(playlist) { playlist.readStringProp("groupsSorting", "By order in playlist") }
+    val showNewlyAdded = remember(playlist) { playlist.readBooleanProp("showNewlyAddedGroups", true) }
+
+    val sortedGroups = remember(groups, groupsSorting) {
+        when (groupsSorting) {
+            "By name" -> groups.sortedBy { it.groupTitle.lowercase() }
+            "Manual" -> groups.sortedBy { it.sortOrder }
+            else -> groups.sortedBy { it.originalOrder }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Manage groups")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item {
+                TiviMenuRow(
+                    title = "Groups sorting",
+                    subtitle = groupsSorting,
+                    onClick = {
+                        val modes = listOf("By order in playlist", "By name", "Manual")
+                        val next = modes[(modes.indexOf(groupsSorting) + 1) % modes.size]
+                        onUpdatePlaylistEntity(playlist.withUpdatedProp("groupsSorting", next))
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Reorder groups",
+                    onClick = onReorderGroups
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Show all groups",
+                    onClick = onShowAllGroups
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Hide all groups",
+                    onClick = onHideAllGroups
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Show newly added groups",
+                    checked = showNewlyAdded,
+                    onCheckedChange = { enabled ->
+                        onUpdatePlaylistEntity(playlist.withUpdatedProp("showNewlyAddedGroups", enabled))
+                    }
+                )
+            }
+
+            item { DrawerSectionHeader(title = "Groups") }
+
+            items(sortedGroups, key = { "${it.playlistId}_${it.groupTitle}" }) { group ->
+                TiviSwitchRow(
+                    title = group.groupTitle,
+                    checked = group.isVisible,
+                    onCheckedChange = { visible ->
+                        onToggleGroup(group.groupTitle, visible)
+                    }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReorderGroupsSubMenu(
+    groups: List<ChannelGroupEntity>,
+    onSaveOrder: (List<String>) -> Unit
+) {
+    var mutableList by remember(groups) { mutableStateOf(groups) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Reorder groups")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            itemsIndexed(mutableList, key = { _, g -> g.groupTitle }) { index, group ->
+                TiviReorderRow(
+                    title = group.groupTitle,
+                    canMoveUp = index > 0,
+                    canMoveDown = index < mutableList.lastIndex,
+                    onMoveUp = {
+                        if (index > 0) {
+                            val copy = mutableList.toMutableList()
+                            val moved = copy.removeAt(index)
+                            copy.add(index - 1, moved)
+                            mutableList = copy
+                            onSaveOrder(copy.map { it.groupTitle })
+                        }
+                    },
+                    onMoveDown = {
+                        if (index < mutableList.lastIndex) {
+                            val copy = mutableList.toMutableList()
+                            val moved = copy.removeAt(index)
+                            copy.add(index + 1, moved)
+                            mutableList = copy
+                            onSaveOrder(copy.map { it.groupTitle })
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 7. GLOBAL EPG SUBMENU ("EPG")
+// ============================================================================
+
+@Composable
+private fun EpgSettingsSubMenu(
+    state: EpgGlobalSettingsState,
+    onOpenEpgSources: () -> Unit,
+    onChangeState: (EpgGlobalSettingsState) -> Unit,
+    onUpdateEpg: () -> Unit,
+    onClearEpg: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "EPG")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item {
+                TiviMenuRow(
+                    title = "EPG sources",
+                    onClick = onOpenEpgSources
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Past days to keep EPG",
+                    subtitle = state.pastDaysToKeep.toString(),
+                    onClick = {
+                        val options = listOf(1, 2, 3, 5, 7, 14)
+                        val next = options[(options.indexOf(state.pastDaysToKeep) + 1) % options.size]
+                        onChangeState(state.copy(pastDaysToKeep = next))
+                    }
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Store program descriptions",
+                    checked = state.storeProgramDescriptions,
+                    onCheckedChange = { checked ->
+                        onChangeState(state.copy(storeProgramDescriptions = checked))
+                    }
+                )
+            }
+
+            item {
+                DrawerSectionHeader(title = "Update options")
+            }
+
+            item {
+                TiviMenuRow(
+                    title = "Update interval, hours",
+                    subtitle = if (state.updateIntervalHours <= 0) "Off" else state.updateIntervalHours.toString(),
+                    onClick = {
+                        val options = listOf(0, 2, 6, 12, 24, 48)
+                        val next = options[(options.indexOf(state.updateIntervalHours) + 1) % options.size]
+                        onChangeState(state.copy(updateIntervalHours = next))
+                    }
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Update on app start",
+                    checked = state.updateOnAppStart,
+                    onCheckedChange = { checked ->
+                        onChangeState(state.copy(updateOnAppStart = checked))
+                    }
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Update on playlists change",
+                    checked = state.updateOnPlaylistsChange,
+                    onCheckedChange = { checked ->
+                        onChangeState(state.copy(updateOnPlaylistsChange = checked))
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Update EPG",
+                    onClick = onUpdateEpg
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Clear EPG",
+                    onClick = onClearEpg
+                )
+            }
+
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 14.dp)
+                ) {
+                    Text(
+                        text = "Latest update status",
+                        color = TiviSecondaryText,
+                        fontSize = 13.sp
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = state.latestUpdateStatus,
+                        color = TiviSecondaryText.copy(alpha = 0.85f),
+                        fontSize = 12.sp,
+                        lineHeight = 16.sp
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 8. GLOBAL EPG SOURCES SUBMENU ("EPG sources")
+// ============================================================================
+
+@Composable
+private fun EpgSourcesSubMenu(
+    sources: List<EpgSourceEntity>,
+    onAddSource: () -> Unit,
+    onSelectSource: (EpgSourceEntity) -> Unit,
+    onDeleteSource: (EpgSourceEntity) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "EPG sources")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            items(sources, key = { it.id }) { src ->
+                val titleText = if (src.isDefault) "${src.name} (default)" else src.name
+                val subtitleText = if (src.sourceType.equals("STALKER", ignoreCase = true)) {
+                    "Stalker Portal"
+                } else {
+                    src.url
+                }
+                TiviMenuRow(
+                    title = titleText,
+                    subtitle = subtitleText,
+                    leadingIcon = { focused ->
+                        if (src.isEnabled) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Active",
+                                tint = if (focused) TiviFocusText else TiviAccentBlue,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.size(20.dp))
+                        }
+                    },
+                    trailingContent = { focused ->
+                        IconButton(
+                            onClick = { onDeleteSource(src) },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Delete source",
+                                tint = if (focused) TiviFocusText else TiviSecondaryText,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    },
+                    onClick = { onSelectSource(src) }
+                )
+            }
+
+            item { Spacer(modifier = Modifier.height(6.dp)) }
+
+            item {
+                TiviMenuRow(
+                    title = "Add source",
+                    onClick = onAddSource
+                )
+            }
+
+            item {
+                Text(
+                    text = "EPG sources should be assigned in the playlist settings",
+                    color = TiviSecondaryText,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp)
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 9. FULL-SCREEN EPG URL ENTRY ("EPG URL")
+// ============================================================================
+
+@Composable
+private fun AddEpgUrlScreen(
+    onConfirm: (String) -> Unit,
+    onCancel: () -> Unit
+) {
+    var urlText by remember { mutableStateOf("") }
+    val clipboardManager = LocalClipboardManager.current
+
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(TiviModalBg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
+            .padding(horizontal = 48.dp, vertical = 36.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        // Left Column: Icon + Title + Description
+        Row(
+            modifier = Modifier.weight(1.1f),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Link,
+                contentDescription = null,
+                tint = TiviPrimaryText,
+                modifier = Modifier.size(72.dp)
+            )
+            Spacer(modifier = Modifier.width(24.dp))
+            Column {
+                Text(
+                    text = "EPG URL",
+                    color = TiviPrimaryText,
+                    fontSize = 26.sp,
+                    fontWeight = FontWeight.Light
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Enter EPG URL. XMLTV format is only supported.",
+                    color = TiviSecondaryText,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "EPG source should be assigned in the playlist settings.",
+                    color = TiviSecondaryText,
+                    fontSize = 13.sp,
+                    lineHeight = 18.sp
+                )
+            }
+        }
+
+        // Center Column: URL Input + Paste from clipboard
+        Column(
+            modifier = Modifier
+                .weight(1.2f)
+                .padding(horizontal = 24.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            val inputInteraction = remember { MutableInteractionSource() }
+            val isInputFocused by inputInteraction.collectIsFocusedAsState()
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(if (isInputFocused) TiviFocusBg else Color.Transparent)
+                    .border(
+                        width = 1.dp,
+                        color = if (isInputFocused) TiviFocusBg else TiviSecondaryText.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(4.dp)
+                    )
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+            ) {
+                BasicTextField(
+                    value = urlText,
+                    onValueChange = { urlText = it },
+                    singleLine = true,
+                    interactionSource = inputInteraction,
+                    textStyle = TextStyle(
+                        color = if (isInputFocused) TiviFocusText else TiviPrimaryText,
+                        fontSize = 15.sp
+                    ),
+                    cursorBrush = SolidColor(if (isInputFocused) TiviFocusText else TiviAccentBlue),
+                    decorationBox = { innerTextField ->
+                        if (urlText.isEmpty()) {
+                            Text(
+                                text = "Enter URL",
+                                color = if (isInputFocused) TiviFocusText.copy(alpha = 0.7f) else TiviSecondaryText,
+                                fontSize = 15.sp
+                            )
+                        }
+                        innerTextField()
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            TiviMenuRow(
+                title = "Paste from clipboard",
+                onClick = {
+                    val clip = clipboardManager.getText()?.text
+                    if (!clip.isNullOrBlank()) {
+                        urlText = clip.trim()
+                    }
+                }
+            )
+        }
+
+        // Right Column: OK / Cancel Actions
+        Column(
+            modifier = Modifier.width(140.dp),
+            verticalArrangement = Arrangement.Center
+        ) {
+            TiviMenuRow(
+                title = "OK",
+                onClick = { onConfirm(urlText) }
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            TiviMenuRow(
+                title = "Cancel",
+                onClick = onCancel
+            )
+        }
+    }
+}
+
+// ============================================================================
+// REUSABLE TIVIMATE DRAWER UI BUILDING BLOCKS
+// ============================================================================
+
+@Composable
+private fun DrawerHeader(title: String) {
+    Text(
+        text = title,
+        color = TiviPrimaryText,
+        fontSize = 20.sp,
+        fontWeight = FontWeight.Medium,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 14.dp)
+    )
+}
+
+@Composable
+private fun DrawerSectionHeader(title: String) {
+    Text(
+        text = title,
+        color = TiviAccentBlue,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Medium,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 6.dp)
+    )
+}
+
+@Composable
+private fun TiviMenuRow(
+    title: String,
+    subtitle: String? = null,
+    enabled: Boolean = true,
+    leadingIcon: (@Composable (Boolean) -> Unit)? = null,
+    trailingContent: (@Composable (Boolean) -> Unit)? = null,
+    onClick: () -> Unit
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+
+    val bgColor = if (isFocused) TiviFocusBg else Color.Transparent
+    val titleColor = when {
+        !enabled -> TiviSecondaryText.copy(alpha = 0.45f)
+        isFocused -> TiviFocusText
+        else -> TiviPrimaryText
+    }
+    val subColor = when {
+        !enabled -> TiviSecondaryText.copy(alpha = 0.35f)
+        isFocused -> TiviFocusText.copy(alpha = 0.75f)
+        else -> TiviSecondaryText
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(bgColor)
+            .focusable(enabled = enabled, interactionSource = interactionSource)
+            .clickable(
+                enabled = enabled,
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onClick
+            )
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (leadingIcon != null) {
+            leadingIcon(isFocused)
+            Spacer(modifier = Modifier.width(14.dp))
+        }
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                color = titleColor,
+                fontSize = 15.sp,
+                fontWeight = if (isFocused) FontWeight.Medium else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (!subtitle.isNullOrBlank()) {
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = subtitle,
+                    color = subColor,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+
+        if (trailingContent != null) {
+            Spacer(modifier = Modifier.width(8.dp))
+            trailingContent(isFocused)
+        }
+    }
+}
+
+@Composable
+private fun TiviSwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    TiviMenuRow(
+        title = title,
+        subtitle = subtitle,
+        onClick = { onCheckedChange(!checked) },
+        trailingContent = { isFocused ->
+            Switch(
+                checked = checked,
+                onCheckedChange = null,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = TiviAccentBlue,
+                    checkedTrackColor = TiviAccentBlue.copy(alpha = 0.45f),
+                    uncheckedThumbColor = if (isFocused) TiviFocusText else TiviSecondaryText,
+                    uncheckedTrackColor = Color.Gray.copy(alpha = 0.35f)
+                )
+            )
+        }
+    )
+}
+
+@Composable
+private fun TiviReorderRow(
+    title: String,
+    subtitle: String? = null,
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit
+) {
+    TiviMenuRow(
+        title = title,
+        subtitle = subtitle,
+        onClick = {
+            if (canMoveUp) onMoveUp() else if (canMoveDown) onMoveDown()
+        },
+        trailingContent = { isFocused ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onMoveUp,
+                    enabled = canMoveUp,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowUpward,
+                        contentDescription = "Move Up",
+                        tint = if (!canMoveUp) Color.Gray.copy(alpha = 0.3f)
+                        else if (isFocused) TiviFocusText else TiviPrimaryText,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onMoveDown,
+                    enabled = canMoveDown,
+                    modifier = Modifier.size(30.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ArrowDownward,
+                        contentDescription = "Move Down",
+                        tint = if (!canMoveDown) Color.Gray.copy(alpha = 0.3f)
+                        else if (isFocused) TiviFocusText else TiviPrimaryText,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    )
+}
+
+// ============================================================================
+// SAFE PROPERTY ACCESSORS (Bridges old & updated PlaylistEntity seamlessly)
+// ============================================================================
+
+private fun PlaylistEntity.readStringProp(name: String, default: String): String {
+    return try {
+        val field = this::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        (field.get(this) as? String) ?: default
+    } catch (_: Exception) {
+        default
+    }
+}
+
+private fun PlaylistEntity.readIntProp(name: String, default: Int): Int {
+    return try {
+        val field = this::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        (field.get(this) as? Int) ?: default
+    } catch (_: Exception) {
+        default
+    }
+}
+
+private fun PlaylistEntity.readBooleanProp(name: String, default: Boolean): Boolean {
+    return try {
+        val field = this::class.java.getDeclaredField(name)
+        field.isAccessible = true
+        (field.get(this) as? Boolean) ?: default
+    } catch (_: Exception) {
+        default
+    }
+}
+
+private fun PlaylistEntity.withUpdatedProp(name: String, value: Any?): PlaylistEntity {
+    return try {
+        val copyMethod = this::class.java.methods.firstOrNull { it.name == "copy" } ?: return this
+        val params = copyMethod.parameters
+        val args = Array<Any?>(params.size) { idx ->
+            val pName = params[idx].name
+            if (pName == name) {
+                value
+            } else {
+                val f = this::class.java.declaredFields.getOrNull(idx)
+                f?.isAccessible = true
+                f?.get(this)
+            }
+        }
+        (copyMethod.invoke(this, *args) as? PlaylistEntity) ?: this
+    } catch (_: Exception) {
+        this
+    }
+}
