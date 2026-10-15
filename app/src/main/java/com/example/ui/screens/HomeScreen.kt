@@ -154,10 +154,11 @@ fun HomeScreen(
         }
     }
 
-    // Auto-play safe first channel if explicitly switched to TV mode
+    // TV mode: resume the channel that was playing in the previous launch. If nothing was played
+    // last time this does nothing and the TV overlay opens the channel list instead.
     LaunchedEffect(isTvMode, channels.isNotEmpty()) {
         if (isTvMode && currentChannel == null && channels.isNotEmpty()) {
-            viewModel.playLastOrFirst(channels)
+            viewModel.resumeLastPlayback(channels)
         }
     }
 
