@@ -115,6 +115,7 @@ fun HomeScreen(
     val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
     val videoQuality by viewModel.videoQuality.collectAsStateWithLifecycle()
     val availableQualities by viewModel.availableQualities.collectAsStateWithLifecycle()
+    val videoTracks by viewModel.videoTracks.collectAsStateWithLifecycle()
     val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
     val subtitleTracks by viewModel.subtitleTracks.collectAsStateWithLifecycle()
 
@@ -662,11 +663,10 @@ fun HomeScreen(
 
     if (showQualityDialog) {
         QualityPickerDialog(
-            currentQuality = videoQuality,
-            streamInfo = streamInfo,
-            availableQualities = availableQualities,
-            onSelectQuality = { viewModel.setVideoQuality(it) },
-            onDismiss = { showQualityDialog = false }
+            videoTracks = videoTracks,
+            onSelectTrack = { viewModel.selectVideoTrack(it) },
+            onDismiss = { showQualityDialog = false },
+            isTvMode = isTvMode
         )
     }
 
