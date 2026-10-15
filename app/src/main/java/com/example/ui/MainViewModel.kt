@@ -46,23 +46,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .take(20)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    private var resolvingStartup = false
+    // ---- Resume-last-channel on launch ----
+    // The channel is saved whenever playback starts. At launch the saved value is read and cleared
+    // straight away, so it only survives to the next launch if something was played in this one.
+    private val prefs = application.getSharedPreferences("tvbuddy_prefs", android.content.Context.MODE_PRIVATE)
+    private val pendingResumeId: Long = prefs.getLong(KEY_RESUME_ID, -1L)
+    private val pendingResumeUrl: String? = prefs.getString(KEY_RESUME_URL, null)
+    private var resumeHandled = false
 
-    /** Starts the last played channel (falls back to the first channel). */
-    fun playLastOrFirst(channels: List<ChannelEntity>) {
-        if (resolvingStartup || channels.isEmpty() || currentChannel.value != null) return
-        resolvingStartup = true
-        viewModelScope.launch {
-            try {
-                val history = repository.playbackHistory.first()
-                val byId = channels.associateBy { it.id }
-                val byUrl = channels.associateBy { it.streamUrl }
-                val last = history.firstNotNullOfOrNull { byId[it.channelId] ?: byUrl[it.streamUrl] }
-                if (currentChannel.value == null) playChannel(last ?: channels.first())
-            } finally {
-                resolvingStartup = false
-            }
-        }
+    init {
+        prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
+    }
+
+    /**
+     * Starts the channel that was playing in the previous launch. Does nothing when the previous
+     * launch had no playback (the TV UI then shows the channel list instead).
+     */
+    fun resumeLastPlayback(channels: List<ChannelEntity>) {
+        if (resumeHandled || channels.isEmpty() || currentChannel.value != null) return
+        resumeHandled = true
+        if (pendingResumeId < 0L && pendingResumeUrl.isNullOrBlank()) return
+        val target = channels.firstOrNull { it.id == pendingResumeId }
+            ?: channels.firstOrNull { !pendingResumeUrl.isNullOrBlank() && it.streamUrl == pendingResumeUrl }
+            ?: return
+        playChannel(target)
     }
 
     private val _selectedCategory = MutableStateFlow("All")
@@ -146,6 +153,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun playChannel(channel: ChannelEntity) {
+        resumeHandled = true
+        prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
         playerManager.playChannel(channel, _globalSpoof.value)
         viewModelScope.launch {
             repository.recordHistory(channel)
@@ -328,5 +337,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         playerManager.release()
+    }
+
+    private companion object {
+        const val KEY_RESUME_ID = "resume_channel_id"
+        const val KEY_RESUME_URL = "resume_stream_url"
     }
 }
