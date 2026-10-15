@@ -48,6 +48,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -103,7 +104,7 @@ private val TvSelected = Color(0xFFF1F3F4)
  * TiviMate-style Android TV player UI.
  *
  * Remote control while watching (no panel open):
- *   OK (click)      -> info banner + channel strip
+ *   OK (click)      -> info banner + channel strip (TV guide tile first); DOWN there opens the action bar
  *   OK (long press) -> action bar (channels, guide, quality, audio, subtitles, favourite ...)
  *   LEFT            -> channel list
  *   UP / DOWN       -> previous / next channel
@@ -176,6 +177,18 @@ fun TvPlayerOverlay(
     LaunchedEffect(panel, channel?.id) {
         try { focusRequester.requestFocus() } catch (_: Exception) {}
     }
+    // Nothing is playing (the last launch had no playback): show the channel list right away
+    val latestChannel by rememberUpdatedState(channel)
+    LaunchedEffect(channel == null, channelsList.isNotEmpty()) {
+        if (channel == null && channelsList.isNotEmpty()) {
+            delay(400)   // give a pending "resume last channel" a moment to start first
+            if (latestChannel == null && panel == TvPanel.NONE) {
+                listIndex = 0
+                panel = TvPanel.CHANNELS
+            }
+        }
+    }
+
     // Take focus back after dialogs (audio, quality, ...) close
     LaunchedEffect(Unit) {
         while (true) {
@@ -195,7 +208,8 @@ fun TvPlayerOverlay(
         }
     }
 
-    BackHandler(enabled = panel != TvPanel.NONE) {
+    // With no channel playing, the channel list is the home screen: BACK leaves the app
+    BackHandler(enabled = panel != TvPanel.NONE && !(channel == null && panel == TvPanel.CHANNELS)) {
         panel = if (panel == TvPanel.PLAYLISTS) TvPanel.SETTINGS else TvPanel.NONE
     }
 
@@ -236,7 +250,12 @@ fun TvPlayerOverlay(
                 if (errorMessage != null && channel != null) onSelectChannel(channel) else openInfo()
             }
             TvPanel.INFO -> {
-                strip.getOrNull(stripIndex)?.let { onSelectChannel(it); panel = TvPanel.NONE }
+                if (stripIndex == 0) {
+                    panel = TvPanel.NONE
+                    onOpenEpgGuide()
+                } else {
+                    strip.getOrNull(stripIndex - 1)?.let { onSelectChannel(it); panel = TvPanel.NONE }
+                }
             }
             TvPanel.SETTINGS -> {
                 when (settingsIndex) {
@@ -288,9 +307,9 @@ fun TvPlayerOverlay(
             }
             TvPanel.INFO -> when (key) {
                 Key.DirectionLeft -> stripIndex = (stripIndex - 1).coerceAtLeast(0)
-                Key.DirectionRight -> stripIndex = (stripIndex + 1).coerceAtMost((strip.size - 1).coerceAtLeast(0))
+                Key.DirectionRight -> stripIndex = (stripIndex + 1).coerceAtMost(strip.size)   // 0 = TV guide tile
                 Key.DirectionUp -> if (!isRepeat) zap(-1)
-                Key.DirectionDown -> if (!isRepeat) zap(+1)
+                Key.DirectionDown -> if (!isRepeat) { menuIndex = 0; panel = TvPanel.MENU }
                 else -> return false
             }
             TvPanel.MENU -> {
@@ -319,7 +338,7 @@ fun TvPlayerOverlay(
             TvPanel.CHANNELS -> when (key) {
                 Key.DirectionUp -> listIndex = (listIndex - 1).coerceAtLeast(0)
                 Key.DirectionDown -> listIndex = (listIndex + 1).coerceAtMost((channelsList.size - 1).coerceAtLeast(0))
-                Key.DirectionLeft, Key.DirectionRight -> if (!isRepeat) panel = TvPanel.NONE
+                Key.DirectionLeft, Key.DirectionRight -> if (!isRepeat && channel != null) panel = TvPanel.NONE
                 else -> return false
             }
         }
@@ -440,7 +459,7 @@ fun TvPlayerOverlay(
             )
         }
 
-        // ---------- Action bar (long press OK) ----------
+        // ---------- Action bar (long press OK) - compact, pinned to the bottom ----------
         AnimatedVisibility(
             visible = panel == TvPanel.MENU,
             enter = fadeIn(),
@@ -451,37 +470,37 @@ fun TvPlayerOverlay(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))))
-                    .padding(horizontal = 32.dp)
-                    .padding(top = 48.dp, bottom = 24.dp),
+                    .background(Color.Black.copy(alpha = 0.94f))
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.Top
             ) {
                 items.forEachIndexed { i, item ->
                     val selected = i == menuIndex
                     Column(
-                        modifier = Modifier.width(120.dp),
+                        modifier = Modifier.width(100.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(56.dp)
-                                .clip(RoundedCornerShape(28.dp))
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(19.dp))
                                 .background(if (selected) TvSelected else Color.Transparent),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 item.icon,
                                 contentDescription = item.label,
-                                tint = if (selected) Color.Black else Color.White.copy(alpha = 0.7f),
-                                modifier = Modifier.size(30.dp)
+                                tint = if (selected) Color.Black else Color.White.copy(alpha = 0.6f),
+                                modifier = Modifier.size(20.dp)
                             )
                         }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(2.dp))
                         Text(
                             item.label,
-                            color = if (selected) Color.White else Color.White.copy(alpha = 0.65f),
-                            fontSize = 15.sp,
+                            color = if (selected) Color.White else Color.White.copy(alpha = 0.6f),
+                            fontSize = 11.sp,
+                            lineHeight = 13.sp,
                             textAlign = TextAlign.Center,
                             maxLines = 2,
                             overflow = TextOverflow.Ellipsis
@@ -533,6 +552,12 @@ private fun produceNow() = androidx.compose.runtime.produceState(System.currentT
         value = System.currentTimeMillis()
         delay(15_000)
     }
+}
+
+private fun fmtFps(fps: Float): String {
+    val rounded = Math.round(fps)
+    return if (kotlin.math.abs(fps - rounded) < 0.05f) "$rounded FPS"
+    else "${"%.2f".format(Locale.US, fps)} FPS"
 }
 
 private fun fmtTime(ms: Long): String =
@@ -614,6 +639,10 @@ private fun InfoBanner(
                             else -> null
                         }
                         resBadge?.let { Badge(it) }
+                        if (streamInfo.frameRate > 0f) {
+                            Spacer(Modifier.width(6.dp))
+                            Badge(fmtFps(streamInfo.frameRate))
+                        }
                         if (streamInfo.isDrmProtected) {
                             Spacer(Modifier.width(6.dp))
                             Badge("DRM")
@@ -654,8 +683,37 @@ private fun InfoBanner(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            itemsIndexed(strip) { i, ch ->
-                val selected = stripIndex == i
+            // Leftmost tile: TV guide
+            item {
+                val selected = stripIndex == 0
+                Column(
+                    modifier = Modifier
+                        .width(132.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (selected) Color(0xFF3A3F47) else Color(0xFF22262C))
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(Modifier.height(48.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Schedule,
+                            contentDescription = "TV guide",
+                            tint = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "TV guide",
+                        color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                        fontSize = 12.sp,
+                        lineHeight = 14.sp,
+                        maxLines = 1
+                    )
+                }
+            }
+            itemsIndexed(strip) { index, ch ->
+                val selected = stripIndex == index + 1
                 val prog = programFor(ch)
                 Column(
                     modifier = Modifier
