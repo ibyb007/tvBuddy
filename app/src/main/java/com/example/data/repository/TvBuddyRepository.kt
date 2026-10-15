@@ -8,6 +8,7 @@ import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.HistoryEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
+import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
@@ -58,13 +59,41 @@ class TvBuddyRepository(
     val favoriteChannels: Flow<List<ChannelEntity>> = channelDao.getFavoriteChannels()
     val allCategories: Flow<List<String>> = channelDao.getAllCategories()
     val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
-    val allCurrentPrograms: Flow<com.example.data.local.entity.ProgramEntity> // fixed type import
+    val allCurrentPrograms: Flow<List<ProgramEntity>> = programDao.getAllCurrentPrograms()
     val allEpgSources: Flow<List<EpgSourceEntity>> = epgSourceDao.getAllEpgSources()
     val allPlaylistEpgCrossRefs: Flow<List<PlaylistEpgCrossRef>> = epgSourceDao.getAllPlaylistEpgCrossRefs()
     val allChannelGroups: Flow<List<ChannelGroupEntity>> = channelGroupDao.getAllGroups()
 
-    init {
-        allCurrentPrograms = programDao.getAllCurrentPrograms() as Flow<com.example.data.local.entity.ProgramEntity>
+    private fun startPlaylistEpgImport(playlistId: Long, urls: List<String>, userAgent: String) {
+        if (urls.isEmpty()) return
+        epgPrefs.edit().putStringSet("urls_$playlistId", urls.toSet()).apply()
+        epgScope.launch {
+            for (url in urls) {
+                val srcId = addEpgSource(url)
+                togglePlaylistEpgAssignment(playlistId, srcId, true)
+            }
+            fetchEpgUrls(playlistId, urls, userAgent)
+        }
+    }
+
+    private suspend fun fetchEpgUrls(playlistId: Long, urls: List<String>, userAgent: String) {
+        var anyOk = false
+        for (u in urls) {
+            if (importXmltv(u, false, userAgent).isSuccess) anyOk = true
+        }
+        if (anyOk) epgPrefs.edit().putLong("ts_$playlistId", System.currentTimeMillis()).apply()
+    }
+
+    fun refreshStaleEpgs(userAgent: String) {
+        epgScope.launch {
+            val now = System.currentTimeMillis()
+            for (p in playlistDao.getAllPlaylists().first()) {
+                val urls = epgPrefs.getStringSet("urls_${p.id}", null)?.toList() ?: continue
+                if (now - epgPrefs.getLong("ts_${p.id}", 0L) > 12L * 60 * 60 * 1000) {
+                    fetchEpgUrls(p.id, urls, userAgent)
+                }
+            }
+        }
     }
 
     suspend fun initializeDefaultsIfNeeded() = withContext(Dispatchers.IO) {
@@ -81,7 +110,7 @@ class TvBuddyRepository(
     suspend fun syncGroupsForPlaylist(playlistId: Long, channels: List<ChannelEntity>, showNewlyAdded: Boolean) = withContext(Dispatchers.IO) {
         val existingGroups = channelGroupDao.getGroupsByPlaylistOnce(playlistId).associateBy { it.groupTitle }
         val distinctTitles = channels.map { it.groupTitle }.distinct().filter { it.isNotBlank() }
-        
+
         val newGroupEntities = distinctTitles.mapIndexed { index, title ->
             val existing = existingGroups[title]
             if (existing != null) {
@@ -105,8 +134,7 @@ class TvBuddyRepository(
         if (existing != null) return@withContext existing.id
         val isFirst = epgSourceDao.getAllEpgSources().first().isEmpty()
         val src = EpgSourceEntity(name = name, url = url, isDefault = isFirst)
-        val id = epgSourceDao.insertEpgSource(src)
-        id
+        epgSourceDao.insertEpgSource(src)
     }
 
     suspend fun deleteEpgSource(source: EpgSourceEntity) = withContext(Dispatchers.IO) {
@@ -175,7 +203,6 @@ class TvBuddyRepository(
                 programDao.insertPrograms(programs)
             }
 
-            // Purge anything older than retention threshold
             if (minTime > 0L) {
                 programDao.purgeOldPrograms(minTime)
             }
@@ -201,11 +228,20 @@ class TvBuddyRepository(
     }
 
     // ---- Playlist operations ----
+    fun getChannelsByPlaylist(playlistId: Long): Flow<List<ChannelEntity>> {
+        return channelDao.getChannelsByPlaylist(playlistId)
+    }
+
+    fun searchChannels(query: String): Flow<List<ChannelEntity>> {
+        return channelDao.searchChannels(query)
+    }
+
     suspend fun deletePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
         channelDao.deleteChannelsByPlaylist(playlist.id)
         channelGroupDao.deleteGroupsByPlaylist(playlist.id)
         epgSourceDao.clearAssignedSourcesForPlaylist(playlist.id)
         playlistDao.deletePlaylist(playlist)
+        epgPrefs.edit().remove("urls_${playlist.id}").remove("ts_${playlist.id}").apply()
     }
 
     suspend fun updatePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
@@ -238,13 +274,52 @@ class TvBuddyRepository(
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
             var spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
-            val content = if (isRawContent) sourceUrlOrContent else {
-                val reqBuilder = Request.Builder().url(sourceUrlOrContent)
-                spoof.getEffectiveHeaders().forEach { (k, v) -> reqBuilder.header(k, v) }
-                okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                    if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
-                    resp.body?.string() ?: ""
+            var effectiveHeaders = spoof.getEffectiveHeaders()
+
+            val content = if (isRawContent) {
+                sourceUrlOrContent
+            } else {
+                val candidates = buildList {
+                    add(spoof)
+                    SpoofPreset.entries
+                        .filter { it != spoofPreset && it != SpoofPreset.CUSTOM && it != SpoofPreset.EXOPLAYER }
+                        .forEach { add(SpoofProfile(it, "", customHeaders)) }
                 }
+                var found: String? = null
+                var lastProblem = "No valid M3U returned"
+                for (candidate in candidates) {
+                    val headers = candidate.getEffectiveHeaders()
+                    try {
+                        val reqBuilder = Request.Builder().url(sourceUrlOrContent)
+                        headers.forEach { (k, v) -> reqBuilder.header(k, v) }
+                        val body = okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                            if (!resp.isSuccessful) {
+                                lastProblem = "HTTP ${resp.code}: ${resp.message}"
+                                null
+                            } else {
+                                val finalHost = resp.request.url.host
+                                val text = resp.body?.string() ?: ""
+                                if (finalHost.contains("t.me") || finalHost.contains("telegram")) {
+                                    lastProblem = "Provider redirected to Telegram (player signature '${candidate.preset.displayName}' rejected)"
+                                    null
+                                } else if (!text.contains("#EXTM3U", ignoreCase = true) &&
+                                    !text.contains("#EXTINF", ignoreCase = true)) {
+                                    lastProblem = "Provider returned a non-playlist page for '${candidate.preset.displayName}'"
+                                    null
+                                } else text
+                            }
+                        }
+                        if (body != null) {
+                            found = body
+                            spoof = candidate
+                            effectiveHeaders = headers
+                            break
+                        }
+                    } catch (e: Exception) {
+                        lastProblem = e.message ?: e.javaClass.simpleName
+                    }
+                }
+                found ?: throw Exception(lastProblem)
             }
 
             val playlistId = playlistDao.insertPlaylist(
@@ -253,7 +328,8 @@ class TvBuddyRepository(
                     type = PlaylistType.M3U,
                     sourceUrl = if (isRawContent) "Pasted M3U" else sourceUrlOrContent,
                     spoofPreset = spoof.preset.name,
-                    customUserAgent = customUserAgent.ifBlank { null }
+                    customUserAgent = customUserAgent.ifBlank { null },
+                    customHeadersJson = if (customHeaders.isNotEmpty()) JSONObject(customHeaders).toString() else null
                 )
             )
 
@@ -261,7 +337,7 @@ class TvBuddyRepository(
                 content = content,
                 playlistId = playlistId,
                 defaultUserAgent = spoof.getUserAgent(),
-                defaultHeaders = spoof.getEffectiveHeaders()
+                defaultHeaders = effectiveHeaders
             )
 
             if (channels.isNotEmpty()) {
@@ -270,12 +346,7 @@ class TvBuddyRepository(
                 syncGroupsForPlaylist(playlistId, channels, true)
             }
 
-            // Extract url-tvg from M3U header and auto-assign
-            val extEpgUrls = M3uParser.extractEpgUrls(content)
-            for (url in extEpgUrls) {
-                val srcId = addEpgSource(url)
-                togglePlaylistEpgAssignment(playlistId, srcId, true)
-            }
+            startPlaylistEpgImport(playlistId, M3uParser.extractEpgUrls(content), spoof.getUserAgent())
 
             Result.success(channels.size)
         } catch (e: Exception) {
@@ -361,7 +432,10 @@ class TvBuddyRepository(
             val spoof = SpoofProfile(spoofPreset)
             val content = if (isRawContent) sourceUrlOrContent else {
                 val req = Request.Builder().url(sourceUrlOrContent).header("User-Agent", spoof.getUserAgent()).build()
-                okHttpClient.newCall(req).execute().use { resp -> resp.body?.string() ?: "" }
+                okHttpClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
+                    resp.body?.string() ?: ""
+                }
             }
 
             val playlistId = playlistDao.insertPlaylist(
@@ -385,7 +459,7 @@ class TvBuddyRepository(
         }
     }
 
-    fun getScheduleForChannel(epgChannelId: String): Flow<List<com.example.data.local.entity.ProgramEntity>> {
+    fun getScheduleForChannel(epgChannelId: String): Flow<List<ProgramEntity>> {
         return programDao.getScheduleForChannel(epgChannelId)
     }
 
