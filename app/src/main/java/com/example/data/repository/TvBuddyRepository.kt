@@ -14,7 +14,6 @@ import com.example.data.network.StalkerClient
 import com.example.data.network.XtreamClient
 import com.example.data.parser.JsonPlaylistParser
 import com.example.data.parser.M3uParser
-import com.example.data.sample.DemoChannels
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -46,31 +45,14 @@ class TvBuddyRepository(
     val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
     val allCurrentPrograms: Flow<List<com.example.data.local.entity.ProgramEntity>> = programDao.getAllCurrentPrograms()
 
+    /** No bundled demo content: the app starts empty and removes the old demo playlist from earlier installs. */
     suspend fun initializeDefaultsIfNeeded() = withContext(Dispatchers.IO) {
-        val existing = playlistDao.getAllPlaylists().first()
-        if (existing.isEmpty()) {
-            val playlistId = playlistDao.insertPlaylist(DemoChannels.demoPlaylist)
-            val demoChannels = DemoChannels.getDemoChannels(playlistId)
-            channelDao.insertChannels(demoChannels)
-            playlistDao.updateChannelCount(playlistId, demoChannels.size)
-
-            val demoPrograms = DemoChannels.getDemoPrograms()
-            programDao.insertPrograms(demoPrograms)
-        } else {
-            val demoPl = existing.firstOrNull { it.sourceUrl == "local://curated_demo.m3u" }
-            if (demoPl != null) {
-                val demoChs = channelDao.getChannelsByPlaylist(demoPl.id).first()
-                if (demoChs.none { it.streamId == "MN+.HD.in" } || demoChs.any { it.streamUrl.contains("commondatastorage.googleapis.com") || it.streamUrl.contains("gtv-videos-bucket") }) {
-                    channelDao.deleteChannelsByPlaylist(demoPl.id)
-                    val freshDemoChannels = DemoChannels.getDemoChannels(demoPl.id)
-                    channelDao.insertChannels(freshDemoChannels)
-                    playlistDao.updateChannelCount(demoPl.id, freshDemoChannels.size)
-
-                    val demoPrograms = DemoChannels.getDemoPrograms()
-                    programDao.insertPrograms(demoPrograms)
-                }
+        playlistDao.getAllPlaylists().first()
+            .filter { it.sourceUrl == "local://curated_demo.m3u" }
+            .forEach { demo ->
+                channelDao.deleteChannelsByPlaylist(demo.id)
+                playlistDao.deletePlaylist(demo)
             }
-        }
     }
 
     fun getScheduleForChannel(epgChannelId: String): Flow<List<com.example.data.local.entity.ProgramEntity>> {
