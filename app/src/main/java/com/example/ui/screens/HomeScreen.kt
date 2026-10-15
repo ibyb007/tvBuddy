@@ -104,6 +104,7 @@ fun HomeScreen(
     val uiMessage by viewModel.uiMessage.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val allCurrentPrograms by viewModel.allCurrentPrograms.collectAsStateWithLifecycle()
+    val recentChannels by viewModel.recentChannels.collectAsStateWithLifecycle()
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
@@ -154,9 +155,9 @@ fun HomeScreen(
     }
 
     // Auto-play safe first channel if explicitly switched to TV mode
-    LaunchedEffect(isTvMode) {
+    LaunchedEffect(isTvMode, channels.isNotEmpty()) {
         if (isTvMode && currentChannel == null && channels.isNotEmpty()) {
-            viewModel.playChannel(channels.first())
+            viewModel.playLastOrFirst(channels)
         }
     }
 
@@ -259,6 +260,7 @@ fun HomeScreen(
                 onOpenAudioTracks = { showAudioDialog = true },
                 onOpenSubtitles = { showSubtitleDialog = true },
                 allPrograms = allCurrentPrograms,
+                recentChannels = recentChannels,
                 onClosePlayer = {
                     if (isTvDevice) {
                         viewModel.closePlayer()
