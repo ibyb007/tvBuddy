@@ -101,6 +101,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val availableQualities: StateFlow<List<com.example.player.VideoQuality>> = playerManager.availableQualities
     val audioTracks: StateFlow<List<TrackInfo>> = playerManager.audioTracks
     val subtitleTracks: StateFlow<List<TrackInfo>> = playerManager.subtitleTracks
+    val videoTracks: StateFlow<List<com.example.player.VideoTrackOption>> = playerManager.videoTracks
     val allCurrentPrograms: StateFlow<List<com.example.data.local.entity.ProgramEntity>> =
         repository.allCurrentPrograms.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -133,6 +134,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.initializeDefaultsIfNeeded()
         }
+        // Playlists that declare an EPG source (url-tvg) get it refreshed when stale
+        repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
     }
 
     fun selectCategory(category: String) {
@@ -302,6 +305,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setVideoQuality(quality: com.example.player.VideoQuality) {
         playerManager.setVideoQuality(quality)
         _uiMessage.value = UiMessage(text = "Quality set to: ${quality.title}")
+    }
+
+    fun selectVideoTrack(option: com.example.player.VideoTrackOption?) {
+        playerManager.selectVideoTrack(option)
     }
 
     fun getScheduleForChannel(epgChannelId: String) = repository.getScheduleForChannel(epgChannelId)
