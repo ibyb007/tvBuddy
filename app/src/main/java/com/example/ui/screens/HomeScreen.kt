@@ -228,7 +228,26 @@ fun HomeScreen(
         }
     }
 
-    if (isTvMode && (channels.isNotEmpty() || currentChannel != null)) {
+    // Avoid flashing the "no content" screen while the database is still loading
+    var dbSettled by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(1200)
+        dbSettled = true
+    }
+
+    if (isTvMode && channels.isEmpty() && currentChannel == null) {
+        // First launch / nothing to watch: ask for a playlist, never auto-play
+        if (dbSettled) {
+            com.example.ui.components.TvEmptyState(
+                onAddPlaylist = { showAddDialog = true },
+                onOpenPlaylists = { showPlaylistManager = true },
+                onOpenSpoofSettings = { showSpoofDialog = true },
+                onOpenEpgGuide = { showEpgGuideDialog = true }
+            )
+        } else {
+            Box(modifier = Modifier.fillMaxSize().background(Color(0xFF14181B)))
+        }
+    } else if (isTvMode) {
         // TV Fullscreen Leanback Mode (TiviMate-style)
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             val player = viewModel.playerManager.getPlayer()
@@ -261,6 +280,8 @@ fun HomeScreen(
                 onOpenSubtitles = { showSubtitleDialog = true },
                 allPrograms = allCurrentPrograms,
                 recentChannels = recentChannels,
+                playlists = playlists,
+                onAddPlaylist = { showAddDialog = true },
                 onClosePlayer = {
                     if (isTvDevice) {
                         viewModel.closePlayer()
