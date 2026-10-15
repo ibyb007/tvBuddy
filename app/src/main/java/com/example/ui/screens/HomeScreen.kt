@@ -363,25 +363,6 @@ fun HomeScreen(
 
                             // Primary Action Icons & Overflow Menu
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                // Prominent Add Playlist Button on Top Bar
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = AccentCyan,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { showAddDialog = true }
-                                        .padding(horizontal = 10.dp, vertical = 6.dp)
-                                        .testTag("add_playlist_btn")
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Text("Add", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-                                    }
-                                }
-
-                                Spacer(modifier = Modifier.width(6.dp))
-
                                 // Search
                                 IconButton(
                                     onClick = { isSearchActive = !isSearchActive },
@@ -660,6 +641,7 @@ fun HomeScreen(
     // Dialogs
     if (showAddDialog) {
         AddPlaylistDialog(
+            isTvMode = isTvMode,
             onDismiss = { showAddDialog = false },
             onAddM3u = { name, src, isRaw, spoof -> viewModel.addM3uPlaylist(name, src, isRaw, spoof) },
             onAddXtream = { name, srv, u, p, spoof -> viewModel.addXtreamPlaylist(name, srv, u, p, spoof) },
