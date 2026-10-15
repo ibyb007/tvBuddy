@@ -79,12 +79,18 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class TvPanel { NONE, INFO, MENU, CHANNELS }
+private enum class TvPanel { NONE, INFO, MENU, CHANNELS, SETTINGS }
 
 private class TvMenuItem(
     val label: String,
     val icon: ImageVector,
     val action: () -> Unit
+)
+
+private val SETTINGS_ITEMS = listOf(
+    "Playlists" to "Add, remove and manage playlists",
+    "Player spoofing engine" to "Choose the player signature sent to providers",
+    "EPG" to "TV guide and XMLTV import"
 )
 
 private val TvPanelBg = Color(0xE6101418)
@@ -114,6 +120,7 @@ fun TvPlayerOverlay(
     currentProgram: ProgramEntity? = null,
     channelsList: List<ChannelEntity>,
     allPrograms: List<ProgramEntity> = emptyList(),
+    recentChannels: List<ChannelEntity> = emptyList(),
     onTogglePlayPause: () -> Unit,
     onNextChannel: () -> Unit,
     onPreviousChannel: () -> Unit,
@@ -134,6 +141,7 @@ fun TvPlayerOverlay(
     var stripIndex by remember { mutableIntStateOf(0) }       // 0 = TV guide tile, 1.. = channels
     var menuIndex by remember { mutableIntStateOf(0) }
     var listIndex by remember { mutableIntStateOf(0) }
+    var settingsIndex by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
 
     // Remember the previously played channel for the RIGHT key
@@ -151,6 +159,9 @@ fun TvPlayerOverlay(
             it.epgChannelId.equals(ch.streamId, ignoreCase = true) ||
                 it.epgChannelId.equals(ch.name, ignoreCase = true)
         }
+
+    // Recently played channels, most recent first (falls back to the full list)
+    val strip = recentChannels.ifEmpty { channelsList }
 
     fun currentIndex(): Int = channelsList.indexOfFirst { it.id == channel?.id }.coerceAtLeast(0)
 
@@ -181,7 +192,7 @@ fun TvPlayerOverlay(
     BackHandler(enabled = panel != TvPanel.NONE) { panel = TvPanel.NONE }
 
     fun openInfo() {
-        stripIndex = currentIndex() + 1
+        stripIndex = 0
         panel = TvPanel.INFO
     }
 
@@ -207,8 +218,7 @@ fun TvPlayerOverlay(
                 if (channel?.isFavorite == true) Icons.Default.Star else Icons.Outlined.StarOutline
             ) { channel?.let(onToggleFavorite) },
             TvMenuItem(aspectMode.title, Icons.Default.AspectRatio) { onCycleAspect() },
-            TvMenuItem("Spoofing", Icons.Default.Settings) { panel = TvPanel.NONE; onOpenSpoofSettings() },
-            TvMenuItem("Playlists", Icons.Default.FormatListBulleted) { panel = TvPanel.NONE; onOpenPlaylists() }
+            TvMenuItem("Settings", Icons.Default.Settings) { settingsIndex = 0; panel = TvPanel.SETTINGS }
         )
     }
 
@@ -218,8 +228,15 @@ fun TvPlayerOverlay(
                 if (errorMessage != null && channel != null) onSelectChannel(channel) else openInfo()
             }
             TvPanel.INFO -> {
-                if (stripIndex == 0) { panel = TvPanel.NONE; onOpenEpgGuide() }
-                else channelsList.getOrNull(stripIndex - 1)?.let { onSelectChannel(it); panel = TvPanel.NONE }
+                strip.getOrNull(stripIndex)?.let { onSelectChannel(it); panel = TvPanel.NONE }
+            }
+            TvPanel.SETTINGS -> {
+                panel = TvPanel.NONE
+                when (settingsIndex) {
+                    0 -> onOpenPlaylists()
+                    1 -> onOpenSpoofSettings()
+                    else -> onOpenEpgGuide()
+                }
             }
             TvPanel.MENU -> menuItems().getOrNull(menuIndex)?.action?.invoke()
             TvPanel.CHANNELS -> {
@@ -240,7 +257,7 @@ fun TvPlayerOverlay(
         if (channelsList.isEmpty()) return
         val next = (currentIndex() + delta + channelsList.size) % channelsList.size
         onSelectChannel(channelsList[next])
-        stripIndex = next + 1
+        stripIndex = 0
     }
 
     fun onDirection(key: Key, isRepeat: Boolean): Boolean {
@@ -257,7 +274,7 @@ fun TvPlayerOverlay(
             }
             TvPanel.INFO -> when (key) {
                 Key.DirectionLeft -> stripIndex = (stripIndex - 1).coerceAtLeast(0)
-                Key.DirectionRight -> stripIndex = (stripIndex + 1).coerceAtMost(channelsList.size)
+                Key.DirectionRight -> stripIndex = (stripIndex + 1).coerceAtMost((strip.size - 1).coerceAtLeast(0))
                 Key.DirectionUp -> if (!isRepeat) zap(-1)
                 Key.DirectionDown -> if (!isRepeat) zap(+1)
                 else -> return false
@@ -270,6 +287,13 @@ fun TvPlayerOverlay(
                     Key.DirectionUp, Key.DirectionDown -> {}
                     else -> return false
                 }
+            }
+            TvPanel.SETTINGS -> when (key) {
+                Key.DirectionUp -> settingsIndex = (settingsIndex - 1).coerceAtLeast(0)
+                Key.DirectionDown -> settingsIndex = (settingsIndex + 1).coerceAtMost(SETTINGS_ITEMS.size - 1)
+                Key.DirectionLeft -> if (!isRepeat) panel = TvPanel.MENU
+                Key.DirectionRight -> {}
+                else -> return false
             }
             TvPanel.CHANNELS -> when (key) {
                 Key.DirectionUp -> listIndex = (listIndex - 1).coerceAtLeast(0)
@@ -388,6 +412,7 @@ fun TvPlayerOverlay(
                 channel = channel,
                 program = currentProgram,
                 streamInfo = streamInfo,
+                strip = strip,
                 channelsList = channelsList,
                 stripIndex = stripIndex,
                 programFor = ::programFor
@@ -445,6 +470,52 @@ fun TvPlayerOverlay(
             }
         }
 
+        // ---------- Settings panel (right side, TiviMate style) ----------
+        AnimatedVisibility(
+            visible = panel == TvPanel.SETTINGS,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(520.dp)
+                    .background(TvPanelBg)
+                    .padding(horizontal = 16.dp, vertical = 24.dp)
+            ) {
+                Text(
+                    "Settings",
+                    color = Color.White,
+                    fontSize = 32.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 24.dp)
+                )
+                SETTINGS_ITEMS.forEachIndexed { i, (title, subtitle) ->
+                    val sel = i == settingsIndex
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (sel) TvSelected else Color.Transparent)
+                            .padding(horizontal = 16.dp, vertical = 18.dp)
+                    ) {
+                        Text(
+                            title,
+                            color = if (sel) Color.Black else Color.White,
+                            fontSize = 22.sp
+                        )
+                        Text(
+                            subtitle,
+                            color = (if (sel) Color.Black else Color.White).copy(alpha = 0.6f),
+                            fontSize = 14.sp
+                        )
+                    }
+                }
+            }
+        }
+
         // ---------- Channel list (LEFT) ----------
         AnimatedVisibility(
             visible = panel == TvPanel.CHANNELS,
@@ -477,6 +548,7 @@ private fun InfoBanner(
     channel: ChannelEntity?,
     program: ProgramEntity?,
     streamInfo: StreamInfo,
+    strip: List<ChannelEntity>,
     channelsList: List<ChannelEntity>,
     stripIndex: Int,
     programFor: (ChannelEntity) -> ProgramEntity?
@@ -485,14 +557,15 @@ private fun InfoBanner(
         modifier = Modifier
             .fillMaxWidth()
             .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.92f))))
-            .padding(horizontal = 40.dp)
-            .padding(top = 60.dp, bottom = 16.dp)
+            .padding(horizontal = 32.dp)
+            .padding(top = 40.dp, bottom = 14.dp)
     ) {
         if (channel != null) {
+            // Compact now-playing header
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(width = 150.dp, height = 84.dp)
+                        .size(width = 104.dp, height = 58.dp)
                         .clip(RoundedCornerShape(4.dp))
                         .background(Color(0x33FFFFFF)),
                     contentAlignment = Alignment.Center
@@ -502,42 +575,42 @@ private fun InfoBanner(
                             model = channel.logoUrl,
                             contentDescription = channel.name,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize().padding(8.dp)
+                            modifier = Modifier.fillMaxSize().padding(6.dp)
                         )
                     } else {
-                        Text(channel.name.take(2).uppercase(), color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+                        Text(channel.name.take(2).uppercase(), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                     }
                 }
-                Spacer(Modifier.width(24.dp))
+                Spacer(Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         program?.title ?: channel.name,
                         color = Color.White,
-                        fontSize = 28.sp,
+                        fontSize = 22.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(Modifier.height(4.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         if (program != null) {
+                            val left = ((program.endTimeMs - System.currentTimeMillis()) / 60_000L).coerceAtLeast(0)
                             Text(
-                                "${fmtTime(program.startTimeMs)} — ${fmtTime(program.endTimeMs)}",
+                                "${fmtTime(program.startTimeMs)} — ${fmtTime(program.endTimeMs)}   $left min",
                                 color = Color.White.copy(alpha = 0.7f),
-                                fontSize = 18.sp
+                                fontSize = 14.sp
                             )
                             Spacer(Modifier.width(16.dp))
-                            val left = ((program.endTimeMs - System.currentTimeMillis()) / 60_000L).coerceAtLeast(0)
-                            Text("$left min", color = Color.White.copy(alpha = 0.7f), fontSize = 18.sp)
-                            Spacer(Modifier.width(24.dp))
                         }
                         Text(
                             "${channel.channelNumber.takeIf { it > 0 } ?: (channelsList.indexOfFirst { it.id == channel.id } + 1)}  ${channel.name}",
                             color = Color.White,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.SemiBold
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
                         )
-                        Spacer(Modifier.width(16.dp))
+                        Spacer(Modifier.width(10.dp))
                         val resBadge = when {
                             streamInfo.height >= 2160 -> "4K"
                             streamInfo.height >= 1080 -> "FHD"
@@ -547,23 +620,22 @@ private fun InfoBanner(
                         }
                         resBadge?.let { Badge(it) }
                         if (streamInfo.isDrmProtected) {
-                            Spacer(Modifier.width(8.dp))
+                            Spacer(Modifier.width(6.dp))
                             Badge("DRM")
                         }
                     }
                     if (program?.description?.isNotBlank() == true) {
-                        Spacer(Modifier.height(4.dp))
                         Text(
                             program.description,
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 16.sp,
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 13.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
             }
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
             if (program != null && program.isLive) {
                 LinearProgressIndicator(
                     progress = { program.progress },
@@ -577,32 +649,28 @@ private fun InfoBanner(
             Spacer(Modifier.height(10.dp))
         }
 
-        // Strip: TV guide tile + channels
+        // Recently played channels - most recent on the left
         val listState = rememberLazyListState()
         LaunchedEffect(stripIndex) {
-            listState.animateScrollToItem((stripIndex - 1).coerceAtLeast(0))
+            listState.animateScrollToItem(stripIndex.coerceAtLeast(0))
         }
         LazyRow(
             state = listState,
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            item {
-                StripTile(selected = stripIndex == 0, width = 150.dp) {
-                    Icon(
-                        Icons.Default.FormatListBulleted,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(44.dp)
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text("TV guide", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-                }
-            }
-            itemsIndexed(channelsList) { i, ch ->
-                val selected = stripIndex == i + 1
-                StripTile(selected = selected, width = 130.dp) {
-                    Box(Modifier.height(56.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+            itemsIndexed(strip) { i, ch ->
+                val selected = stripIndex == i
+                val prog = programFor(ch)
+                Column(
+                    modifier = Modifier
+                        .width(132.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (selected) Color(0xFF3A3F47) else Color(0xFF22262C))
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(Modifier.height(48.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         if (!ch.logoUrl.isNullOrBlank()) {
                             AsyncImage(
                                 model = ch.logoUrl,
@@ -611,14 +679,15 @@ private fun InfoBanner(
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
-                            Text(ch.name.take(3).uppercase(), color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text(ch.name.take(3).uppercase(), color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        programFor(ch)?.title ?: "No information",
-                        color = Color.White.copy(alpha = if (programFor(ch) != null) 0.9f else 0.5f),
-                        fontSize = 13.sp,
+                        prog?.title ?: ch.name,
+                        color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                        fontSize = 12.sp,
+                        lineHeight = 14.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -626,20 +695,6 @@ private fun InfoBanner(
             }
         }
     }
-}
-
-@Composable
-private fun StripTile(selected: Boolean, width: androidx.compose.ui.unit.Dp, content: @Composable () -> Unit) {
-    Column(
-        modifier = Modifier
-            .width(width)
-            .height(if (selected) 100.dp else 92.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(if (selected) Color(0xFF3A3F47) else Color(0xFF22262C))
-            .padding(8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) { content() }
 }
 
 @Composable
