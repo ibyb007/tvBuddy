@@ -4,8 +4,10 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.entity.ChannelEntity
+import com.example.data.local.entity.ChannelGroupEntity
+import com.example.data.local.entity.EpgSourceEntity
+import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
-import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.repository.TvBuddyRepository
@@ -13,12 +15,12 @@ import com.example.player.AspectMode
 import com.example.player.StreamInfo
 import com.example.player.TrackInfo
 import com.example.player.TvBuddyPlayerManager
+import com.example.ui.dialogs.EpgGlobalSettingsState
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -36,19 +38,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val allPlaylists = repository.allPlaylists.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     private val rawChannels = repository.allChannels.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val playbackHistory = repository.playbackHistory.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val allEpgSources = repository.allEpgSources.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val allPlaylistEpgCrossRefs = repository.allPlaylistEpgCrossRefs.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    val allChannelGroups = repository.allChannelGroups.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
-    /** Recently played channels, most recent first (unique). */
-    val recentChannels: StateFlow<List<ChannelEntity>> = combine(repository.playbackHistory, rawChannels) { history, channels ->
-        val byId = channels.associateBy { it.id }
-        val byUrl = channels.associateBy { it.streamUrl }
-        history.mapNotNull { byId[it.channelId] ?: byUrl[it.streamUrl] }
-            .distinctBy { it.id }
-            .take(20)
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    private val epgPrefs = application.getSharedPreferences("tvbuddy_epg_settings", android.content.Context.MODE_PRIVATE)
 
-    // ---- Resume-last-channel on launch ----
-    // The channel is saved whenever playback starts. At launch the saved value is read and cleared
-    // straight away, so it only survives to the next launch if something was played in this one.
+    private val _epgSettings = MutableStateFlow(
+        EpgGlobalSettingsState(
+            pastDaysToKeep = epgPrefs.getInt("past_days", 3),
+            storeProgramDescriptions = epgPrefs.getBoolean("store_desc", true),
+            updateIntervalHours = epgPrefs.getInt("update_interval", 24),
+            updateOnAppStart = epgPrefs.getBoolean("update_on_start", false),
+            updateOnPlaylistsChange = epgPrefs.getBoolean("update_on_pl_change", false),
+            latestUpdateStatus = repository.getLatestEpgStatus()
+        )
+    )
+    val epgSettings: StateFlow<EpgGlobalSettingsState> = _epgSettings.asStateFlow()
+
+    private val _playlistsSorting = MutableStateFlow("By name")
+    val playlistsSorting: StateFlow<String> = _playlistsSorting.asStateFlow()
+
     private val prefs = application.getSharedPreferences("tvbuddy_prefs", android.content.Context.MODE_PRIVATE)
     private val pendingResumeId: Long = prefs.getLong(KEY_RESUME_ID, -1L)
     private val pendingResumeUrl: String? = prefs.getString(KEY_RESUME_URL, null)
@@ -56,12 +66,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     init {
         prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
+        viewModelScope.launch {
+            repository.initializeDefaultsIfNeeded()
+        }
     }
 
-    /**
-     * Starts the channel that was playing in the previous launch. Does nothing when the previous
-     * launch had no playback (the TV UI then shows the channel list instead).
-     */
     fun resumeLastPlayback(channels: List<ChannelEntity>) {
         if (resumeHandled || channels.isEmpty() || currentChannel.value != null) return
         resumeHandled = true
@@ -90,7 +99,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    // Player state forwards
     val currentChannel: StateFlow<ChannelEntity?> = playerManager.currentChannel
     val isPlaying: StateFlow<Boolean> = playerManager.isPlaying
     val isBuffering: StateFlow<Boolean> = playerManager.isBuffering
@@ -103,21 +111,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val subtitleTracks: StateFlow<List<TrackInfo>> = playerManager.subtitleTracks
     val videoTracks: StateFlow<List<com.example.player.VideoTrackOption>> = playerManager.videoTracks
     val allCurrentPrograms: StateFlow<List<com.example.data.local.entity.ProgramEntity>> =
-        repository.allCurrentPrograms.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+        repository.allCurrentPrograms as StateFlow<List<com.example.data.local.entity.ProgramEntity>>
 
-    // Filtered categories
-    val categories: StateFlow<List<String>> = combine(rawChannels) { list ->
-        val groups = list[0].map { it.groupTitle }.distinct().filter { it.isNotBlank() }.sorted()
-        listOf("All", "★ Favorites") + groups
+    // Filtered categories respecting active playlists and group visibility
+    val categories: StateFlow<List<String>> = combine(
+        rawChannels,
+        allPlaylists,
+        allChannelGroups
+    ) { channels, playlists, groups ->
+        val activePlaylistIds = playlists.filter { it.isActive }.map { it.id }.toSet()
+        val visibleGroupKeys = groups.filter { it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
+
+        val filteredGroups = channels
+            .filter { it.playlistId in activePlaylistIds && "${it.playlistId}_${it.groupTitle}" in visibleGroupKeys }
+            .map { it.groupTitle }
+            .distinct()
+            .filter { it.isNotBlank() }
+            .sorted()
+
+        listOf("All", "★ Favorites") + filteredGroups
     }.stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", "★ Favorites"))
 
-    // Filtered channels
+    // Filtered channels respecting active playlists and group visibility
     val visibleChannels: StateFlow<List<ChannelEntity>> = combine(
         rawChannels,
+        allPlaylists,
+        allChannelGroups,
         _selectedCategory,
         _searchQuery
-    ) { channels, category, query ->
+    ) { channels, playlists, groups, category, query ->
+        val activePlaylistIds = playlists.filter { it.isActive }.map { it.id }.toSet()
+        val visibleGroupKeys = groups.filter { it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
+
         channels.filter { channel ->
+            if (channel.playlistId !in activePlaylistIds) return@filter false
+            if ("${channel.playlistId}_${channel.groupTitle}" !in visibleGroupKeys) return@filter false
+
             val matchesCategory = when (category) {
                 "All" -> true
                 "★ Favorites" -> channel.isFavorite
@@ -129,14 +158,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             matchesCategory && matchesQuery
         }
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
-    init {
-        viewModelScope.launch {
-            repository.initializeDefaultsIfNeeded()
-        }
-        // Playlists that declare an EPG source (url-tvg) get it refreshed when stale
-        repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
-    }
 
     fun selectCategory(category: String) {
         _selectedCategory.value = category
@@ -159,9 +180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         resumeHandled = true
         prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
         playerManager.playChannel(channel, _globalSpoof.value)
-        viewModelScope.launch {
-            repository.recordHistory(channel)
-        }
+        viewModelScope.launch { repository.recordHistory(channel) }
     }
 
     fun playNextChannel() {
@@ -169,8 +188,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val list = visibleChannels.value
         val currentIndex = list.indexOfFirst { it.id == current.id }
         if (currentIndex != -1 && list.isNotEmpty()) {
-            val nextIndex = (currentIndex + 1) % list.size
-            playChannel(list[nextIndex])
+            playChannel(list[(currentIndex + 1) % list.size])
         }
     }
 
@@ -185,106 +203,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleFavorite(channel: ChannelEntity) {
+        viewModelScope.launch { repository.toggleFavorite(channel.id, channel.isFavorite) }
+    }
+
+    fun cycleAspect() { playerManager.cycleAspectMode() }
+    fun setAspect(mode: AspectMode) { playerManager.setAspectMode(mode) }
+
+    // ---- Playlist Actions ----
+    fun updatePlaylist(playlist: PlaylistEntity) {
         viewModelScope.launch {
-            repository.toggleFavorite(channel.id, channel.isFavorite)
-        }
-    }
-
-    fun cycleAspect() {
-        playerManager.cycleAspectMode()
-    }
-
-    fun setAspect(mode: AspectMode) {
-        playerManager.setAspectMode(mode)
-    }
-
-    fun addM3uPlaylist(
-        name: String,
-        source: String,
-        isRawContent: Boolean = false,
-        preset: SpoofPreset = SpoofPreset.TIVIMATE
-    ) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addM3uPlaylist(
-                name = name,
-                sourceUrlOrContent = source,
-                isRawContent = isRawContent,
-                spoofPreset = preset
-            )
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count ->
-                    _uiMessage.value = UiMessage(text = "Imported $count channels successfully!")
-                },
-                onFailure = { err ->
-                    _uiMessage.value = UiMessage(text = "Failed to load M3U: ${err.localizedMessage}", isError = true)
-                }
-            )
-        }
-    }
-
-    fun addXtreamPlaylist(
-        name: String,
-        serverUrl: String,
-        user: String,
-        pass: String,
-        preset: SpoofPreset = SpoofPreset.TIVIMATE
-    ) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addXtreamPlaylist(name, serverUrl, user, pass, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count ->
-                    _uiMessage.value = UiMessage(text = "Connected! Loaded $count Xtream channels.")
-                },
-                onFailure = { err ->
-                    _uiMessage.value = UiMessage(text = "Xtream connection error: ${err.localizedMessage}", isError = true)
-                }
-            )
-        }
-    }
-
-    fun addStalkerPlaylist(
-        name: String,
-        portalUrl: String,
-        mac: String,
-        preset: SpoofPreset = SpoofPreset.TIVIMATE
-    ) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addStalkerPlaylist(name, portalUrl, mac, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count ->
-                    _uiMessage.value = UiMessage(text = "Stalker portal linked! Loaded $count channels.")
-                },
-                onFailure = { err ->
-                    _uiMessage.value = UiMessage(text = "Stalker handshake error: ${err.localizedMessage}", isError = true)
-                }
-            )
-        }
-    }
-
-    fun addJsonPlaylist(
-        name: String,
-        source: String,
-        isRawContent: Boolean = false,
-        preset: SpoofPreset = SpoofPreset.TIVIMATE
-    ) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addJsonPlaylist(name, source, isRawContent, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count ->
-                    _uiMessage.value = UiMessage(text = "JSON playlist parsed: $count channels added.")
-                },
-                onFailure = { err ->
-                    _uiMessage.value = UiMessage(text = "JSON parsing error: ${err.localizedMessage}", isError = true)
-                }
-            )
+            repository.updatePlaylist(playlist)
+            _uiMessage.value = UiMessage(text = "Updated playlist: ${playlist.name}")
         }
     }
 
@@ -292,6 +221,153 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repository.deletePlaylist(playlist)
             _uiMessage.value = UiMessage(text = "Deleted playlist: ${playlist.name}")
+        }
+    }
+
+    fun reorderPlaylists(orderedIds: List<Long>) {
+        viewModelScope.launch { repository.reorderPlaylists(orderedIds) }
+    }
+
+    fun setPlaylistsSorting(sorting: String) {
+        _playlistsSorting.value = sorting
+    }
+
+    // ---- Group Actions ----
+    fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean) {
+        viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible) }
+    }
+
+    fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean) {
+        viewModelScope.launch { repository.setAllGroupsVisibility(playlistId, isVisible) }
+    }
+
+    fun reorderGroups(playlistId: Long, orderedTitles: List<String>) {
+        viewModelScope.launch { repository.reorderGroups(playlistId, orderedTitles) }
+    }
+
+    // ---- EPG Source Actions ----
+    fun addEpgSource(url: String) {
+        viewModelScope.launch {
+            repository.addEpgSource(url)
+            _uiMessage.value = UiMessage(text = "Added EPG source successfully")
+        }
+    }
+
+    fun deleteEpgSource(source: EpgSourceEntity) {
+        viewModelScope.launch {
+            repository.deleteEpgSource(source)
+            _uiMessage.value = UiMessage(text = "Removed EPG source")
+        }
+    }
+
+    fun setDefaultEpgSource(id: Long) {
+        viewModelScope.launch {
+            repository.setDefaultEpgSource(id)
+            _uiMessage.value = UiMessage(text = "Set as default EPG source")
+        }
+    }
+
+    fun togglePlaylistEpgAssignment(playlistId: Long, epgSourceId: Long, assign: Boolean) {
+        viewModelScope.launch { repository.togglePlaylistEpgAssignment(playlistId, epgSourceId, assign) }
+    }
+
+    fun reorderPlaylistEpgPriority(playlistId: Long, orderedSourceIds: List<Long>) {
+        viewModelScope.launch { repository.reorderPlaylistEpgPriority(playlistId, orderedSourceIds) }
+    }
+
+    // ---- Global EPG Settings Actions ----
+    fun updateEpgSettings(newState: EpgGlobalSettingsState) {
+        _epgSettings.value = newState
+        epgPrefs.edit()
+            .putInt("past_days", newState.pastDaysToKeep)
+            .putBoolean("store_desc", newState.storeProgramDescriptions)
+            .putInt("update_interval", newState.updateIntervalHours)
+            .putBoolean("update_on_start", newState.updateOnAppStart)
+            .putBoolean("update_on_pl_change", newState.updateOnPlaylistsChange)
+            .apply()
+    }
+
+    fun triggerUpdateEpg() {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val sources = allEpgSources.value.filter { it.isEnabled }
+            if (sources.isEmpty()) {
+                _isLoading.value = false
+                _uiMessage.value = UiMessage(text = "No EPG sources available to update", isError = true)
+                return@launch
+            }
+            var totalCount = 0
+            val settings = _epgSettings.value
+            for (src in sources) {
+                val res = repository.importXmltv(
+                    urlOrContent = src.url,
+                    isRawText = false,
+                    userAgent = _globalSpoof.value.getUserAgent(),
+                    pastDaysToKeep = settings.pastDaysToKeep,
+                    storeDescriptions = settings.storeProgramDescriptions
+                )
+                res.onSuccess { totalCount += it }
+            }
+            _isLoading.value = false
+            _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
+            _uiMessage.value = UiMessage(text = "EPG updated successfully ($totalCount programs)")
+        }
+    }
+
+    fun triggerClearEpg() {
+        viewModelScope.launch {
+            repository.clearAllEpg()
+            _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
+            _uiMessage.value = UiMessage(text = "EPG cache cleared")
+        }
+    }
+
+    // ---- Playlist Import Actions ----
+    fun addM3uPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val result = repository.addM3uPlaylist(name, source, isRawContent, preset)
+            _isLoading.value = false
+            result.fold(
+                onSuccess = { count -> _uiMessage.value = UiMessage(text = "Imported $count channels successfully!") },
+                onFailure = { err -> _uiMessage.value = UiMessage(text = "Failed to load M3U: ${err.localizedMessage}", isError = true) }
+            )
+        }
+    }
+
+    fun addXtreamPlaylist(name: String, serverUrl: String, user: String, pass: String, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val result = repository.addXtreamPlaylist(name, serverUrl, user, pass, preset)
+            _isLoading.value = false
+            result.fold(
+                onSuccess = { count -> _uiMessage.value = UiMessage(text = "Connected! Loaded $count Xtream channels.") },
+                onFailure = { err -> _uiMessage.value = UiMessage(text = "Xtream connection error: ${err.localizedMessage}", isError = true) }
+            )
+        }
+    }
+
+    fun addStalkerPlaylist(name: String, portalUrl: String, mac: String, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val result = repository.addStalkerPlaylist(name, portalUrl, mac, preset)
+            _isLoading.value = false
+            result.fold(
+                onSuccess = { count -> _uiMessage.value = UiMessage(text = "Stalker portal linked! Loaded $count channels.") },
+                onFailure = { err -> _uiMessage.value = UiMessage(text = "Stalker handshake error: ${err.localizedMessage}", isError = true) }
+            )
+        }
+    }
+
+    fun addJsonPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+        viewModelScope.launch {
+            _isLoading.value = true
+            val result = repository.addJsonPlaylist(name, source, isRawContent, preset)
+            _isLoading.value = false
+            result.fold(
+                onSuccess = { count -> _uiMessage.value = UiMessage(text = "JSON playlist parsed: $count channels added.") },
+                onFailure = { err -> _uiMessage.value = UiMessage(text = "JSON parsing error: ${err.localizedMessage}", isError = true) }
+            )
         }
     }
 
@@ -313,33 +389,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getScheduleForChannel(epgChannelId: String) = repository.getScheduleForChannel(epgChannelId)
 
-    fun importXmltv(source: String, isRaw: Boolean) {
-        viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.importXmltv(source, isRaw, _globalSpoof.value.getUserAgent())
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count ->
-                    _uiMessage.value = UiMessage(text = "Imported $count EPG programs successfully!")
-                },
-                onFailure = { err ->
-                    _uiMessage.value = UiMessage(text = "EPG Import error: ${err.localizedMessage}", isError = true)
-                }
-            )
-        }
-    }
-
-    fun closePlayer() {
-        playerManager.closePlayer()
-    }
-
-    fun pausePlayer() {
-        playerManager.pause()
-    }
-
-    fun dismissMessage() {
-        _uiMessage.value = null
-    }
+    fun closePlayer() { playerManager.closePlayer() }
+    fun pausePlayer() { playerManager.pause() }
+    fun dismissMessage() { _uiMessage.value = null }
 
     override fun onCleared() {
         super.onCleared()
