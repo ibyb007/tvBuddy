@@ -122,6 +122,8 @@ class TvBuddyRepository(
     }
 
     suspend fun recordHistory(channel: ChannelEntity) = withContext(Dispatchers.IO) {
+        // keep one row per channel so "recent channels" stays unique, newest first
+        historyDao.deleteHistoryByChannel(channel.id)
         historyDao.insertHistory(
             HistoryEntity(
                 channelId = channel.id,
