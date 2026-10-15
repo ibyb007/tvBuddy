@@ -24,6 +24,9 @@ interface ProgramDao {
     @Query("DELETE FROM epg_programs WHERE endTimeMs < :threshold")
     suspend fun purgeOldPrograms(threshold: Long)
 
+    @Query("DELETE FROM epg_programs WHERE epgChannelId IN (:epgChannelIds)")
+    suspend fun deleteProgramsForChannels(epgChannelIds: List<String>)
+
     @Query("DELETE FROM epg_programs WHERE epgChannelId = :epgChannelId")
     suspend fun deleteProgramsForChannel(epgChannelId: String)
 
