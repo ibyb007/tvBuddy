@@ -67,7 +67,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.MainViewModel
 import com.example.ui.components.ChannelListItem
+import com.example.ui.components.TvBrowseLevel
+import com.example.ui.components.TvBrowseScreen
 import com.example.ui.components.TvPlayerOverlay
+import com.example.ui.components.TvSearchDialog
 import com.example.ui.components.VideoPlayerSurface
 import com.example.ui.dialogs.AddPlaylistDialog
 import com.example.ui.dialogs.DrmDebuggerDialog
@@ -84,6 +87,7 @@ import com.example.ui.theme.DarkSurface
 import com.example.ui.theme.DarkSurfaceElevated
 import com.example.ui.theme.DarkSurfaceVariant
 import com.example.ui.theme.StatusDrm
+import kotlinx.coroutines.delay
 
 @Composable
 fun HomeScreen(
@@ -111,6 +115,10 @@ fun HomeScreen(
     val allPlaylistEpgCrossRefs by viewModel.allPlaylistEpgCrossRefs.collectAsStateWithLifecycle()
     val epgSettings by viewModel.epgSettings.collectAsStateWithLifecycle()
     val playlistsSorting by viewModel.playlistsSorting.collectAsStateWithLifecycle()
+    val tvSelection by viewModel.tvSelection.collectAsStateWithLifecycle()
+    val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
+    val favOnlyGroups by viewModel.favOnlyGroups.collectAsStateWithLifecycle()
+    val nameSortedGroups by viewModel.nameSortedGroups.collectAsStateWithLifecycle()
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
@@ -152,6 +160,10 @@ fun HomeScreen(
     var showEpgGuideDialog by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
 
+    // TV mode: TiviMate-style page (preview + EPG, playlist groups panel, rail). null = full-screen playback.
+    var tvBrowse by remember { mutableStateOf<TvBrowseLevel?>(null) }
+    var showTvSearch by remember { mutableStateOf(false) }
+
     // Search input toggle
     var isSearchActive by remember { mutableStateOf(false) }
 
@@ -172,6 +184,14 @@ fun HomeScreen(
     LaunchedEffect(isTvMode, channels.isNotEmpty()) {
         if (isTvMode && currentChannel == null && channels.isNotEmpty()) {
             viewModel.resumeLastPlayback(channels)
+        }
+    }
+
+    // TV mode: nothing is playing (first launch / nothing to resume) -> open the TV page instead of a black screen.
+    LaunchedEffect(isTvMode, currentChannel == null, channels.isNotEmpty()) {
+        if (isTvMode && currentChannel == null && channels.isNotEmpty() && tvBrowse == null) {
+            delay(500)   // give a pending "resume last channel" a moment to start first
+            if (currentChannel == null && tvBrowse == null) tvBrowse = TvBrowseLevel.GUIDE
         }
     }
 
@@ -216,7 +236,20 @@ fun HomeScreen(
     // 6. When no player is playing and on main home screen, let system exit app (pausing/stopping playback!)
     val shouldInterceptBack = !isInPipMode && (isMobileFullscreen || currentChannel != null || isTvMode || isSearchActive || searchQuery.isNotEmpty())
 
-    BackHandler(enabled = shouldInterceptBack) {
+    // Leaves TV mode: closes the app on a real TV, goes back to the phone UI otherwise
+    val exitTv: () -> Unit = {
+        tvBrowse = null
+        if (isTvDevice) {
+            viewModel.closePlayer()
+            hostActivity?.finish()
+        } else {
+            viewModel.setTvMode(false)
+            viewModel.closePlayer()
+        }
+    }
+
+    // While the TV page is shown it handles BACK itself (guide -> groups -> rail -> exit)
+    BackHandler(enabled = shouldInterceptBack && tvBrowse == null) {
         when {
             isMobileFullscreen -> {
                 isMobileFullscreen = false
@@ -228,13 +261,8 @@ fun HomeScreen(
                 isSearchActive = false
             }
             isTvMode -> {
-                if (isTvDevice) {
-                    viewModel.closePlayer()
-                    hostActivity?.finish()
-                } else {
-                    viewModel.setTvMode(false)
-                    viewModel.closePlayer()
-                }
+                // BACK from full-screen playback reveals the TV page; otherwise leave
+                if (currentChannel != null) tvBrowse = TvBrowseLevel.GUIDE else exitTv()
             }
             currentChannel != null -> {
                 viewModel.closePlayer()
@@ -249,7 +277,7 @@ fun HomeScreen(
         dbSettled = true
     }
 
-    if (isTvMode && channels.isEmpty() && currentChannel == null) {
+    if (isTvMode && channels.isEmpty() && currentChannel == null && tvBrowse == null) {
         // First launch / nothing to watch: ask for a playlist, never auto-play
         if (dbSettled) {
             com.example.ui.components.TvEmptyState(
@@ -266,53 +294,80 @@ fun HomeScreen(
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             val player = viewModel.playerManager.getPlayer()
             val epgWindowPrograms by viewModel.epgWindowPrograms.collectAsStateWithLifecycle()
-            VideoPlayerSurface(
-                player = player,
-                aspectMode = aspectMode,
-                modifier = Modifier.fillMaxSize()
-            )
+            val browseLevel = tvBrowse
 
-            TvPlayerOverlay(
-                channel = currentChannel,
-                isPlaying = isPlaying,
-                isBuffering = isBuffering,
-                errorMessage = playerError,
-                aspectMode = aspectMode,
-                streamInfo = streamInfo,
-                spoofProfile = globalSpoof,
-                videoQuality = videoQuality,
-                currentProgram = currentProgram,
-                channelsList = channels,
-                onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
-                onNextChannel = { viewModel.playNextChannel() },
-                onPreviousChannel = { viewModel.playPreviousChannel() },
-                onSelectChannel = { viewModel.playChannel(it) },
-                onToggleFavorite = { viewModel.toggleFavorite(it) },
-                onCycleAspect = { viewModel.cycleAspect() },
-                onOpenQualityPicker = { showQualityDialog = true },
-                onOpenEpgGuide = { showEpgGuideDialog = true },
-                onOpenAudioTracks = { showAudioDialog = true },
-                onOpenSubtitles = { showSubtitleDialog = true },
-                allPrograms = allCurrentPrograms,
-                epgPrograms = epgWindowPrograms,
-                recentChannels = recentChannels,
-                playlists = playlists,
-                onAddPlaylist = { showAddDialog = true },
-                onClosePlayer = {
-                    if (isTvDevice) {
-                        viewModel.closePlayer()
-                        hostActivity?.finish()
-                    } else {
-                        viewModel.setTvMode(false)
-                        viewModel.closePlayer()
-                    }
-                },
-                onOpenSpoofSettings = { showSpoofDialog = true },
-                onOpenPlaylists = { openSettings(TiviSettingsRoute.Playlists) },
-                onOpenPlaylistSettings = { id -> openSettings(TiviSettingsRoute.PlaylistDetail(id)) },
-                onOpenEpgSettings = { openSettings(TiviSettingsRoute.Epg) },
-                modifier = Modifier.fillMaxSize()
-            )
+            if (browseLevel != null) {
+                // TV page: preview + EPG grid, playlist groups panel and rail (BACK from playback / LEFT from channel list)
+                TvBrowseScreen(
+                    initialLevel = browseLevel,
+                    player = player,
+                    playingChannel = currentChannel,
+                    channels = channels,
+                    sections = tvGroupSections,
+                    selection = tvSelection,
+                    allPrograms = allCurrentPrograms,
+                    epgPrograms = epgWindowPrograms,
+                    favoriteOnlyGroups = favOnlyGroups,
+                    nameSortedGroups = nameSortedGroups,
+                    searchQuery = searchQuery,
+                    onSelectGroup = { viewModel.selectTvGroup(it) },
+                    onPlayChannel = { ch ->
+                        if (ch.id != currentChannel?.id || playerError != null) viewModel.playChannel(ch)
+                        tvBrowse = null
+                    },
+                    onToggleFavorite = { viewModel.toggleFavorite(it) },
+                    onToggleGroupFavoritesOnly = { id, title -> viewModel.toggleGroupFavoritesOnly(id, title) },
+                    onToggleGroupNameSort = { id, title -> viewModel.toggleGroupNameSort(id, title) },
+                    onHideGroup = { id, title -> viewModel.hideGroup(id, title) },
+                    onManageGroups = { id -> openSettings(TiviSettingsRoute.ManageGroups(id)) },
+                    onOpenSearch = { showTvSearch = true },
+                    onClearSearch = { viewModel.setSearchQuery("") },
+                    onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
+                    onExit = exitTv,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                VideoPlayerSurface(
+                    player = player,
+                    aspectMode = aspectMode,
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                TvPlayerOverlay(
+                    channel = currentChannel,
+                    isPlaying = isPlaying,
+                    isBuffering = isBuffering,
+                    errorMessage = playerError,
+                    aspectMode = aspectMode,
+                    streamInfo = streamInfo,
+                    spoofProfile = globalSpoof,
+                    videoQuality = videoQuality,
+                    currentProgram = currentProgram,
+                    channelsList = channels,
+                    onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
+                    onNextChannel = { viewModel.playNextChannel() },
+                    onPreviousChannel = { viewModel.playPreviousChannel() },
+                    onSelectChannel = { viewModel.playChannel(it) },
+                    onToggleFavorite = { viewModel.toggleFavorite(it) },
+                    onCycleAspect = { viewModel.cycleAspect() },
+                    onOpenQualityPicker = { showQualityDialog = true },
+                    onOpenEpgGuide = { showEpgGuideDialog = true },
+                    onOpenAudioTracks = { showAudioDialog = true },
+                    onOpenSubtitles = { showSubtitleDialog = true },
+                    allPrograms = allCurrentPrograms,
+                    epgPrograms = epgWindowPrograms,
+                    recentChannels = recentChannels,
+                    playlists = playlists,
+                    onAddPlaylist = { showAddDialog = true },
+                    onClosePlayer = exitTv,
+                    onOpenSpoofSettings = { showSpoofDialog = true },
+                    onOpenPlaylists = { openSettings(TiviSettingsRoute.Playlists) },
+                    onOpenPlaylistSettings = { id -> openSettings(TiviSettingsRoute.PlaylistDetail(id)) },
+                    onOpenEpgSettings = { openSettings(TiviSettingsRoute.Epg) },
+                    onOpenGroups = { tvBrowse = TvBrowseLevel.GROUPS },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     } else {
         // Mobile Touch Mode
@@ -664,6 +719,14 @@ fun HomeScreen(
             onAddXtream = { name, srv, u, p, spoof -> viewModel.addXtreamPlaylist(name, srv, u, p, spoof) },
             onAddStalker = { name, portal, mac, spoof -> viewModel.addStalkerPlaylist(name, portal, mac, spoof) },
             onAddJson = { name, src, isRaw, spoof -> viewModel.addJsonPlaylist(name, src, isRaw, spoof) }
+        )
+    }
+
+    if (showTvSearch) {
+        TvSearchDialog(
+            query = searchQuery,
+            onQueryChange = { viewModel.setSearchQuery(it) },
+            onDismiss = { showTvSearch = false }
         )
     }
 
