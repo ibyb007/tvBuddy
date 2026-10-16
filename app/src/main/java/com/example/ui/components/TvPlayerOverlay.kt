@@ -116,7 +116,8 @@ private val StripCardSelected = Color(0xFF3A3F47).copy(alpha = 0.5f)
  *   LEFT            -> channel list
  *   UP / DOWN       -> previous / next channel
  *   RIGHT           -> last played channel
- * In the channel list: UP/DOWN navigate, OK plays, LEFT/RIGHT/BACK close.
+ * In the channel list: UP/DOWN navigate, OK plays, LEFT opens the playlist groups page, RIGHT/BACK close.
+ * BACK with no panel open is handled by HomeScreen (it reveals the TV page: preview + EPG).
  */
 @Composable
 fun TvPlayerOverlay(
@@ -150,6 +151,7 @@ fun TvPlayerOverlay(
     onOpenPlaylists: () -> Unit = {},
     onOpenPlaylistSettings: (Long) -> Unit = {},
     onOpenEpgSettings: () -> Unit = {},
+    onOpenGroups: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var panel by remember { mutableStateOf(TvPanel.NONE) }
@@ -217,18 +219,6 @@ fun TvPlayerOverlay(
     LaunchedEffect(panel, channel?.id) {
         try { focusRequester.requestFocus() } catch (_: Exception) {}
     }
-    // Nothing is playing (the last launch had no playback): show the channel list right away
-    val latestChannel by rememberUpdatedState(channel)
-    LaunchedEffect(channel == null, channelsList.isNotEmpty()) {
-        if (channel == null && channelsList.isNotEmpty()) {
-            delay(400)   // give a pending "resume last channel" a moment to start first
-            if (latestChannel == null && panel == TvPanel.NONE) {
-                listIndex = 0
-                panel = TvPanel.CHANNELS
-            }
-        }
-    }
-
     // Take focus back after dialogs (audio, quality, ...) close
     LaunchedEffect(Unit) {
         while (true) {
@@ -417,7 +407,8 @@ fun TvPlayerOverlay(
             TvPanel.CHANNELS -> when (key) {
                 Key.DirectionUp -> listIndex = (listIndex - 1).coerceAtLeast(0)
                 Key.DirectionDown -> listIndex = (listIndex + 1).coerceAtMost((channelsList.size - 1).coerceAtLeast(0))
-                Key.DirectionLeft, Key.DirectionRight -> if (!isRepeat && channel != null) panel = TvPanel.NONE
+                Key.DirectionLeft -> if (!isRepeat) onOpenGroups()      // reveal the playlist groups page
+                Key.DirectionRight -> if (!isRepeat && channel != null) panel = TvPanel.NONE
                 else -> return false
             }
         }
