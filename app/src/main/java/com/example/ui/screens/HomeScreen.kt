@@ -265,6 +265,7 @@ fun HomeScreen(
         // TV Fullscreen Leanback Mode (TiviMate-style)
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             val player = viewModel.playerManager.getPlayer()
+            val epgWindowPrograms by viewModel.epgWindowPrograms.collectAsStateWithLifecycle()
             VideoPlayerSurface(
                 player = player,
                 aspectMode = aspectMode,
@@ -293,6 +294,7 @@ fun HomeScreen(
                 onOpenAudioTracks = { showAudioDialog = true },
                 onOpenSubtitles = { showSubtitleDialog = true },
                 allPrograms = allCurrentPrograms,
+                epgPrograms = epgWindowPrograms,
                 recentChannels = recentChannels,
                 playlists = playlists,
                 onAddPlaylist = { showAddDialog = true },
