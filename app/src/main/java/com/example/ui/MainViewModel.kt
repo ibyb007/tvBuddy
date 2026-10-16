@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -113,6 +114,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.initializeDefaultsIfNeeded()
         }
         repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
+
+        // Make sure every playlist has its group rows (older playlists were imported before groups were tracked),
+        // so "Manage groups" always lists all groups of a playlist.
+        viewModelScope.launch {
+            combine(repository.allPlaylists, repository.allChannels, repository.allChannelGroups) { pls, chs, groups ->
+                Triple(pls, chs, groups)
+            }.flowOn(kotlinx.coroutines.Dispatchers.Default).collect { (pls, chs, groups) ->
+                if (chs.isEmpty()) return@collect
+                val known = groups.groupBy { it.playlistId }.mapValues { e -> e.value.map { it.groupTitle }.toSet() }
+                for (pl in pls) {
+                    val plChannels = chs.filter { it.playlistId == pl.id }
+                    val titles = plChannels.map { it.groupTitle }.filter { it.isNotBlank() }.toSet()
+                    if (titles.isNotEmpty() && !known[pl.id].orEmpty().containsAll(titles)) {
+                        repository.syncGroupsForPlaylist(pl.id, plChannels, pl.showNewlyAddedGroups)
+                    }
+                }
+            }
+        }
     }
 
     fun resumeLastPlayback(channels: List<ChannelEntity>) {
