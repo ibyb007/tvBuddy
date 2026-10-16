@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
@@ -71,6 +72,7 @@ import com.example.ui.components.TvBrowseLevel
 import com.example.ui.components.TvBrowseScreen
 import com.example.ui.components.TvPlayerOverlay
 import com.example.ui.components.TvSearchDialog
+import com.example.ui.components.TvSharedVideoSurface
 import com.example.ui.components.VideoPlayerSurface
 import com.example.ui.dialogs.AddPlaylistDialog
 import com.example.ui.dialogs.DrmDebuggerDialog
@@ -295,6 +297,8 @@ fun HomeScreen(
             val player = viewModel.playerManager.getPlayer()
             val epgWindowPrograms by viewModel.epgWindowPrograms.collectAsStateWithLifecycle()
             val browseLevel = tvBrowse
+            // where the TV page's preview window currently is (written by TvBrowseScreen, read only in layout)
+            val previewBounds = remember { mutableStateOf<Rect?>(null) }
 
             if (browseLevel != null) {
                 // TV page: preview + EPG grid, playlist groups panel and rail (BACK from playback / LEFT from channel list)
@@ -324,15 +328,24 @@ fun HomeScreen(
                     onClearSearch = { viewModel.setSearchQuery("") },
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     onExit = exitTv,
+                    onPreviewBounds = { previewBounds.value = it },
                     modifier = Modifier.fillMaxSize()
                 )
-            } else {
-                VideoPlayerSurface(
+            }
+
+            // One surface for both the preview window and full-screen playback: it is resized, never
+            // recreated, so switching between the two never goes black.
+            if (currentChannel != null) {
+                TvSharedVideoSurface(
                     player = player,
                     aspectMode = aspectMode,
+                    browsing = browseLevel != null,
+                    previewBounds = previewBounds,
                     modifier = Modifier.fillMaxSize()
                 )
+            }
 
+            if (browseLevel == null) {
                 TvPlayerOverlay(
                     channel = currentChannel,
                     isPlaying = isPlaying,
