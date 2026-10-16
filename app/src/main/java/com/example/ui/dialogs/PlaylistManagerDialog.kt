@@ -111,6 +111,7 @@ private val TiviPrimaryText = Color(0xFFF1F3F4)
 private val TiviSecondaryText = Color(0xFF9AA0A6)
 private val TiviAccentBlue = Color(0xFF4285F4)
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun PlaylistManagerDialog(
     playlists: List<PlaylistEntity>,
