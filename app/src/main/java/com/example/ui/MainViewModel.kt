@@ -107,6 +107,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val videoTracks: StateFlow<List<com.example.player.VideoTrackOption>> = playerManager.videoTracks
     val allCurrentPrograms: StateFlow<List<ProgramEntity>> =
         repository.allCurrentPrograms.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    /** Schedule window (past few hours .. next day) for the TV guide; only collected while the TV UI is shown. */
+    val epgWindowPrograms: StateFlow<List<ProgramEntity>> =
+        repository.epgWindowPrograms.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
