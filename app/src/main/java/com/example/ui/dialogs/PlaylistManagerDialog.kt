@@ -150,6 +150,13 @@ fun PlaylistManagerDialog(
         }
     }
 
+    // epgSourceId -> names of playlists using it (so a source extracted from one playlist is visible everywhere)
+    val epgUsedBy = remember(playlists, playlistEpgCrossRefs) {
+        playlistEpgCrossRefs
+            .groupBy({ it.epgSourceId }, { ref -> playlists.find { it.id == ref.playlistId }?.name })
+            .mapValues { (_, names) -> names.filterNotNull().joinToString(", ") }
+    }
+
     // Sub-dialogs for inline text/number edits
     var textEditDialogState by remember { mutableStateOf<TextEditPrompt?>(null) }
 
@@ -236,9 +243,7 @@ fun PlaylistManagerDialog(
 
                             is TiviSettingsRoute.PlaylistDetail -> {
                                 val playlist = playlists.find { it.id == route.playlistId }
-                                if (playlist == null) {
-                                    navigateBack()
-                                } else {
+                                if (playlist != null) {
                                     val assignedCount = playlistEpgCrossRefs.count { it.playlistId == playlist.id }
                                     PlaylistDetailSubMenu(
                                         playlist = playlist,
@@ -376,6 +381,7 @@ fun PlaylistManagerDialog(
 
                             is TiviSettingsRoute.EpgSources -> EpgSourcesSubMenu(
                                 sources = epgSources,
+                                usedBy = epgUsedBy,
                                 onAddSource = { navigateTo(TiviSettingsRoute.AddEpgSourceUrl) },
                                 onSelectSource = { src ->
                                     onSetDefaultEpgSource(src.id)
@@ -1098,6 +1104,7 @@ private fun EpgSettingsSubMenu(
 @Composable
 private fun EpgSourcesSubMenu(
     sources: List<EpgSourceEntity>,
+    usedBy: Map<Long, String>,
     onAddSource: () -> Unit,
     onSelectSource: (EpgSourceEntity) -> Unit,
     onDeleteSource: (EpgSourceEntity) -> Unit
@@ -1110,11 +1117,9 @@ private fun EpgSourcesSubMenu(
         ) {
             items(sources, key = { it.id }) { src ->
                 val titleText = if (src.isDefault) "${src.name} (default)" else src.name
-                val subtitleText = if (src.sourceType.equals("STALKER", ignoreCase = true)) {
-                    "Stalker Portal"
-                } else {
-                    src.url
-                }
+                val location = if (src.sourceType.equals("STALKER", ignoreCase = true)) "Stalker Portal" else src.url
+                val users = usedBy[src.id].orEmpty()
+                val subtitleText = if (users.isBlank()) "Not assigned \u2022 $location" else "Used by $users \u2022 $location"
                 TiviMenuRow(
                     title = titleText,
                     subtitle = subtitleText,
@@ -1488,52 +1493,30 @@ private fun TiviReorderRow(
 // SAFE PROPERTY ACCESSORS (Bridges old & updated PlaylistEntity seamlessly)
 // ============================================================================
 
-private fun PlaylistEntity.readStringProp(name: String, default: String): String {
-    return try {
-        val field = this::class.java.getDeclaredField(name)
-        field.isAccessible = true
-        (field.get(this) as? String) ?: default
-    } catch (_: Exception) {
-        default
-    }
+private fun PlaylistEntity.readStringProp(name: String, default: String): String = when (name) {
+    "logosPriority" -> logosPriority
+    "catchUpType" -> catchUpType
+    "groupsSorting" -> groupsSorting
+    else -> default
 }
 
-private fun PlaylistEntity.readIntProp(name: String, default: Int): Int {
-    return try {
-        val field = this::class.java.getDeclaredField(name)
-        field.isAccessible = true
-        (field.get(this) as? Int) ?: default
-    } catch (_: Exception) {
-        default
-    }
+private fun PlaylistEntity.readIntProp(name: String, default: Int): Int = when (name) {
+    "updateIntervalHours" -> updateIntervalHours
+    else -> default
 }
 
-private fun PlaylistEntity.readBooleanProp(name: String, default: Boolean): Boolean {
-    return try {
-        val field = this::class.java.getDeclaredField(name)
-        field.isAccessible = true
-        (field.get(this) as? Boolean) ?: default
-    } catch (_: Exception) {
-        default
-    }
+private fun PlaylistEntity.readBooleanProp(name: String, default: Boolean): Boolean = when (name) {
+    "updateOnStart" -> updateOnStart
+    "showNewlyAddedGroups" -> showNewlyAddedGroups
+    else -> default
 }
 
-private fun PlaylistEntity.withUpdatedProp(name: String, value: Any?): PlaylistEntity {
-    return try {
-        val copyMethod = this::class.java.methods.firstOrNull { it.name == "copy" } ?: return this
-        val params = copyMethod.parameters
-        val args = Array<Any?>(params.size) { idx ->
-            val pName = params[idx].name
-            if (pName == name) {
-                value
-            } else {
-                val f = this::class.java.declaredFields.getOrNull(idx)
-                f?.isAccessible = true
-                f?.get(this)
-            }
-        }
-        (copyMethod.invoke(this, *args) as? PlaylistEntity) ?: this
-    } catch (_: Exception) {
-        this
-    }
+private fun PlaylistEntity.withUpdatedProp(name: String, value: Any?): PlaylistEntity = when (name) {
+    "logosPriority" -> (value as? String)?.let { copy(logosPriority = it) } ?: this
+    "catchUpType" -> (value as? String)?.let { copy(catchUpType = it) } ?: this
+    "groupsSorting" -> (value as? String)?.let { copy(groupsSorting = it) } ?: this
+    "updateIntervalHours" -> (value as? Int)?.let { copy(updateIntervalHours = it) } ?: this
+    "updateOnStart" -> (value as? Boolean)?.let { copy(updateOnStart = it) } ?: this
+    "showNewlyAddedGroups" -> (value as? Boolean)?.let { copy(showNewlyAddedGroups = it) } ?: this
+    else -> this
 }
