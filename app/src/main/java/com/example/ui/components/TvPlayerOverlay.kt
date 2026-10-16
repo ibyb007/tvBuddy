@@ -84,7 +84,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class TvPanel { NONE, INFO, MENU, CHANNELS, SETTINGS, PLAYLISTS }
+private enum class TvPanel { NONE, INFO, MENU, CHANNELS, GUIDE, SETTINGS, PLAYLISTS }
 
 private class TvMenuItem(
     val label: String,
@@ -100,6 +100,9 @@ private val SETTINGS_ITEMS = listOf(
 
 private val TvPanelBg = Color(0xE6101418)
 private val TvSelected = Color(0xFFF1F3F4)
+// Recent-channel cards: 50% opaque so the video shows through
+private val StripCard = Color(0xFF22262C).copy(alpha = 0.5f)
+private val StripCardSelected = Color(0xFF3A3F47).copy(alpha = 0.5f)
 
 /**
  * TiviMate-style Android TV player UI.
@@ -125,6 +128,7 @@ fun TvPlayerOverlay(
     currentProgram: ProgramEntity? = null,
     channelsList: List<ChannelEntity>,
     allPrograms: List<ProgramEntity> = emptyList(),
+    epgPrograms: List<ProgramEntity> = emptyList(),
     recentChannels: List<ChannelEntity> = emptyList(),
     playlists: List<PlaylistEntity> = emptyList(),
     onAddPlaylist: () -> Unit = {},
@@ -164,11 +168,41 @@ fun TvPlayerOverlay(
         }
     }
 
-    fun programFor(ch: ChannelEntity): ProgramEntity? =
-        allPrograms.firstOrNull {
-            it.epgChannelId.equals(ch.streamId, ignoreCase = true) ||
-                it.epgChannelId.equals(ch.name, ignoreCase = true)
-        }
+    var guideRow by remember { mutableIntStateOf(0) }
+    var guideCursorMs by remember { mutableLongStateOf(0L) }   // a point in time inside the focused cell
+    var guideOriginMs by remember { mutableLongStateOf(0L) }   // time at the left edge of the grid
+    val now by produceNow()
+
+    // Schedule per channel (window query when available, otherwise just the "now" programs)
+    val byEpgId = remember(epgPrograms, allPrograms) {
+        (if (epgPrograms.isNotEmpty()) epgPrograms else allPrograms)
+            .groupBy { it.epgChannelId.lowercase() }
+            .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
+    }
+    fun programsOf(ch: ChannelEntity): List<ProgramEntity> =
+        (if (ch.streamId.isNotBlank()) byEpgId[ch.streamId.lowercase()] else null)
+            ?: byEpgId[ch.name.lowercase()]
+            ?: emptyList()
+
+    /** Slots for a channel; gaps without EPG data become hour-long "No information" slots. */
+    fun slotsOf(ch: ChannelEntity, from: Long, to: Long): List<EpgSlot> = buildSlots(programsOf(ch), from, to)
+
+    fun slotNow(ch: ChannelEntity): EpgSlot {
+        val h = floorToHour(now)
+        val slots = slotsOf(ch, h, h + 3 * HOUR_MS)
+        return slots.firstOrNull { it.contains(now) } ?: slots.first()
+    }
+
+    fun slotNext(ch: ChannelEntity): EpgSlot? {
+        val h = floorToHour(now)
+        val slots = slotsOf(ch, h, h + 3 * HOUR_MS)
+        val i = slots.indexOfFirst { it.contains(now) }
+        return slots.getOrNull(i + 1)
+    }
+
+    val guideFrom = floorToHour(now) - 3 * HOUR_MS
+    val guideTo = floorToHour(now) + 24 * HOUR_MS
+    fun guideSlots(ch: ChannelEntity): List<EpgSlot> = slotsOf(ch, guideFrom, guideTo)
 
     // Recently played channels, most recent first (falls back to the full list)
     val strip = recentChannels.ifEmpty { channelsList }
@@ -226,6 +260,13 @@ fun TvPlayerOverlay(
         panel = TvPanel.CHANNELS
     }
 
+    fun openGuide() {
+        guideRow = currentIndex()
+        guideCursorMs = System.currentTimeMillis()
+        guideOriginMs = floorToHalfHour(guideCursorMs)
+        panel = TvPanel.GUIDE
+    }
+
     fun menuItems(): List<TvMenuItem> {
         val qualityLabel = if (streamInfo.width > 0 && streamInfo.height > 0) {
             val mbps = streamInfo.bitrate / 1_000_000f
@@ -234,7 +275,7 @@ fun TvPlayerOverlay(
         } else videoQuality.title.substringBefore(" ")
         return listOf(
             TvMenuItem("Channels list", Icons.Default.FormatListBulleted) { openChannelList() },
-            TvMenuItem("TV guide", Icons.Default.Schedule) { panel = TvPanel.NONE; onOpenEpgGuide() },
+            TvMenuItem("TV guide", Icons.Default.Schedule) { openGuide() },
             TvMenuItem(qualityLabel, Icons.Default.HighQuality) { panel = TvPanel.NONE; onOpenQualityPicker() },
             TvMenuItem("Audio", Icons.AutoMirrored.Filled.VolumeUp) { panel = TvPanel.NONE; onOpenAudioTracks() },
             TvMenuItem("Subtitles", Icons.Default.ClosedCaption) { panel = TvPanel.NONE; onOpenSubtitles() },
@@ -254,8 +295,7 @@ fun TvPlayerOverlay(
             }
             TvPanel.INFO -> {
                 if (stripIndex == 0) {
-                    panel = TvPanel.NONE
-                    onOpenEpgGuide()
+                    openGuide()
                 } else {
                     strip.getOrNull(stripIndex - 1)?.let { onSelectChannel(it); panel = TvPanel.NONE }
                 }
@@ -281,6 +321,10 @@ fun TvPlayerOverlay(
             TvPanel.MENU -> menuItems().getOrNull(menuIndex)?.action?.invoke()
             TvPanel.CHANNELS -> {
                 channelsList.getOrNull(listIndex)?.let { onSelectChannel(it) }
+                panel = TvPanel.NONE
+            }
+            TvPanel.GUIDE -> {
+                channelsList.getOrNull(guideRow)?.let { onSelectChannel(it) }
                 panel = TvPanel.NONE
             }
         }
@@ -341,6 +385,31 @@ fun TvPlayerOverlay(
                 Key.DirectionLeft -> if (!isRepeat) panel = TvPanel.SETTINGS
                 Key.DirectionRight -> {}
                 else -> return false
+            }
+            TvPanel.GUIDE -> {
+                val lastRow = (channelsList.size - 1).coerceAtLeast(0)
+                fun moveRow(to: Int) {
+                    guideRow = to.coerceIn(0, lastRow)
+                    guideCursorMs = maxOf(guideCursorMs, guideOriginMs)
+                }
+                fun moveCell(delta: Int) {
+                    val ch = channelsList.getOrNull(guideRow) ?: return
+                    val slots = guideSlots(ch)
+                    val target = slots.getOrNull(slots.indexAt(guideCursorMs) + delta) ?: return
+                    guideCursorMs = target.startMs
+                    if (target.startMs < guideOriginMs) {
+                        guideOriginMs = floorToHalfHour(target.startMs)
+                    } else if (target.endMs > guideOriginMs + GUIDE_VISIBLE_MS) {
+                        guideOriginMs = floorToHalfHour(target.startMs)
+                    }
+                }
+                when (key) {
+                    Key.DirectionUp -> moveRow(guideRow - 1)
+                    Key.DirectionDown -> moveRow(guideRow + 1)
+                    Key.DirectionLeft -> moveCell(-1)
+                    Key.DirectionRight -> moveCell(+1)
+                    else -> return false
+                }
             }
             TvPanel.CHANNELS -> when (key) {
                 Key.DirectionUp -> listIndex = (listIndex - 1).coerceAtLeast(0)
@@ -428,7 +497,6 @@ fun TvPlayerOverlay(
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter)
         ) {
-            val now by produceNow()
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 20.dp),
                 horizontalArrangement = Arrangement.SpaceBetween
@@ -457,12 +525,14 @@ fun TvPlayerOverlay(
         ) {
             InfoBanner(
                 channel = channel,
-                program = currentProgram,
+                slot = channel?.let(::slotNow),
+                nextSlot = channel?.let(::slotNext),
+                now = now,
                 streamInfo = streamInfo,
                 strip = strip,
                 channelsList = channelsList,
                 stripIndex = stripIndex,
-                programFor = ::programFor
+                slotFor = ::slotNow
             )
         }
 
@@ -553,7 +623,26 @@ fun TvPlayerOverlay(
                 channelsList = channelsList,
                 selectedIndex = listIndex,
                 playingId = channel?.id,
-                programFor = ::programFor
+                now = now,
+                slotNowFor = ::slotNow,
+                scheduleFor = ::guideSlots
+            )
+        }
+
+        // ---------- TV guide (grid) ----------
+        AnimatedVisibility(
+            visible = panel == TvPanel.GUIDE,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            TvGuidePanel(
+                channels = channelsList,
+                selectedRow = guideRow,
+                cursorMs = guideCursorMs,
+                originMs = guideOriginMs,
+                now = now,
+                playingId = channel?.id,
+                slotsFor = ::guideSlots
             )
         }
     }
@@ -579,13 +668,16 @@ private fun fmtTime(ms: Long): String =
 @Composable
 private fun InfoBanner(
     channel: ChannelEntity?,
-    program: ProgramEntity?,
+    slot: EpgSlot?,
+    nextSlot: EpgSlot?,
+    now: Long,
     streamInfo: StreamInfo,
     strip: List<ChannelEntity>,
     channelsList: List<ChannelEntity>,
     stripIndex: Int,
-    programFor: (ChannelEntity) -> ProgramEntity?
+    slotFor: (ChannelEntity) -> EpgSlot
 ) {
+    val k = rememberUiScale()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -593,8 +685,8 @@ private fun InfoBanner(
             .padding(horizontal = 32.dp)
             .padding(top = 40.dp, bottom = 14.dp)
     ) {
-        if (channel != null) {
-            // Compact now-playing header
+        if (channel != null && slot != null) {
+            // Now-playing header: logo | title / time + progress / next slot
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -617,23 +709,28 @@ private fun InfoBanner(
                 Spacer(Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        program?.title ?: channel.name,
+                        slot.title,
                         color = Color.White,
-                        fontSize = 22.sp,
+                        fontSize = 24.sp,
                         fontWeight = FontWeight.Medium,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (program != null) {
-                            val left = ((program.endTimeMs - System.currentTimeMillis()) / 60_000L).coerceAtLeast(0)
-                            Text(
-                                "${fmtTime(program.startTimeMs)} — ${fmtTime(program.endTimeMs)}   $left min",
-                                color = Color.White.copy(alpha = 0.7f),
-                                fontSize = 14.sp
-                            )
-                            Spacer(Modifier.width(16.dp))
-                        }
+                        Text(
+                            "${fmtClock(slot.startMs)} — ${fmtClock(slot.endMs)}",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 14.sp
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        MiniProgress(slot.progress(now), k = 1f, width = 60f)
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            "${slot.minutesLeft(now)} min",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 14.sp
+                        )
+                        Spacer(Modifier.width(24.dp))
                         Text(
                             "${channel.channelNumber.takeIf { it > 0 } ?: (channelsList.indexOfFirst { it.id == channel.id } + 1)}  ${channel.name}",
                             color = Color.White,
@@ -661,32 +758,31 @@ private fun InfoBanner(
                             Badge("DRM")
                         }
                     }
-                    if (program?.description?.isNotBlank() == true) {
-                        Text(
-                            program.description,
-                            color = Color.White.copy(alpha = 0.55f),
-                            fontSize = 13.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                    if (nextSlot != null) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "${fmtClock(nextSlot.startMs)} — ${fmtClock(nextSlot.endMs)}",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 14.sp
+                            )
+                            Spacer(Modifier.width(14.dp))
+                            Text(
+                                nextSlot.title,
+                                color = Color.White.copy(alpha = if (nextSlot.program == null) 0.55f else 0.85f),
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
                 }
             }
             Spacer(Modifier.height(8.dp))
-            if (program != null && program.isLive) {
-                LinearProgressIndicator(
-                    progress = { program.progress },
-                    modifier = Modifier.fillMaxWidth().height(3.dp),
-                    color = Color(0xFF3B82F6),
-                    trackColor = Color.White.copy(alpha = 0.3f)
-                )
-            } else {
-                Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.3f)))
-            }
+            Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.3f)))
             Spacer(Modifier.height(10.dp))
         }
 
-        // Recently played channels - most recent on the left
+        // Recently played channels - most recent on the left. Cards are 50% transparent.
         val listState = rememberLazyListState()
         LaunchedEffect(stripIndex) {
             listState.animateScrollToItem(stripIndex.coerceAtLeast(0))
@@ -703,7 +799,7 @@ private fun InfoBanner(
                     modifier = Modifier
                         .width(132.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(if (selected) Color(0xFF3A3F47) else Color(0xFF22262C))
+                        .background(if (selected) StripCardSelected else StripCard)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -723,16 +819,18 @@ private fun InfoBanner(
                         lineHeight = 14.sp,
                         maxLines = 1
                     )
+                    Spacer(Modifier.height(4.dp))
+                    Box(Modifier.fillMaxWidth().height(2.dp))
                 }
             }
             itemsIndexed(strip) { index, ch ->
                 val selected = stripIndex == index + 1
-                val prog = programFor(ch)
+                val chSlot = slotFor(ch)
                 Column(
                     modifier = Modifier
                         .width(132.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(if (selected) Color(0xFF3A3F47) else Color(0xFF22262C))
+                        .background(if (selected) StripCardSelected else StripCard)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -750,13 +848,16 @@ private fun InfoBanner(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        prog?.title ?: ch.name,
+                        chSlot.title,
                         color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
                         fontSize = 12.sp,
                         lineHeight = 14.sp,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    Spacer(Modifier.height(4.dp))
+                    // progress of the current slot (hour-long when there is no EPG)
+                    MiniProgress(chSlot.progress(now), k = 1f, width = 116f)
                 }
             }
         }
@@ -777,14 +878,16 @@ private fun Badge(text: String) {
 
 /** Scale so panel sizes match TiviMate's proportions on any TV density (design grid: 1080 px tall). */
 @Composable
-private fun rememberUiScale(): Float = LocalConfiguration.current.screenHeightDp / 1080f
+internal fun rememberUiScale(): Float = LocalConfiguration.current.screenHeightDp / 1080f
 
 @Composable
 private fun ChannelListPanel(
     channelsList: List<ChannelEntity>,
     selectedIndex: Int,
     playingId: Long?,
-    programFor: (ChannelEntity) -> ProgramEntity?
+    now: Long,
+    slotNowFor: (ChannelEntity) -> EpgSlot,
+    scheduleFor: (ChannelEntity) -> List<EpgSlot>
 ) {
     val k = rememberUiScale()
     val listState = rememberLazyListState()
@@ -792,10 +895,12 @@ private fun ChannelListPanel(
         listState.animateScrollToItem((selectedIndex - 3).coerceAtLeast(0))
     }
     val selected = channelsList.getOrNull(selectedIndex)
-    val selectedProgram = selected?.let(programFor)
+    val schedule = remember(selected?.id, now / 60_000L) { selected?.let(scheduleFor) ?: emptyList() }
+    val currentIdx = schedule.indexOfFirst { it.contains(now) }.coerceAtLeast(0)
+    val currentSlot = schedule.getOrNull(currentIdx)
 
     Row(modifier = Modifier.fillMaxSize()) {
-        // Left: channels (8 rows fit on screen, like TiviMate)
+        // Column 1: channels (8 rows fit on screen, like TiviMate)
         Column(
             modifier = Modifier
                 .fillMaxHeight()
@@ -814,7 +919,7 @@ private fun ChannelListPanel(
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
                     val isSel = i == selectedIndex
-                    val prog = programFor(ch)
+                    val slot = slotNowFor(ch)
                     val fg = if (isSel) Color.Black else Color.White
                     Row(
                         modifier = Modifier
@@ -855,7 +960,7 @@ private fun ChannelListPanel(
                                 overflow = TextOverflow.Ellipsis
                             )
                             Text(
-                                prog?.title ?: "No information",
+                                slot.title,
                                 color = fg.copy(alpha = 0.65f),
                                 fontSize = (26 * k).sp,
                                 maxLines = 1,
@@ -866,12 +971,10 @@ private fun ChannelListPanel(
                                 Modifier.fillMaxWidth().height((4 * k).dp)
                                     .background(fg.copy(alpha = 0.25f))
                             ) {
-                                if (prog != null) {
-                                    Box(
-                                        Modifier.fillMaxWidth(prog.progress.coerceIn(0f, 1f)).height((4 * k).dp)
-                                            .background(fg)
-                                    )
-                                }
+                                Box(
+                                    Modifier.fillMaxWidth(slot.progress(now)).height((4 * k).dp)
+                                        .background(fg)
+                                )
                             }
                         }
                         if (ch.id == playingId) {
@@ -888,43 +991,121 @@ private fun ChannelListPanel(
             }
         }
 
-        // Right: details of highlighted channel
+        // Column 2: schedule (previous + upcoming) of the highlighted channel
+        Column(
+            modifier = Modifier
+                .fillMaxHeight()
+                .width((550 * k).dp)
+                .background(Color(0xFF101418).copy(alpha = 0.55f))
+        ) {
+            if (selected != null) {
+                val scheduleState = rememberLazyListState()
+                LaunchedEffect(selected.id, currentIdx) {
+                    scheduleState.scrollToItem((currentIdx - 5).coerceAtLeast(0))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(start = (24 * k).dp, end = (16 * k).dp, top = (24 * k).dp, bottom = (16 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(width = (96 * k).dp, height = (72 * k).dp), contentAlignment = Alignment.Center) {
+                        if (!selected.logoUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = selected.logoUrl,
+                                contentDescription = selected.name,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        } else {
+                            Text(selected.name.take(2).uppercase(), color = Color.White, fontSize = (28 * k).sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Spacer(Modifier.width((16 * k).dp))
+                    Column {
+                        Text(
+                            "${selected.channelNumber.takeIf { it > 0 } ?: (selectedIndex + 1)}  ${selected.name}",
+                            color = Color.White,
+                            fontSize = (32 * k).sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(selected.groupTitle, color = Color.White.copy(alpha = 0.7f), fontSize = (28 * k).sp, maxLines = 1)
+                    }
+                }
+                LazyColumn(state = scheduleState, modifier = Modifier.fillMaxSize()) {
+                    itemsIndexed(schedule) { idx, slot ->
+                        val cur = idx == currentIdx
+                        val c = if (cur) Color(0xFF5BA8FF) else Color.White
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height((75 * k).dp)
+                                .padding(horizontal = (24 * k).dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                fmtClock(slot.startMs),
+                                color = c,
+                                fontSize = (30 * k).sp,
+                                maxLines = 1,
+                                modifier = Modifier.width((150 * k).dp)
+                            )
+                            Text(
+                                slot.title,
+                                color = c.copy(alpha = if (slot.program == null && !cur) 0.6f else 1f),
+                                fontSize = (30 * k).sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Column 3: details of the programme airing now on the highlighted channel
         Box(
             modifier = Modifier
                 .fillMaxHeight()
                 .weight(1f)
-                .background(Brush.horizontalGradient(listOf(Color(0xCC000000), Color(0x55000000))))
+                .background(Color(0xFF000000).copy(alpha = 0.25f))
                 .padding(top = (48 * k).dp, end = (48 * k).dp, start = (32 * k).dp)
         ) {
-            if (selected != null) {
+            if (selected != null && currentSlot != null) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .width((720 * k).dp)
+                        .fillMaxWidth()
                         .clip(RoundedCornerShape((20 * k).dp))
-                        .background(Color(0x66FFFFFF).copy(alpha = 0.18f))
+                        .background(Color(0xFF3A3F47).copy(alpha = 0.75f))
                         .padding((32 * k).dp)
                 ) {
                     Text(
-                        selectedProgram?.title ?: selected.name,
+                        currentSlot.title,
                         color = Color.White,
                         fontSize = (40 * k).sp,
                         fontWeight = FontWeight.Medium
                     )
-                    if (selectedProgram != null) {
-                        Spacer(Modifier.height((8 * k).dp))
+                    Spacer(Modifier.height((8 * k).dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "${fmtTime(selectedProgram.startTimeMs)} — ${fmtTime(selectedProgram.endTimeMs)}",
+                            "${fmtClock(currentSlot.startMs)} — ${fmtClock(currentSlot.endMs)}",
                             color = Color.White.copy(alpha = 0.7f),
                             fontSize = (28 * k).sp
                         )
-                        selectedProgram.description?.takeIf { it.isNotBlank() }?.let {
-                            Spacer(Modifier.height((12 * k).dp))
-                            Text(it, color = Color.White.copy(alpha = 0.75f), fontSize = (28 * k).sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
-                        }
-                    } else {
-                        Spacer(Modifier.height((8 * k).dp))
-                        Text("No information", color = Color.White.copy(alpha = 0.6f), fontSize = (28 * k).sp)
+                        Spacer(Modifier.width((20 * k).dp))
+                        MiniProgress(currentSlot.progress(now), k, width = 80f)
+                        Spacer(Modifier.width((20 * k).dp))
+                        Text(
+                            "${currentSlot.minutesLeft(now)} min",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = (28 * k).sp
+                        )
+                    }
+                    currentSlot.description?.let {
+                        Spacer(Modifier.height((12 * k).dp))
+                        Text(it, color = Color.White.copy(alpha = 0.75f), fontSize = (28 * k).sp, maxLines = 5, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
