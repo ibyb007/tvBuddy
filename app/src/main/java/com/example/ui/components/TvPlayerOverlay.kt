@@ -95,7 +95,7 @@ private class TvMenuItem(
 private val SETTINGS_ITEMS = listOf(
     "Playlists" to "Add, remove and manage playlists",
     "Player spoofing engine" to "Choose the player signature sent to providers",
-    "EPG" to "TV guide and XMLTV import"
+    "EPG" to "EPG sources and update options"
 )
 
 private val TvPanelBg = Color(0xE6101418)
@@ -141,6 +141,8 @@ fun TvPlayerOverlay(
     onClosePlayer: () -> Unit,
     onOpenSpoofSettings: () -> Unit = {},
     onOpenPlaylists: () -> Unit = {},
+    onOpenPlaylistSettings: (Long) -> Unit = {},
+    onOpenEpgSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var panel by remember { mutableStateOf(TvPanel.NONE) }
@@ -262,12 +264,16 @@ fun TvPlayerOverlay(
                 when (settingsIndex) {
                     0 -> { playlistIndex = 0; panel = TvPanel.PLAYLISTS }
                     1 -> { panel = TvPanel.NONE; onOpenSpoofSettings() }
-                    else -> { panel = TvPanel.NONE; onOpenEpgGuide() }
+                    else -> { panel = TvPanel.NONE; onOpenEpgSettings() }
                 }
             }
             TvPanel.PLAYLISTS -> {
                 when {
-                    playlistIndex < playlists.size -> { panel = TvPanel.NONE; onOpenPlaylists() }
+                    playlistIndex < playlists.size -> {
+                        val pl = playlists[playlistIndex]
+                        panel = TvPanel.NONE
+                        onOpenPlaylistSettings(pl.id)
+                    }
                     playlistIndex == playlists.size -> { panel = TvPanel.NONE; onAddPlaylist() }
                     else -> { panel = TvPanel.NONE; onOpenPlaylists() }
                 }
@@ -1061,7 +1067,7 @@ fun TvEmptyState(
     onAddPlaylist: () -> Unit,
     onOpenPlaylists: () -> Unit,
     onOpenSpoofSettings: () -> Unit,
-    onOpenEpgGuide: () -> Unit,
+    onOpenEpgSettings: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selected by remember { mutableIntStateOf(0) }       // 0 = Add playlist, 1 = Settings
@@ -1100,7 +1106,7 @@ fun TvEmptyState(
                                 when (settingsIndex) {
                                     0 -> onOpenPlaylists()
                                     1 -> onOpenSpoofSettings()
-                                    else -> onOpenEpgGuide()
+                                    else -> onOpenEpgSettings()
                                 }
                             } else if (selected == 0) {
                                 onAddPlaylist()
