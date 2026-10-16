@@ -18,6 +18,9 @@ interface ProgramDao {
     @Query("SELECT * FROM epg_programs WHERE :now >= startTimeMs AND :now < endTimeMs")
     fun getAllCurrentPrograms(now: Long = System.currentTimeMillis()): Flow<List<ProgramEntity>>
 
+    @Query("SELECT * FROM epg_programs WHERE endTimeMs > :from AND startTimeMs < :to ORDER BY startTimeMs ASC")
+    fun getProgramsInRange(from: Long, to: Long): Flow<List<ProgramEntity>>
+
     @Query("SELECT COUNT(DISTINCT epgChannelId) FROM epg_programs")
     suspend fun getDistinctUpdatedChannelsCount(): Int
 
