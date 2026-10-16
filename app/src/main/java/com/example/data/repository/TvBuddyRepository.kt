@@ -9,6 +9,7 @@ import com.example.data.local.entity.HistoryEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
+import kotlinx.coroutines.flow.flatMapLatest
 import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
@@ -60,6 +61,16 @@ class TvBuddyRepository(
     val allCategories: Flow<List<String>> = channelDao.getAllCategories()
     val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
     val allCurrentPrograms: Flow<List<ProgramEntity>> = programDao.getAllCurrentPrograms()
+
+    /** Programs from a few hours ago up to ~a day ahead (TV guide / schedule panels). Window is re-evaluated every 30 min. */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val epgWindowPrograms: Flow<List<ProgramEntity>> =
+        kotlinx.coroutines.flow.flow {
+            while (true) { emit(Unit); kotlinx.coroutines.delay(30 * 60_000L) }
+        }.flatMapLatest {
+            val now = System.currentTimeMillis()
+            programDao.getProgramsInRange(now - 4 * 3_600_000L, now + 30 * 3_600_000L)
+        }
     val allEpgSources: Flow<List<EpgSourceEntity>> = epgSourceDao.getAllEpgSources()
     val allPlaylistEpgCrossRefs: Flow<List<PlaylistEpgCrossRef>> = epgSourceDao.getAllPlaylistEpgCrossRefs()
     val allChannelGroups: Flow<List<ChannelGroupEntity>> = channelGroupDao.getAllGroups()
