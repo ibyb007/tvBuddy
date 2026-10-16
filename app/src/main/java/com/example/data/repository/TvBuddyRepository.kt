@@ -68,8 +68,15 @@ class TvBuddyRepository(
         if (urls.isEmpty()) return
         epgPrefs.edit().putStringSet("urls_$playlistId", urls.toSet()).apply()
         epgScope.launch {
-            for (url in urls) {
-                val srcId = addEpgSource(url)
+            val plName = playlistDao.getPlaylistById(playlistId)?.name
+            urls.forEachIndexed { i, url ->
+                // Name the source after the playlist it came from so it is recognisable when assigning it to other playlists
+                val label = when {
+                    plName.isNullOrBlank() -> url.substringAfterLast("/").ifBlank { "EPG Source" }
+                    urls.size > 1 -> "$plName EPG ${i + 1}"
+                    else -> "$plName EPG"
+                }
+                val srcId = addEpgSource(url, label)
                 togglePlaylistEpgAssignment(playlistId, srcId, true)
             }
             fetchEpgUrls(playlistId, urls, userAgent)
