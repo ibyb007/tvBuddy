@@ -75,6 +75,7 @@ import com.example.ui.dialogs.EpgGuideDialog
 import com.example.ui.dialogs.PlaylistManagerDialog
 import com.example.ui.dialogs.QualityPickerDialog
 import com.example.ui.dialogs.SpoofSettingsDialog
+import com.example.ui.dialogs.TiviSettingsRoute
 import com.example.ui.dialogs.TrackSelectionDialog
 import com.example.ui.dialogs.iptvTextFieldColors
 import com.example.ui.theme.AccentCyan
@@ -105,6 +106,11 @@ fun HomeScreen(
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val allCurrentPrograms by viewModel.allCurrentPrograms.collectAsStateWithLifecycle()
     val recentChannels by viewModel.recentChannels.collectAsStateWithLifecycle()
+    val allChannelGroups by viewModel.allChannelGroups.collectAsStateWithLifecycle()
+    val allEpgSources by viewModel.allEpgSources.collectAsStateWithLifecycle()
+    val allPlaylistEpgCrossRefs by viewModel.allPlaylistEpgCrossRefs.collectAsStateWithLifecycle()
+    val epgSettings by viewModel.epgSettings.collectAsStateWithLifecycle()
+    val playlistsSorting by viewModel.playlistsSorting.collectAsStateWithLifecycle()
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
@@ -134,6 +140,12 @@ fun HomeScreen(
     var showSpoofDialog by remember { mutableStateOf(false) }
     var showDrmDebugger by remember { mutableStateOf(false) }
     var showPlaylistManager by remember { mutableStateOf(false) }
+    var settingsRoute by remember { mutableStateOf<TiviSettingsRoute>(TiviSettingsRoute.Main) }
+    // Opens the settings drawer directly on the requested screen
+    val openSettings: (TiviSettingsRoute) -> Unit = { route ->
+        settingsRoute = route
+        showPlaylistManager = true
+    }
     var showAudioDialog by remember { mutableStateOf(false) }
     var showSubtitleDialog by remember { mutableStateOf(false) }
     var showQualityDialog by remember { mutableStateOf(false) }
@@ -242,9 +254,9 @@ fun HomeScreen(
         if (dbSettled) {
             com.example.ui.components.TvEmptyState(
                 onAddPlaylist = { showAddDialog = true },
-                onOpenPlaylists = { showPlaylistManager = true },
+                onOpenPlaylists = { openSettings(TiviSettingsRoute.Playlists) },
                 onOpenSpoofSettings = { showSpoofDialog = true },
-                onOpenEpgGuide = { showEpgGuideDialog = true }
+                onOpenEpgSettings = { openSettings(TiviSettingsRoute.Epg) }
             )
         } else {
             Box(modifier = Modifier.fillMaxSize().background(Color(0xFF14181B)))
@@ -294,7 +306,9 @@ fun HomeScreen(
                     }
                 },
                 onOpenSpoofSettings = { showSpoofDialog = true },
-                onOpenPlaylists = { showPlaylistManager = true },
+                onOpenPlaylists = { openSettings(TiviSettingsRoute.Playlists) },
+                onOpenPlaylistSettings = { id -> openSettings(TiviSettingsRoute.PlaylistDetail(id)) },
+                onOpenEpgSettings = { openSettings(TiviSettingsRoute.Epg) },
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -407,7 +421,7 @@ fun HomeScreen(
                                             text = { Text("Playlists Manager", color = Color.White) },
                                             onClick = {
                                                 showMoreMenu = false
-                                                showPlaylistManager = true
+                                                openSettings(TiviSettingsRoute.Main)
                                             }
                                         )
                                         DropdownMenuItem(
@@ -690,7 +704,27 @@ fun HomeScreen(
             playlists = playlists,
             onDismiss = { showPlaylistManager = false },
             onAddNewPlaylist = { showAddDialog = true },
-            onDeletePlaylist = { viewModel.deletePlaylist(it) }
+            onDeletePlaylist = { viewModel.deletePlaylist(it) },
+            initialRoute = settingsRoute,
+            playlistsSorting = playlistsSorting,
+            onChangePlaylistsSorting = { viewModel.setPlaylistsSorting(it) },
+            onReorderPlaylists = { viewModel.reorderPlaylists(it) },
+            onUpdatePlaylist = { viewModel.updatePlaylist(it) },
+            allGroups = allChannelGroups,
+            onSetAllGroupsVisibility = { id, visible -> viewModel.setAllGroupsVisibility(id, visible) },
+            onSetGroupVisibility = { id, title, visible -> viewModel.setGroupVisibility(id, title, visible) },
+            onReorderGroups = { id, titles -> viewModel.reorderGroups(id, titles) },
+            epgSources = allEpgSources,
+            playlistEpgCrossRefs = allPlaylistEpgCrossRefs,
+            onAddEpgSource = { viewModel.addEpgSource(it) },
+            onDeleteEpgSource = { viewModel.deleteEpgSource(it) },
+            onSetDefaultEpgSource = { viewModel.setDefaultEpgSource(it) },
+            onTogglePlaylistEpgAssignment = { pl, src, assign -> viewModel.togglePlaylistEpgAssignment(pl, src, assign) },
+            onReorderPlaylistEpgPriority = { pl, ids -> viewModel.reorderPlaylistEpgPriority(pl, ids) },
+            epgSettings = epgSettings,
+            onUpdateEpgSettings = { viewModel.updateEpgSettings(it) },
+            onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
+            onTriggerClearEpg = { viewModel.triggerClearEpg() }
         )
     }
 
