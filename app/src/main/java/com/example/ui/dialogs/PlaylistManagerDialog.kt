@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -47,6 +48,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +57,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -65,6 +70,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.delay
 import com.example.data.local.entity.ChannelGroupEntity
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.PlaylistEntity
@@ -171,15 +177,20 @@ fun PlaylistManagerDialog(
             navigateBack()
         }
 
+        // Remote control: put focus on the first row whenever a screen opens
+        val focusManager = LocalFocusManager.current
+        LaunchedEffect(currentRoute) {
+            delay(400) // wait for the slide animation so the old screen is gone
+            if (!focusManager.moveFocus(FocusDirection.Enter)) {
+                focusManager.moveFocus(FocusDirection.Down)
+            }
+        }
+
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black.copy(alpha = 0.25f))
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismiss
-                )
+                .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
         ) {
             if (currentRoute is TiviSettingsRoute.AddEpgSourceUrl) {
                 // Full-screen TiviMate EPG URL entry screen
@@ -200,11 +211,7 @@ fun PlaylistManagerDialog(
                         .fillMaxHeight()
                         .width(380.dp)
                         .background(TiviDrawerBg)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {} // Consume clicks inside drawer
-                        )
+                        .pointerInput(Unit) { detectTapGestures(onTap = { }) } // Consume taps inside drawer
                 ) {
                     AnimatedContent(
                         targetState = currentRoute,
