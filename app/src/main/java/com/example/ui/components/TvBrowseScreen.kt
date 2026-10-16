@@ -62,6 +62,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
@@ -70,6 +71,8 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.buildAnnotatedString
@@ -80,6 +83,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.window.Dialog
 import androidx.media3.exoplayer.ExoPlayer
 import coil.compose.AsyncImage
@@ -238,6 +242,8 @@ fun TvBrowseScreen(
     onClearSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onExit: () -> Unit,
+    /** Reports where the preview window sits (root coordinates) so the shared video surface can follow it. */
+    onPreviewBounds: (Rect) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
@@ -522,7 +528,8 @@ fun TvBrowseScreen(
                 windowEnd = windowEnd,
                 now = now,
                 searchQuery = searchQuery,
-                programsOf = ::programsOf
+                programsOf = ::programsOf,
+                onPreviewBounds = onPreviewBounds
             )
         }
 
@@ -580,7 +587,8 @@ private fun BrowseContent(
     windowEnd: Long,
     now: Long,
     searchQuery: String,
-    programsOf: (ChannelEntity) -> List<ProgramEntity>
+    programsOf: (ChannelEntity) -> List<ProgramEntity>,
+    onPreviewBounds: (Rect) -> Unit
 ) {
     val dpPerMs = (BROWSE_HALF_HOUR_PX * k) / HALF_HOUR_MS
     val listState = rememberLazyListState()
@@ -600,16 +608,15 @@ private fun BrowseContent(
                 Box(
                     modifier = Modifier
                         .size(width = (PREVIEW_W_PX * k).dp, height = (PREVIEW_H_PX * k).dp)
+                        .onGloballyPositioned { c ->
+                            onPreviewBounds(Rect(c.positionInRoot(), c.size.toSize()))
+                        }
                         .clip(RoundedCornerShape((16 * k).dp))
                         .background(Color.Black)
                 ) {
-                    if (playingChannel != null) {
-                        VideoPlayerSurface(
-                            player = player,
-                            aspectMode = AspectMode.FIT,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
+                    // Intentionally empty: the single, shared video surface owned by HomeScreen is
+                    // resized onto this slot. Creating a second PlayerView here is what caused the
+                    // black flashes when switching between this page and full-screen playback.
                 }
                 Spacer(Modifier.width((45 * k).dp))
                 Column(modifier = Modifier.weight(1f).padding(end = (48 * k).dp)) {
@@ -993,7 +1000,9 @@ private fun GroupsPanel(
         ) {
             itemsIndexed(rows) { i, row ->
                 val isFocus = focused && i == focusIndex
-                val isApplied = !isFocus && i == appliedIndex && row.kind != RowKind.HEADER
+                // While the panel has focus only the focused pill is shown; the grid follows it live, so a
+                // second "applied" pill would just lag behind and look like two focuses.
+                val isApplied = !focused && i == appliedIndex && row.kind != RowKind.HEADER
                 val isHeader = row.kind == RowKind.HEADER
                 val fg = if (isFocus) Color.Black else Color.White
                 Row(
