@@ -32,6 +32,22 @@ data class UiMessage(
     val isError: Boolean = false
 )
 
+/** What the TV groups panel has applied: all channels / favorites / one group, optionally limited to one playlist. */
+enum class TvGroupKind { ALL, FAVORITES, GROUP }
+
+data class TvGroupSelection(
+    val playlistId: Long? = null,          // null = all playlists
+    val kind: TvGroupKind = TvGroupKind.ALL,
+    val groupTitle: String? = null         // only for kind == GROUP
+)
+
+/** One playlist with its visible groups, in the order the groups panel lists them. */
+data class TvGroupSection(
+    val playlistId: Long,
+    val name: String,
+    val groups: List<String>
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = TvBuddyRepository(application)
@@ -83,6 +99,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _isTvMode = MutableStateFlow(false)
     val isTvMode: StateFlow<Boolean> = _isTvMode.asStateFlow()
+
+    // ---- TV groups panel state (selection + per-group view options) ----
+    private val _tvSelection = MutableStateFlow(loadTvSelection())
+    val tvSelection: StateFlow<TvGroupSelection> = _tvSelection.asStateFlow()
+
+    /** Keys ("playlistId_groupTitle") of groups that only show favourite channels. */
+    private val _favOnlyGroups = MutableStateFlow(prefs.getStringSet(KEY_GROUP_FAV_ONLY, emptySet()).orEmpty().toSet())
+    val favOnlyGroups: StateFlow<Set<String>> = _favOnlyGroups.asStateFlow()
+
+    /** Keys of groups whose channels are sorted by name instead of playlist order. */
+    private val _nameSortedGroups = MutableStateFlow(prefs.getStringSet(KEY_GROUP_NAME_SORT, emptySet()).orEmpty().toSet())
+    val nameSortedGroups: StateFlow<Set<String>> = _nameSortedGroups.asStateFlow()
 
     private val _globalSpoof = MutableStateFlow(SpoofProfile(SpoofPreset.TIVIMATE))
     val globalSpoof: StateFlow<SpoofProfile> = _globalSpoof.asStateFlow()
@@ -169,35 +197,167 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         listOf("All", "★ Favorites") + filteredGroups
     }.stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", "★ Favorites"))
 
-    // Filtered channels respecting active playlists and group visibility
+    /** Groups of each active playlist for the TV groups panel (hidden groups left out). */
+    val tvGroupSections: StateFlow<List<TvGroupSection>> = combine(
+        rawChannels,
+        allPlaylists,
+        allChannelGroups
+    ) { channels, playlists, groups ->
+        val titlesByPlaylist = channels.groupBy { it.playlistId }
+            .mapValues { (_, list) -> list.map { it.groupTitle }.filter { it.isNotBlank() }.distinct() }
+        val groupsByPlaylist = groups.groupBy { it.playlistId }
+        playlists.filter { it.isActive }.map { pl ->
+            val known = groupsByPlaylist[pl.id].orEmpty()
+            val have = titlesByPlaylist[pl.id].orEmpty()
+            val haveSet = have.toSet()
+            val knownTitles = known.map { it.groupTitle }.toSet()
+            val hidden = known.filter { !it.isVisible }.map { it.groupTitle }.toSet()
+            val sortedKnown = when (pl.groupsSorting) {
+                "By name" -> known.sortedBy { it.groupTitle.lowercase() }
+                "Manual" -> known.sortedBy { it.sortOrder }
+                else -> known.sortedBy { it.originalOrder }
+            }
+            val ordered = sortedKnown.map { it.groupTitle }.filter { it in haveSet } +
+                have.filter { it !in knownTitles }
+            TvGroupSection(pl.id, pl.name, ordered.filter { it !in hidden })
+        }
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    private data class FilterState(
+        val category: String,
+        val query: String,
+        val tvMode: Boolean,
+        val selection: TvGroupSelection,
+        val favOnly: Set<String>,
+        val nameSorted: Set<String>
+    )
+
+    private val groupViewPrefs = combine(_favOnlyGroups, _nameSortedGroups) { fav, byName -> fav to byName }
+
+    private val filterState = combine(
+        _selectedCategory,
+        _searchQuery,
+        _isTvMode,
+        _tvSelection,
+        groupViewPrefs
+    ) { category, query, tvMode, selection, viewPrefs ->
+        FilterState(category, query, tvMode, selection, viewPrefs.first, viewPrefs.second)
+    }
+
+    // Filtered channels respecting active playlists and group visibility.
+    // Phone mode filters by category chip; TV mode by the playlist/group picked in the groups panel.
     val visibleChannels: StateFlow<List<ChannelEntity>> = combine(
         rawChannels,
         allPlaylists,
         allChannelGroups,
-        _selectedCategory,
-        _searchQuery
-    ) { channels, playlists, groups, category, query ->
+        filterState
+    ) { channels, playlists, groups, fs ->
         val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
         val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
 
-        channels.filter { channel ->
+        // A selection that points at a playlist that no longer exists behaves like "all playlists"
+        val sel = fs.selection.let { s ->
+            if (s.playlistId != null && playlists.none { it.id == s.playlistId }) TvGroupSelection() else s
+        }
+        val selKey = if (sel.kind == TvGroupKind.GROUP && sel.playlistId != null) "${sel.playlistId}_${sel.groupTitle}" else null
+
+        val filtered = channels.filter { channel ->
             if (activePlaylistIds != null && channel.playlistId !in activePlaylistIds) return@filter false
             if ("${channel.playlistId}_${channel.groupTitle}" in hiddenGroupKeys) return@filter false
 
-            val matchesCategory = when (category) {
-                "All" -> true
-                "★ Favorites" -> channel.isFavorite
-                else -> channel.groupTitle.equals(category, ignoreCase = true)
+            val matchesQuery = fs.query.isBlank() ||
+                channel.name.contains(fs.query, ignoreCase = true) ||
+                channel.groupTitle.contains(fs.query, ignoreCase = true)
+            if (!matchesQuery) return@filter false
+
+            if (fs.tvMode) {
+                if (sel.playlistId != null && channel.playlistId != sel.playlistId) return@filter false
+                when (sel.kind) {
+                    TvGroupKind.ALL -> true
+                    TvGroupKind.FAVORITES -> channel.isFavorite
+                    TvGroupKind.GROUP ->
+                        channel.groupTitle == sel.groupTitle && (selKey == null || selKey !in fs.favOnly || channel.isFavorite)
+                }
+            } else {
+                when (fs.category) {
+                    "All" -> true
+                    "★ Favorites" -> channel.isFavorite
+                    else -> channel.groupTitle.equals(fs.category, ignoreCase = true)
+                }
             }
-            val matchesQuery = query.isBlank() ||
-                channel.name.contains(query, ignoreCase = true) ||
-                channel.groupTitle.contains(query, ignoreCase = true)
-            matchesCategory && matchesQuery
         }
-    }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+        if (fs.tvMode && selKey != null && selKey in fs.nameSorted) {
+            filtered.sortedBy { it.name.lowercase() }
+        } else {
+            filtered
+        }
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    init {
+        // Drop a stored selection whose playlist / group has been deleted, hidden or deactivated
+        viewModelScope.launch {
+            combine(tvGroupSections, _tvSelection) { sections, sel -> sections to sel }
+                .collect { (sections, sel) ->
+                    if (sections.isEmpty()) return@collect
+                    val pid = sel.playlistId ?: return@collect
+                    val section = sections.firstOrNull { it.playlistId == pid }
+                    when {
+                        section == null -> selectTvGroup(TvGroupSelection())
+                        sel.kind == TvGroupKind.GROUP && sel.groupTitle !in section.groups ->
+                            selectTvGroup(TvGroupSelection(pid, TvGroupKind.ALL))
+                    }
+                }
+        }
+    }
 
     fun selectCategory(category: String) {
         _selectedCategory.value = category
+    }
+
+    // ---- TV groups panel actions ----
+    fun selectTvGroup(selection: TvGroupSelection) {
+        if (_tvSelection.value == selection) return
+        _tvSelection.value = selection
+        prefs.edit()
+            .putLong(KEY_SEL_PLAYLIST, selection.playlistId ?: -1L)
+            .putString(KEY_SEL_KIND, selection.kind.name)
+            .putString(KEY_SEL_GROUP, selection.groupTitle)
+            .apply()
+    }
+
+    fun toggleGroupFavoritesOnly(playlistId: Long, groupTitle: String) {
+        val key = "${playlistId}_$groupTitle"
+        val next = _favOnlyGroups.value.let { if (key in it) it - key else it + key }
+        _favOnlyGroups.value = next
+        prefs.edit().putStringSet(KEY_GROUP_FAV_ONLY, next).apply()
+    }
+
+    fun toggleGroupNameSort(playlistId: Long, groupTitle: String) {
+        val key = "${playlistId}_$groupTitle"
+        val next = _nameSortedGroups.value.let { if (key in it) it - key else it + key }
+        _nameSortedGroups.value = next
+        prefs.edit().putStringSet(KEY_GROUP_NAME_SORT, next).apply()
+    }
+
+    /** Hides a group (same flag as "Manage groups") and falls back to the playlist's channels if it was selected. */
+    fun hideGroup(playlistId: Long, groupTitle: String) {
+        setGroupVisibility(playlistId, groupTitle, false)
+        val sel = _tvSelection.value
+        if (sel.kind == TvGroupKind.GROUP && sel.playlistId == playlistId && sel.groupTitle == groupTitle) {
+            selectTvGroup(TvGroupSelection(playlistId, TvGroupKind.ALL))
+        }
+    }
+
+    private fun loadTvSelection(): TvGroupSelection {
+        val pid = prefs.getLong(KEY_SEL_PLAYLIST, -1L).takeIf { it >= 0L }
+        val kind = runCatching { TvGroupKind.valueOf(prefs.getString(KEY_SEL_KIND, null) ?: "ALL") }
+            .getOrDefault(TvGroupKind.ALL)
+        val group = prefs.getString(KEY_SEL_GROUP, null)
+        return if (kind == TvGroupKind.GROUP && (pid == null || group == null)) TvGroupSelection()
+        else TvGroupSelection(pid, kind, group)
     }
 
     fun setSearchQuery(query: String) {
@@ -462,5 +622,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val KEY_RESUME_ID = "resume_channel_id"
         const val KEY_RESUME_URL = "resume_stream_url"
+        const val KEY_SEL_PLAYLIST = "tv_sel_playlist"
+        const val KEY_SEL_KIND = "tv_sel_kind"
+        const val KEY_SEL_GROUP = "tv_sel_group"
+        const val KEY_GROUP_FAV_ONLY = "tv_group_fav_only"
+        const val KEY_GROUP_NAME_SORT = "tv_group_name_sort"
     }
 }
