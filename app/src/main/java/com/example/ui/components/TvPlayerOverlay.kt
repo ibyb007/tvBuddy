@@ -9,6 +9,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -778,7 +781,25 @@ private fun InfoBanner(
                 }
             }
             Spacer(Modifier.height(8.dp))
-            Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.3f)))
+            // Full-width programme progress with a knob (hour-long slot when there is no EPG)
+            val p = slot.progress(now).coerceIn(0f, 1f)
+            BoxWithConstraints(Modifier.fillMaxWidth().height(12.dp)) {
+                Box(
+                    Modifier.align(Alignment.CenterStart).fillMaxWidth().height(4.dp)
+                        .background(Color.White.copy(alpha = 0.35f))
+                )
+                Box(
+                    Modifier.align(Alignment.CenterStart).fillMaxWidth(p).height(4.dp)
+                        .background(Color(0xFF3B82F6))
+                )
+                Box(
+                    Modifier.align(Alignment.CenterStart)
+                        .offset(x = (maxWidth * p) - 6.dp)
+                        .size(12.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFFE8F0FF))
+                )
+            }
             Spacer(Modifier.height(10.dp))
         }
 
@@ -868,11 +889,11 @@ private fun InfoBanner(
 private fun Badge(text: String) {
     Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(4.dp))
+            .clip(RoundedCornerShape(3.dp))
             .background(Color(0x66FFFFFF))
-            .padding(horizontal = 8.dp, vertical = 2.dp)
+            .padding(horizontal = 5.dp, vertical = 1.dp)
     ) {
-        Text(text, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+        Text(text, color = Color.White, fontSize = 10.sp, lineHeight = 12.sp, fontWeight = FontWeight.SemiBold)
     }
 }
 
