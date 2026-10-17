@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.RadioButtonChecked
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -81,13 +83,14 @@ import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.SpoofProfile
 import com.example.player.AspectMode
 import com.example.player.StreamInfo
+import com.example.player.TrackInfo
 import com.example.ui.theme.StatusLive
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-private enum class TvPanel { NONE, INFO, MENU, CHANNELS, GUIDE, SETTINGS, PLAYLISTS }
+private enum class TvPanel { NONE, INFO, MENU, CHANNELS, GUIDE, SETTINGS, PLAYLISTS, AUDIO }
 
 private class TvMenuItem(
     val label: String,
@@ -145,6 +148,9 @@ fun TvPlayerOverlay(
     onOpenQualityPicker: () -> Unit = {},
     onOpenEpgGuide: () -> Unit = {},
     onOpenAudioTracks: () -> Unit,
+    audioTracks: List<TrackInfo> = emptyList(),
+    onSelectAudioTrack: (TrackInfo) -> Unit = {},
+    onDisableAudio: () -> Unit = {},
     onOpenSubtitles: () -> Unit,
     onClosePlayer: () -> Unit,
     onOpenSpoofSettings: () -> Unit = {},
@@ -161,6 +167,7 @@ fun TvPlayerOverlay(
     var listIndex by remember { mutableIntStateOf(0) }
     var settingsIndex by remember { mutableIntStateOf(0) }
     var playlistIndex by remember { mutableIntStateOf(0) }
+    var audioIndex by remember { mutableIntStateOf(0) }          // 0 = Off, 1.. = audio tracks
     var okLongHandled by remember { mutableStateOf(false) }
 
     // Remember the previously played channel for the RIGHT key
@@ -210,7 +217,7 @@ fun TvPlayerOverlay(
     fun guideSlots(ch: ChannelEntity): List<EpgSlot> = slotsOf(ch, guideFrom, guideTo)
 
     // Recently played channels, most recent first (falls back to the full list)
-    val strip = recentChannels.ifEmpty { channelsList }
+    val strip = recentChannels.ifEmpty { channelsList }.take(10)
 
     fun currentIndex(): Int = channelsList.indexOfFirst { it.id == channel?.id }.coerceAtLeast(0)
 
@@ -261,6 +268,13 @@ fun TvPlayerOverlay(
     }
 
     fun menuItems(): List<TvMenuItem> {
+        // the audio button shows what is playing now, e.g. "English, Stereo, 0.20 Mbps"
+        val audioSelected = audioTracks.firstOrNull { it.isSelected }
+        val audioLabel = when {
+            audioTracks.isEmpty() -> "Audio"
+            audioSelected == null -> "Audio off"
+            else -> audioTrackText(audioSelected)
+        }
         val qualityLabel = if (streamInfo.width > 0 && streamInfo.height > 0) {
             val mbps = streamInfo.bitrate / 1_000_000f
             if (mbps > 0f) "${streamInfo.width} × ${streamInfo.height}, ${"%.2f".format(mbps)} Mbps"
@@ -270,10 +284,14 @@ fun TvPlayerOverlay(
             TvMenuItem("Channels list", Icons.Default.FormatListBulleted) { openChannelList() },
             TvMenuItem("TV guide", Icons.Default.Schedule) { openGuide() },
             TvMenuItem(qualityLabel, Icons.Default.HighQuality) { panel = TvPanel.NONE; onOpenQualityPicker() },
-            TvMenuItem("Audio", Icons.AutoMirrored.Filled.VolumeUp) { panel = TvPanel.NONE; onOpenAudioTracks() },
+            TvMenuItem(audioLabel, Icons.AutoMirrored.Filled.VolumeUp) {
+                val sel = audioTracks.indexOfFirst { it.isSelected }
+                audioIndex = if (sel >= 0) sel + 1 else 0
+                panel = TvPanel.AUDIO
+            },
             TvMenuItem("Subtitles", Icons.Default.ClosedCaption) { panel = TvPanel.NONE; onOpenSubtitles() },
             TvMenuItem(
-                if (channel?.isFavorite == true) "Remove favorite" else "Add to Favorites",
+                if (channel?.isFavorite == true) "Remove from Favorites" else "Add to Favorites",
                 if (channel?.isFavorite == true) Icons.Default.Star else Icons.Outlined.StarOutline
             ) { channel?.let(onToggleFavorite) },
             TvMenuItem(aspectMode.title, Icons.Default.AspectRatio) { onCycleAspect() },
@@ -312,6 +330,11 @@ fun TvPlayerOverlay(
                 }
             }
             TvPanel.MENU -> menuItems().getOrNull(menuIndex)?.action?.invoke()
+            TvPanel.AUDIO -> {
+                if (audioIndex == 0) onDisableAudio()
+                else audioTracks.getOrNull(audioIndex - 1)?.let(onSelectAudioTrack)
+                panel = TvPanel.NONE
+            }
             TvPanel.CHANNELS -> {
                 channelsList.getOrNull(listIndex)?.let { onSelectChannel(it) }
                 panel = TvPanel.NONE
@@ -368,6 +391,13 @@ fun TvPlayerOverlay(
             TvPanel.SETTINGS -> when (key) {
                 Key.DirectionUp -> settingsIndex = (settingsIndex - 1).coerceAtLeast(0)
                 Key.DirectionDown -> settingsIndex = (settingsIndex + 1).coerceAtMost(SETTINGS_ITEMS.size - 1)
+                Key.DirectionLeft -> if (!isRepeat) panel = TvPanel.MENU
+                Key.DirectionRight -> {}
+                else -> return false
+            }
+            TvPanel.AUDIO -> when (key) {
+                Key.DirectionUp -> audioIndex = (audioIndex - 1).coerceAtLeast(0)
+                Key.DirectionDown -> audioIndex = (audioIndex + 1).coerceAtMost(audioTracks.size)
                 Key.DirectionLeft -> if (!isRepeat) panel = TvPanel.MENU
                 Key.DirectionRight -> {}
                 else -> return false
@@ -538,48 +568,54 @@ fun TvPlayerOverlay(
             modifier = Modifier.align(Alignment.BottomCenter)
         ) {
             val items = menuItems()
+            // dark fade behind the bar so icons/labels stay readable over bright video
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f), Color.Black.copy(alpha = 0.9f))
+                        )
+                    )
+                    .padding(start = 8.dp, end = 8.dp, top = 56.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.Top
             ) {
                 items.forEachIndexed { i, item ->
                     val selected = i == menuIndex
                     Column(
-                        modifier = Modifier.width(100.dp),
+                        modifier = Modifier.weight(1f).padding(horizontal = 2.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(38.dp)
-                                .clip(RoundedCornerShape(19.dp))
-                                .background(if (selected) TvSelected else Color.Transparent),
+                                .size(56.dp)
+                                .clip(CircleShape)
+                                .background(if (selected) TvSelected else Color.White.copy(alpha = 0.14f)),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 item.icon,
                                 contentDescription = item.label,
-                                tint = if (selected) Color.Black else Color.White.copy(alpha = 0.9f),
-                                modifier = Modifier.size(20.dp)
+                                tint = if (selected) Color.Black else Color.White,
+                                modifier = Modifier.size(30.dp)
                             )
                         }
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(6.dp))
                         Text(
                             item.label,
-                            color = if (selected) Color.White else Color.White.copy(alpha = 0.85f),
-                            fontSize = 11.sp,
-                            lineHeight = 13.sp,
+                            color = Color.White,
+                            fontSize = 15.sp,
+                            lineHeight = 18.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             style = androidx.compose.ui.text.TextStyle(
                                 shadow = androidx.compose.ui.graphics.Shadow(
                                     color = Color.Black,
                                     offset = androidx.compose.ui.geometry.Offset(0f, 1f),
-                                    blurRadius = 6f
+                                    blurRadius = 8f
                                 )
                             ),
                             textAlign = TextAlign.Center,
-                            maxLines = 2,
+                            maxLines = 3,                       // long labels wrap (e.g. "Remove from Favorites")
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -595,6 +631,16 @@ fun TvPlayerOverlay(
             modifier = Modifier.align(Alignment.CenterEnd)
         ) {
             SettingsPanel(settingsIndex)
+        }
+
+        // ---------- Audio tracks panel (right side, TiviMate style) ----------
+        AnimatedVisibility(
+            visible = panel == TvPanel.AUDIO,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
+            AudioTracksPanel(tracks = audioTracks, focusIndex = audioIndex)
         }
 
         // ---------- Playlists sub-menu ----------
@@ -1129,6 +1175,81 @@ internal fun ChannelListPanel(
     }
 }
 
+
+/** "English, Stereo, 0.20 Mbps" - language, channel layout and bitrate read from the stream itself. */
+internal fun audioTrackText(t: TrackInfo): String {
+    val lang = t.language.takeIf { it.isNotBlank() && it != "und" }
+        ?.let { code -> Locale(code).getDisplayLanguage(Locale.ENGLISH).takeIf { it.isNotBlank() && it != code } ?: code }
+    val layout = when (t.channelCount) {
+        0 -> null
+        1 -> "Mono"
+        2 -> "Stereo"
+        6 -> "5.1"
+        8 -> "7.1"
+        else -> "${t.channelCount} ch"
+    }
+    val rate = if (t.bitrate > 0) "%.2f Mbps".format(Locale.US, t.bitrate / 1_000_000f) else null
+    val parts = listOfNotNull(lang, layout, rate)
+    return if (parts.isEmpty()) t.label else parts.joinToString(", ")
+}
+
+/** TiviMate-style "Audio tracks" card: Off + every embedded audio track, radio = what is playing. */
+@Composable
+private fun AudioTracksPanel(tracks: List<TrackInfo>, focusIndex: Int) {
+    val k = rememberUiScale()
+    val listState = rememberLazyListState()
+    LaunchedEffect(focusIndex) { listState.animateScrollToItem((focusIndex - 4).coerceAtLeast(0)) }
+    val anySelected = tracks.any { it.isSelected }
+    val rows = listOf<TrackInfo?>(null) + tracks          // null = Off
+    Column(
+        modifier = Modifier
+            .padding(top = (48 * k).dp, bottom = (48 * k).dp, end = (48 * k).dp)
+            .fillMaxHeight()
+            .width((640 * k).dp)
+            .clip(RoundedCornerShape((24 * k).dp))
+            .background(TvPanelBg)
+            .padding(horizontal = (16 * k).dp, vertical = (24 * k).dp)
+    ) {
+        Text(
+            "Audio tracks",
+            color = Color.White,
+            fontSize = (40 * k).sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(start = (32 * k).dp, top = (8 * k).dp, bottom = (28 * k).dp)
+        )
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            itemsIndexed(rows) { i, t ->
+                val focused = i == focusIndex
+                val checked = if (t == null) !anySelected else t.isSelected
+                val fg = if (focused) Color.Black else Color.White
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = (3 * k).dp)
+                        .clip(RoundedCornerShape((10 * k).dp))
+                        .background(if (focused) TvSelected else Color.Transparent)
+                        .padding(horizontal = (32 * k).dp, vertical = (22 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        if (checked) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                        contentDescription = null,
+                        tint = fg.copy(alpha = if (checked) 1f else 0.7f),
+                        modifier = Modifier.size((40 * k).dp)
+                    )
+                    Spacer(Modifier.width((28 * k).dp))
+                    Text(
+                        if (t == null) "Off" else audioTrackText(t),
+                        color = fg,
+                        fontSize = (28 * k).sp,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SettingsPanel(settingsIndex: Int) {
