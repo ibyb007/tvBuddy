@@ -893,7 +893,7 @@ private fun Badge(text: String) {
 internal fun rememberUiScale(): Float = LocalConfiguration.current.screenHeightDp / 1080f
 
 @Composable
-private fun ChannelListPanel(
+internal fun ChannelListPanel(
     channelsList: List<ChannelEntity>,
     selectedIndex: Int,
     playingId: Long?,
