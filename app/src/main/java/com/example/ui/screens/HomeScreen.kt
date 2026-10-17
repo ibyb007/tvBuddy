@@ -58,6 +58,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
@@ -334,7 +335,9 @@ fun HomeScreen(
                     onPreviewBounds = { previewBounds.value = it },
                     overlayMode = tvBrowseOverlay,
                     onDismiss = { tvBrowse = null },
-                    modifier = Modifier.fillMaxSize()
+                    // normal TV page sits under the video (which only shows in its preview slot);
+                    // the overlay page must sit ABOVE the full-screen video
+                    modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay) 2f else 0f)
                 )
             }
 
@@ -346,7 +349,7 @@ fun HomeScreen(
                     aspectMode = aspectMode,
                     browsing = browseLevel != null && !tvBrowseOverlay,
                     previewBounds = previewBounds,
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().zIndex(1f)
                 )
             }
 
@@ -386,7 +389,7 @@ fun HomeScreen(
                         tvBrowseOverlay = true
                         tvBrowse = TvBrowseLevel.GROUPS
                     },
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier.fillMaxSize().zIndex(2f)   // above the shared video
                 )
             }
         }
