@@ -65,7 +65,9 @@ data class TrackInfo(
     val isSelected: Boolean,
     val trackGroupIndex: Int,
     val trackIndex: Int,
-    val type: Int // C.TRACK_TYPE_AUDIO or C.TRACK_TYPE_TEXT
+    val type: Int, // C.TRACK_TYPE_AUDIO or C.TRACK_TYPE_TEXT
+    val channelCount: Int = 0,   // audio: 1 mono, 2 stereo, 6 = 5.1 ... (0 = unknown)
+    val bitrate: Int = 0         // bits per second (0 = unknown)
 )
 
 enum class AspectMode(val title: String, val resizeMode: Int) {
@@ -476,7 +478,9 @@ class TvBuddyPlayerManager(
                     isSelected = isSelected,
                     trackGroupIndex = groupIndex,
                     trackIndex = trackIndex,
-                    type = trackType
+                    type = trackType,
+                    channelCount = if (format.channelCount > 0) format.channelCount else 0,
+                    bitrate = if (format.bitrate > 0) format.bitrate else 0
                 )
 
                 if (trackType == C.TRACK_TYPE_AUDIO) {
@@ -517,13 +521,24 @@ class TvBuddyPlayerManager(
         val currentTracks = player.currentTracks
         if (trackInfo.trackGroupIndex < currentTracks.groups.size) {
             val trackGroup = currentTracks.groups[trackInfo.trackGroupIndex].mediaTrackGroup
-            player.trackSelectionParameters = player.trackSelectionParameters
+            val params = player.trackSelectionParameters
                 .buildUpon()
                 .setOverrideForType(
                     TrackSelectionOverride(trackGroup, listOf(trackInfo.trackIndex))
                 )
-                .build()
+            // picking an audio track also un-mutes audio if it was switched off
+            if (trackInfo.type == C.TRACK_TYPE_AUDIO) params.setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, false)
+            player.trackSelectionParameters = params.build()
         }
+    }
+
+    /** Switches audio off ("Off" row of the audio panel). */
+    fun disableAudio() {
+        val player = exoPlayer ?: return
+        player.trackSelectionParameters = player.trackSelectionParameters
+            .buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_AUDIO, true)
+            .build()
     }
 
     /** Forces one rendition, or returns to automatic (adaptive) selection when [option] is null. */
