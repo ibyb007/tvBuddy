@@ -244,6 +244,13 @@ fun TvBrowseScreen(
     onExit: () -> Unit,
     /** Reports where the preview window sits (root coordinates) so the shared video surface can follow it. */
     onPreviewBounds: (Rect) -> Unit = {},
+    /**
+     * true when the page was opened from full-screen playback (LEFT, LEFT): the video keeps playing
+     * full-screen behind a see-through page that shows the rail + groups + a plain channel list
+     * (no preview window, no EPG grid) and BACK simply closes the page ([onDismiss]).
+     */
+    overlayMode: Boolean = false,
+    onDismiss: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
@@ -329,6 +336,7 @@ fun TvBrowseScreen(
         when {
             optionsRow != null -> optionsRow = null
             searchQuery.isNotBlank() -> onClearSearch()
+            overlayMode -> onDismiss()          // back to full-screen playback
             level == TvBrowseLevel.GUIDE -> level = TvBrowseLevel.GROUPS
             level == TvBrowseLevel.GROUPS -> level = TvBrowseLevel.RAIL
             else -> {
@@ -434,10 +442,12 @@ fun TvBrowseScreen(
             TvBrowseLevel.GUIDE -> when (key) {
                 Key.DirectionUp -> moveRow(safeRow - 1)
                 Key.DirectionDown -> moveRow(safeRow + 1)
-                Key.DirectionRight -> moveCell(+1)
+                Key.DirectionRight -> if (overlayMode) { if (!isRepeat) onDismiss() } else moveCell(+1)
                 Key.DirectionLeft -> {
                     // nothing earlier on this channel -> reveal the playlist groups page
-                    if (!moveCell(-1) && !isRepeat) level = TvBrowseLevel.GROUPS
+                    if (overlayMode) {
+                        if (!isRepeat) level = TvBrowseLevel.GROUPS
+                    } else if (!moveCell(-1) && !isRepeat) level = TvBrowseLevel.GROUPS
                 }
                 else -> return false
             }
@@ -478,7 +488,7 @@ fun TvBrowseScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(ContentBg)
+            .background(if (overlayMode) Color.Transparent else ContentBg)
             .focusRequester(focusRequester)
             .onFocusChanged { hasFocus = it.isFocused }
             .focusable()
@@ -514,7 +524,20 @@ fun TvBrowseScreen(
                 .requiredWidth(screenWidthDp.dp)
                 .fillMaxHeight()
         ) {
-            BrowseContent(
+            if (overlayMode) {
+                ChannelListPanel(
+                    channelsList = channels,
+                    selectedIndex = safeRow,
+                    playingId = playingChannel?.id,
+                    now = now,
+                    slotNowFor = { ch ->
+                        val h = floorToHour(now)
+                        val slots = buildSlots(programsOf(ch), h, h + 3 * HOUR_MS)
+                        slots.firstOrNull { it.contains(now) } ?: slots.first()
+                    },
+                    scheduleFor = { ch -> slotsFor(ch) }
+                )
+            } else BrowseContent(
                 k = k,
                 player = player,
                 playingChannel = playingChannel,
@@ -540,7 +563,8 @@ fun TvBrowseScreen(
                 k = k,
                 expanded = level == TvBrowseLevel.RAIL,
                 focused = level == TvBrowseLevel.RAIL,
-                selectedIndex = railIndex
+                selectedIndex = railIndex,
+                bgAlpha = if (overlayMode) 0.92f else 1f
             )
             GroupsPanel(
                 width = groupsWidth,
@@ -549,7 +573,8 @@ fun TvBrowseScreen(
                 collapsed = collapsed,
                 focusIndex = groupFocus,
                 appliedIndex = appliedIndex,
-                focused = level == TvBrowseLevel.GROUPS
+                focused = level == TvBrowseLevel.GROUPS,
+                bgAlpha = if (overlayMode) 0.92f else 1f
             )
         }
 
@@ -883,14 +908,15 @@ private fun RailPanel(
     k: Float,
     expanded: Boolean,
     focused: Boolean,
-    selectedIndex: Int
+    selectedIndex: Int,
+    bgAlpha: Float = 1f
 ) {
     Box(
         modifier = Modifier
             .width(width)
             .fillMaxHeight()
             .clipToBounds()
-            .background(RailBg)
+            .background(RailBg.copy(alpha = bgAlpha))
     ) {
         // fixed-width inner layout so labels are simply revealed while the rail widens
         Box(modifier = Modifier.requiredWidth((RAIL_EXPANDED_PX * k).dp).fillMaxHeight()) {
@@ -980,7 +1006,8 @@ private fun GroupsPanel(
     collapsed: List<Long>,
     focusIndex: Int,
     appliedIndex: Int,
-    focused: Boolean
+    focused: Boolean,
+    bgAlpha: Float = 1f
 ) {
     val listState = rememberLazyListState()
     LaunchedEffect(focusIndex, focused) {
@@ -991,7 +1018,7 @@ private fun GroupsPanel(
             .width(width)
             .fillMaxHeight()
             .clipToBounds()
-            .background(GroupsBg)
+            .background(GroupsBg.copy(alpha = bgAlpha))
     ) {
         LazyColumn(
             state = listState,
