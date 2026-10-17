@@ -481,7 +481,7 @@ fun TvBrowseScreen(
     val railWidth by animateDpAsState(
         targetValue = when (level) {
             TvBrowseLevel.GUIDE -> 0.dp
-            TvBrowseLevel.GROUPS -> (RAIL_COLLAPSED_PX * k).dp
+            TvBrowseLevel.GROUPS -> if (overlayMode) 0.dp else (RAIL_COLLAPSED_PX * k).dp   // no nav rail on the overlay page
             TvBrowseLevel.RAIL -> (RAIL_EXPANDED_PX * k).dp
         },
         animationSpec = tween(220),
@@ -538,6 +538,8 @@ fun TvBrowseScreen(
                     selectedIndex = safeRow,
                     playingId = playingChannel?.id,
                     now = now,
+                    showSchedule = false,                       // plain channel list, video stays visible on the right
+                    highlightSelected = level == TvBrowseLevel.GUIDE,
                     slotNowFor = { ch ->
                         val h = floorToHour(now)
                         val slots = buildSlots(programsOf(ch), h, h + 3 * HOUR_MS)
