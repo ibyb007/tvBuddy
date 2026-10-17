@@ -168,6 +168,8 @@ fun HomeScreen(
     // true when the TV page was opened from full-screen playback (LEFT, LEFT): video stays full-screen behind it
     var tvBrowseOverlay by remember { mutableStateOf(false) }
     LaunchedEffect(tvBrowse) { if (tvBrowse == null) tvBrowseOverlay = false }
+    // true while the group options panel is open: the TV page must then draw above the preview video
+    var tvOptionsOpen by remember { mutableStateOf(false) }
     var showTvSearch by remember { mutableStateOf(false) }
 
     // Search input toggle
@@ -335,9 +337,10 @@ fun HomeScreen(
                     onPreviewBounds = { previewBounds.value = it },
                     overlayMode = tvBrowseOverlay,
                     onDismiss = { tvBrowse = null },
+                    onOptionsVisible = { tvOptionsOpen = it },
                     // normal TV page sits under the video (which only shows in its preview slot);
                     // the overlay page must sit ABOVE the full-screen video
-                    modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay) 2f else 0f)
+                    modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay || tvOptionsOpen) 2f else 0f)
                 )
             }
 
