@@ -66,7 +66,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val byUrl = channels.associateBy { it.streamUrl }
         history.mapNotNull { byId[it.channelId] ?: byUrl[it.streamUrl] }
             .distinctBy { it.id }
-            .take(20)
+            .take(10)
     }.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     private val epgPrefs = application.getSharedPreferences("tvbuddy_epg_settings", android.content.Context.MODE_PRIVATE)
@@ -123,6 +123,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Player state forwards
     val currentChannel: StateFlow<ChannelEntity?> = playerManager.currentChannel
+
+    /** The playing channel re-read from the database, so favourite state etc. is always current. */
+    val currentChannelLive: StateFlow<ChannelEntity?> = combine(playerManager.currentChannel, rawChannels) { cur, all ->
+        cur?.let { c -> all.firstOrNull { it.id == c.id } ?: c }
+    }.stateIn(viewModelScope, SharingStarted.Lazily, null)
     val isPlaying: StateFlow<Boolean> = playerManager.isPlaying
     val isBuffering: StateFlow<Boolean> = playerManager.isBuffering
     val playerError: StateFlow<String?> = playerManager.errorMessage
@@ -400,7 +405,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleFavorite(channel: ChannelEntity) {
-        viewModelScope.launch { repository.toggleFavorite(channel.id, channel.isFavorite) }
+        // use the latest stored state: callers may hold a stale copy (e.g. the player's current channel)
+        val latest = rawChannels.value.firstOrNull { it.id == channel.id } ?: channel
+        viewModelScope.launch { repository.toggleFavorite(latest.id, latest.isFavorite) }
     }
 
     fun cycleAspect() { playerManager.cycleAspectMode() }
