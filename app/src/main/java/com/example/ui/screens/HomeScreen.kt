@@ -125,6 +125,7 @@ fun HomeScreen(
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
+    val currentChannelLive by viewModel.currentChannelLive.collectAsStateWithLifecycle()
     val isPlaying by viewModel.isPlaying.collectAsStateWithLifecycle()
     val isBuffering by viewModel.isBuffering.collectAsStateWithLifecycle()
     val playerError by viewModel.playerError.collectAsStateWithLifecycle()
@@ -358,7 +359,7 @@ fun HomeScreen(
 
             if (browseLevel == null) {
                 TvPlayerOverlay(
-                    channel = currentChannel,
+                    channel = currentChannelLive ?: currentChannel,
                     isPlaying = isPlaying,
                     isBuffering = isBuffering,
                     errorMessage = playerError,
@@ -377,6 +378,9 @@ fun HomeScreen(
                     onOpenQualityPicker = { showQualityDialog = true },
                     onOpenEpgGuide = { showEpgGuideDialog = true },
                     onOpenAudioTracks = { showAudioDialog = true },
+                    audioTracks = audioTracks,
+                    onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
+                    onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
                     allPrograms = allCurrentPrograms,
                     epgPrograms = epgWindowPrograms,
