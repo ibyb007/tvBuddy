@@ -164,6 +164,9 @@ fun HomeScreen(
 
     // TV mode: TiviMate-style page (preview + EPG, playlist groups panel, rail). null = full-screen playback.
     var tvBrowse by remember { mutableStateOf<TvBrowseLevel?>(null) }
+    // true when the TV page was opened from full-screen playback (LEFT, LEFT): video stays full-screen behind it
+    var tvBrowseOverlay by remember { mutableStateOf(false) }
+    LaunchedEffect(tvBrowse) { if (tvBrowse == null) tvBrowseOverlay = false }
     var showTvSearch by remember { mutableStateOf(false) }
 
     // Search input toggle
@@ -329,6 +332,8 @@ fun HomeScreen(
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     onExit = exitTv,
                     onPreviewBounds = { previewBounds.value = it },
+                    overlayMode = tvBrowseOverlay,
+                    onDismiss = { tvBrowse = null },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -339,7 +344,7 @@ fun HomeScreen(
                 TvSharedVideoSurface(
                     player = player,
                     aspectMode = aspectMode,
-                    browsing = browseLevel != null,
+                    browsing = browseLevel != null && !tvBrowseOverlay,
                     previewBounds = previewBounds,
                     modifier = Modifier.fillMaxSize()
                 )
@@ -377,7 +382,10 @@ fun HomeScreen(
                     onOpenPlaylists = { openSettings(TiviSettingsRoute.Playlists) },
                     onOpenPlaylistSettings = { id -> openSettings(TiviSettingsRoute.PlaylistDetail(id)) },
                     onOpenEpgSettings = { openSettings(TiviSettingsRoute.Epg) },
-                    onOpenGroups = { tvBrowse = TvBrowseLevel.GROUPS },
+                    onOpenGroups = {
+                        tvBrowseOverlay = true
+                        tvBrowse = TvBrowseLevel.GROUPS
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
