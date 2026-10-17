@@ -78,28 +78,34 @@ class MainActivity : ComponentActivity() {
         _isInPipMode.value = isInPictureInPictureMode
     }
 
+    private fun isPip() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode
+
+    override fun onStart() {
+        super.onStart()
+        // coming back from the background: re-open the channel fresh (no stale paused stream)
+        viewModel.onAppStarted()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.onAppResumed()
+    }
+
     override fun onPause() {
         super.onPause()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) {
-            // In PiP mode, keep video playing
-        } else {
-            // Stop playback so audio/video does not continue playing in background!
-            viewModel.pausePlayer()
-        }
+        // In PiP mode keep the video playing, otherwise pause so audio/video does not continue in background
+        if (!isPip()) viewModel.onAppPaused()
     }
 
     override fun onStop() {
         super.onStop()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInPictureInPictureMode) {
-            // In PiP mode, keep video playing
-        } else {
-            viewModel.pausePlayer()
-        }
+        // Tear the live stream down (it is re-opened in onStart) instead of keeping a stale paused one
+        if (!isPip()) viewModel.onAppStopped()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        viewModel.closePlayer()
+        if (!isChangingConfigurations) viewModel.closePlayer()
     }
 
     private fun isRunningOnTv(): Boolean {
