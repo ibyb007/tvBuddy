@@ -174,9 +174,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (resumeHandled || channels.isEmpty() || currentChannel.value != null) return
         resumeHandled = true
         if (pendingResumeId < 0L && pendingResumeUrl.isNullOrBlank()) return
-        val target = channels.firstOrNull { it.id == pendingResumeId }
-            ?: channels.firstOrNull { !pendingResumeUrl.isNullOrBlank() && it.streamUrl == pendingResumeUrl }
-            ?: return
+        // look in the visible list first, then in ALL channels: the last played channel may sit in a
+        // group that is not currently selected/visible, and it must still resume.
+        fun find(list: List<ChannelEntity>) = list.firstOrNull { it.id == pendingResumeId }
+            ?: list.firstOrNull { !pendingResumeUrl.isNullOrBlank() && it.streamUrl == pendingResumeUrl }
+        val target = find(channels) ?: find(rawChannels.value) ?: return
         playChannel(target)
     }
 
@@ -383,6 +385,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
         playerManager.playChannel(channel, _globalSpoof.value)
         viewModelScope.launch { repository.recordHistory(channel) }
+    }
+
+    /** Plays [channel] unless it is already playing/buffering/retrying; a dead or stale stream is restarted. */
+    fun playChannelIfNeeded(channel: ChannelEntity) {
+        if (channel.id != currentChannel.value?.id || !playerManager.isStreamActive()) playChannel(channel)
     }
 
     fun playNextChannel() {
@@ -619,6 +626,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closePlayer() { playerManager.closePlayer() }
     fun pausePlayer() { playerManager.pause() }
+
+    // Activity lifecycle (see MainActivity)
+    fun onAppPaused() { playerManager.pauseForLifecycle() }
+    fun onAppStopped() { playerManager.suspendForBackground() }
+    fun onAppStarted() { playerManager.resumeFromBackground() }
+    fun onAppResumed() { playerManager.resumeFromLifecyclePause() }
     fun dismissMessage() { _uiMessage.value = null }
 
     override fun onCleared() {
