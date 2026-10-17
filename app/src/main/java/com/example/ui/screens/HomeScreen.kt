@@ -323,7 +323,7 @@ fun HomeScreen(
                     searchQuery = searchQuery,
                     onSelectGroup = { viewModel.selectTvGroup(it) },
                     onPlayChannel = { ch ->
-                        if (ch.id != currentChannel?.id || playerError != null) viewModel.playChannel(ch)
+                        viewModel.playChannelIfNeeded(ch)
                         tvBrowse = null
                     },
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
