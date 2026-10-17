@@ -93,6 +93,19 @@ class TvBuddyPlayerManager(
 ) {
     private var exoPlayer: ExoPlayer? = null
 
+    // ---- Recovery state (auto-retry, background suspend / fresh restart) ----
+    private var lastChannel: ChannelEntity? = null
+    private var lastSpoof: SpoofProfile = SpoofProfile(SpoofPreset.TIVIMATE)
+    private var retryCount = 0
+    private var retryPending = false
+    private var suspendedForBackground = false
+    private var pausedByLifecycle = false
+    private val retryRunnable = Runnable {
+        retryPending = false
+        lastChannel?.let { startPlayback(it, lastSpoof) }
+    }
+    private val resetRetryRunnable = Runnable { retryCount = 0 }
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -144,6 +157,9 @@ class TvBuddyPlayerManager(
                         _isPlaying.value = (playbackState == Player.STATE_READY && playWhenReady)
                         if (playbackState == Player.STATE_READY) {
                             _errorMessage.value = null
+                            // only forget earlier failures once the stream has stayed up for a while
+                            mainHandler.removeCallbacks(resetRetryRunnable)
+                            mainHandler.postDelayed(resetRetryRunnable, STABLE_PLAY_MS)
                         }
                     }
 
@@ -152,6 +168,27 @@ class TvBuddyPlayerManager(
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
+                        mainHandler.removeCallbacks(resetRetryRunnable)
+
+                        // Live stream moved on while we were away/stalled: jump back to the live edge.
+                        if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                            seekToDefaultPosition()
+                            prepare()
+                            return
+                        }
+                        // Network not ready yet after launch, provider still holding the old
+                        // connection, expired token...: silently rebuild the source a few times
+                        // instead of leaving the channel dead until the user zaps away.
+                        if (lastChannel != null && isRetryable(error) && retryCount < MAX_RETRIES) {
+                            retryCount++
+                            retryPending = true
+                            _isBuffering.value = true
+                            _isPlaying.value = false
+                            mainHandler.removeCallbacks(retryRunnable)
+                            mainHandler.postDelayed(retryRunnable, retryCount * RETRY_STEP_MS)
+                            return
+                        }
+
                         _isBuffering.value = false
                         _isPlaying.value = false
 
@@ -256,7 +293,76 @@ class TvBuddyPlayerManager(
         }
     }
 
+    private fun isRetryable(error: PlaybackException): Boolean {
+        val drmFatal = error.errorCode == PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED ||
+            error.errorCode == PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED ||
+            error.errorCode == PlaybackException.ERROR_CODE_DRM_DEVICE_REVOKED ||
+            error.message?.contains("crypto", ignoreCase = true) == true
+        return !drmFatal
+    }
+
+    private fun cancelRetry() {
+        retryPending = false
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.removeCallbacks(resetRetryRunnable)
+    }
+
+    /** True while the current channel is playing, buffering or about to be retried automatically. */
+    fun isStreamActive(): Boolean {
+        if (suspendedForBackground || _errorMessage.value != null) return false
+        if (retryPending) return true
+        val p = exoPlayer ?: return false
+        return p.playbackState == Player.STATE_READY || p.playbackState == Player.STATE_BUFFERING
+    }
+
+    // ---- Activity lifecycle hooks ----
+
+    /** Activity paused (not PiP): just pause, remember that WE paused so onResume can continue. */
+    fun pauseForLifecycle() {
+        val p = exoPlayer ?: return
+        if (p.playWhenReady) {
+            p.pause()
+            pausedByLifecycle = true
+        }
+    }
+
+    fun resumeFromLifecyclePause() {
+        if (pausedByLifecycle && !suspendedForBackground) {
+            pausedByLifecycle = false
+            exoPlayer?.play()
+        }
+    }
+
+    /**
+     * App left the screen. A paused live stream is worthless when the user comes back (stale
+     * playlist, expired token, dead socket) and it keeps a provider connection slot busy, so the
+     * stream is torn down. The channel stays selected and is re-opened fresh by [resumeFromBackground].
+     */
+    fun suspendForBackground() {
+        cancelRetry()
+        val p = exoPlayer ?: return
+        if (_currentChannel.value == null) return
+        suspendedForBackground = true
+        pausedByLifecycle = false
+        p.stop()
+        p.clearMediaItems()
+        _isPlaying.value = false
+        _isBuffering.value = false
+    }
+
+    /** App is visible again: start the channel from scratch at the live edge. */
+    fun resumeFromBackground() {
+        if (!suspendedForBackground) return
+        suspendedForBackground = false
+        val channel = lastChannel ?: return
+        retryCount = 0
+        startPlayback(channel, lastSpoof)
+    }
+
     private companion object {
+        const val MAX_RETRIES = 5
+        const val RETRY_STEP_MS = 1_500L
+        const val STABLE_PLAY_MS = 10_000L
         const val FPS_SAMPLE_MS = 2000L
         val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 50f, 59.94f, 60f)
     }
@@ -265,6 +371,20 @@ class TvBuddyPlayerManager(
         channel: ChannelEntity,
         globalSpoof: SpoofProfile = SpoofProfile(SpoofPreset.TIVIMATE)
     ) {
+        cancelRetry()
+        retryCount = 0
+        suspendedForBackground = false
+        pausedByLifecycle = false
+        lastChannel = channel
+        lastSpoof = globalSpoof
+        startPlayback(channel, globalSpoof)
+    }
+
+    private fun startPlayback(
+        channel: ChannelEntity,
+        globalSpoof: SpoofProfile
+    ) {
+        retryPending = false
         _currentChannel.value = channel
         _errorMessage.value = null
         _isBuffering.value = true
@@ -598,18 +718,23 @@ class TvBuddyPlayerManager(
     }
 
     fun stop() {
+        cancelRetry()
         exoPlayer?.stop()
         _isPlaying.value = false
         _isBuffering.value = false
     }
 
     fun closePlayer() {
+        suspendedForBackground = false
+        pausedByLifecycle = false
+        lastChannel = null
         stop()
         _currentChannel.value = null
         _errorMessage.value = null
     }
 
     fun release() {
+        cancelRetry()
         mainHandler.removeCallbacks(fpsRunnable)
         exoPlayer?.stop()
         exoPlayer?.release()
