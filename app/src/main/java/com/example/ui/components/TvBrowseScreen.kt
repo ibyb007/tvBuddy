@@ -417,6 +417,7 @@ fun TvBrowseScreen(
         when (level) {
             TvBrowseLevel.GUIDE -> channels.getOrNull(safeRow)?.let(onToggleFavorite)
             TvBrowseLevel.GROUPS -> {
+                if (overlayMode) return        // no group options menu on this page
                 val row = rows.getOrNull(groupFocus) ?: return
                 if (row.kind == RowKind.GROUP && optionsRow == null) {
                     optionsIndex = 0
@@ -455,7 +456,14 @@ fun TvBrowseScreen(
                 Key.DirectionUp -> groupFocus = (groupFocus - 1).coerceAtLeast(0)
                 Key.DirectionDown -> groupFocus = (groupFocus + 1).coerceAtMost((rows.size - 1).coerceAtLeast(0))
                 Key.DirectionRight -> if (!isRepeat) level = TvBrowseLevel.GUIDE
-                Key.DirectionLeft -> if (!isRepeat) level = TvBrowseLevel.RAIL
+                Key.DirectionLeft -> if (!isRepeat) {
+                    if (overlayMode) {
+                        // climb the tree: group -> its playlist -> playlist above; nothing above the top
+                        var i = groupFocus - 1
+                        while (i >= 0 && rows[i].kind != RowKind.HEADER) i--
+                        if (i >= 0) groupFocus = i
+                    } else level = TvBrowseLevel.RAIL
+                }
                 else -> return false
             }
             TvBrowseLevel.RAIL -> when (key) {
