@@ -899,7 +899,9 @@ internal fun ChannelListPanel(
     playingId: Long?,
     now: Long,
     slotNowFor: (ChannelEntity) -> EpgSlot,
-    scheduleFor: (ChannelEntity) -> List<EpgSlot>
+    scheduleFor: (ChannelEntity) -> List<EpgSlot>,
+    showSchedule: Boolean = true,
+    highlightSelected: Boolean = true
 ) {
     val k = rememberUiScale()
     val listState = rememberLazyListState()
@@ -930,7 +932,7 @@ internal fun ChannelListPanel(
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
-                    val isSel = i == selectedIndex
+                    val isSel = highlightSelected && i == selectedIndex
                     val slot = slotNowFor(ch)
                     val fg = if (isSel) Color.Black else Color.White
                     Row(
@@ -1003,6 +1005,7 @@ internal fun ChannelListPanel(
             }
         }
 
+        if (showSchedule) {
         // Column 2: schedule (previous + upcoming) of the highlighted channel
         Column(
             modifier = Modifier
@@ -1122,6 +1125,7 @@ internal fun ChannelListPanel(
                 }
             }
         }
+        }   // showSchedule
     }
 }
 
