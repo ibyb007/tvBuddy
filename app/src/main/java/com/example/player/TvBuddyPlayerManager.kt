@@ -98,6 +98,10 @@ class TvBuddyPlayerManager(
     private var lastSpoof: SpoofProfile = SpoofProfile(SpoofPreset.TIVIMATE)
     private var retryCount = 0
     private var retryPending = false
+    // container format detection: type in use, and a type forced after a failed guess
+    private var activeType = C.CONTENT_TYPE_OTHER
+    private var typeFallbackAllowed = false
+    private var forcedType: Int? = null
     private var suspendedForBackground = false
     private var pausedByLifecycle = false
     private val retryRunnable = Runnable {
@@ -169,6 +173,26 @@ class TvBuddyPlayerManager(
 
                     override fun onPlayerError(error: PlaybackException) {
                         mainHandler.removeCallbacks(resetRetryRunnable)
+
+                        // Unknown container (e.g. extension-less redirect link that is really HLS/DASH):
+                        // try the next format right away instead of showing the extractor error.
+                        if (typeFallbackAllowed && lastChannel != null &&
+                            (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+                                error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
+                                error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED)
+                        ) {
+                            val next = when (activeType) {
+                                C.CONTENT_TYPE_OTHER -> C.CONTENT_TYPE_HLS
+                                C.CONTENT_TYPE_HLS -> C.CONTENT_TYPE_DASH
+                                else -> null
+                            }
+                            if (next != null) {
+                                forcedType = next
+                                _isBuffering.value = true
+                                mainHandler.post { lastChannel?.let { startPlayback(it, lastSpoof) } }
+                                return
+                            }
+                        }
 
                         // Live stream moved on while we were away/stalled: jump back to the live edge.
                         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
@@ -360,6 +384,9 @@ class TvBuddyPlayerManager(
     }
 
     private companion object {
+        val CONTAINER_EXTENSIONS = listOf(
+            ".ts", ".mp4", ".m4v", ".mkv", ".flv", ".webm", ".aac", ".mp3", ".avi", ".mov", ".mpg", ".mpeg"
+        )
         const val MAX_RETRIES = 5
         const val RETRY_STEP_MS = 1_500L
         const val STABLE_PLAY_MS = 10_000L
@@ -373,6 +400,7 @@ class TvBuddyPlayerManager(
     ) {
         cancelRetry()
         retryCount = 0
+        forcedType = null
         suspendedForBackground = false
         pausedByLifecycle = false
         lastChannel = channel
@@ -490,7 +518,7 @@ class TvBuddyPlayerManager(
         val mediaItem = mediaItemBuilder.build()
 
         // 4. Create appropriate MediaSource
-        val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory, drmSessionManagerProvider)
+        val mediaSource = createMediaSource(uri, mediaItem, httpDataSourceFactory, drmSessionManagerProvider, forcedType)
 
         declaredFps = false
         fpsLastCount = -1
@@ -513,26 +541,43 @@ class TvBuddyPlayerManager(
         uri: Uri,
         mediaItem: MediaItem,
         dataSourceFactory: DefaultHttpDataSource.Factory,
-        drmSessionManagerProvider: DrmSessionManagerProvider? = null
+        drmSessionManagerProvider: DrmSessionManagerProvider? = null,
+        forcedType: Int? = null
     ): MediaSource {
         val path = uri.toString().lowercase()
-        return when {
-            path.contains(".m3u8") || path.contains("type=m3u") -> {
+        val pathOnly = (uri.path ?: "").lowercase()
+        val hasContainerExt = CONTAINER_EXTENSIONS.any { pathOnly.endsWith(it) }
+        val type = forcedType ?: when {
+            path.contains(".m3u8") || path.contains("type=m3u") -> C.CONTENT_TYPE_HLS
+            path.contains(".mpd") -> C.CONTENT_TYPE_DASH
+            path.startsWith("rtsp://") -> C.CONTENT_TYPE_RTSP
+            else -> C.CONTENT_TYPE_OTHER
+        }
+        activeType = type
+        // Links such as short/redirect URLs have no extension, so the real format is unknown:
+        // if the first guess fails to parse, onPlayerError tries the next format automatically.
+        typeFallbackAllowed = forcedType != null || (type == C.CONTENT_TYPE_OTHER && !hasContainerExt)
+
+        return when (type) {
+            C.CONTENT_TYPE_HLS -> {
+                // Chunkless preparation only reads the master playlist, so language / channel layout
+                // of audio muxed into the segments stays unknown ("Audio 1 (und)"). Letting ExoPlayer
+                // load the first segment exposes the real tracks (e.g. "Hindi, Stereo").
                 val factory = HlsMediaSource.Factory(dataSourceFactory)
-                    .setAllowChunklessPreparation(true)
+                    .setAllowChunklessPreparation(false)
                 if (drmSessionManagerProvider != null) {
                     factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
                 }
                 factory.createMediaSource(mediaItem)
             }
-            path.contains(".mpd") -> {
+            C.CONTENT_TYPE_DASH -> {
                 val factory = DashMediaSource.Factory(dataSourceFactory)
                 if (drmSessionManagerProvider != null) {
                     factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
                 }
                 factory.createMediaSource(mediaItem)
             }
-            path.startsWith("rtsp://") -> {
+            C.CONTENT_TYPE_RTSP -> {
                 RtspMediaSource.Factory()
                     .createMediaSource(mediaItem)
             }
