@@ -46,6 +46,7 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -153,6 +154,13 @@ private data class GroupRow(
         RowKind.ALL -> TvGroupSelection(playlistId, TvGroupKind.ALL)
         RowKind.GROUP -> TvGroupSelection(playlistId, TvGroupKind.GROUP, title)
     }
+
+    /**
+     * What the channel list shows while this row has focus. A playlist name previews ALL of that
+     * playlist's channels (hidden groups are already excluded by the view model's filter).
+     */
+    fun previewSelection(): TvGroupSelection? =
+        if (kind == RowKind.HEADER) TvGroupSelection(playlistId, TvGroupKind.ALL) else toSelection()
 }
 
 private fun sectionKey(playlistId: Long?): Long = playlistId ?: -1L
@@ -251,6 +259,8 @@ fun TvBrowseScreen(
      */
     overlayMode: Boolean = false,
     onDismiss: () -> Unit = {},
+    /** Lets the host raise this page above the video while the options panel is open. */
+    onOptionsVisible: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
@@ -274,10 +284,12 @@ fun TvBrowseScreen(
     LaunchedEffect(level) {
         if (level == TvBrowseLevel.GROUPS) groupFocus = appliedIndex.coerceAtLeast(0)
     }
+    LaunchedEffect(optionsRow != null) { onOptionsVisible(optionsRow != null) }
+    DisposableEffect(Unit) { onDispose { onOptionsVisible(false) } }
     // Live preview: the grid follows the focused group (debounced so held keys stay smooth)
     LaunchedEffect(groupFocus, level) {
         if (level != TvBrowseLevel.GROUPS) return@LaunchedEffect
-        val sel = rows.getOrNull(groupFocus)?.toSelection() ?: return@LaunchedEffect
+        val sel = rows.getOrNull(groupFocus)?.previewSelection() ?: return@LaunchedEffect
         if (sel != selection) {
             delay(150)
             onSelectGroup(sel)
