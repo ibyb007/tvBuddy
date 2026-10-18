@@ -11,6 +11,9 @@ import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
+import com.example.data.model.toSpoofProfile
+import com.example.ui.dialogs.UpdateKeys
+import com.example.ui.dialogs.UpdateRowState
 import com.example.data.repository.TvBuddyRepository
 import com.example.player.AspectMode
 import com.example.player.StreamInfo
@@ -24,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class UiMessage(
@@ -377,13 +381,92 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSpoofPreset(preset: SpoofPreset, customUserAgent: String = "", customHeaders: Map<String, String> = emptyMap()) {
         _globalSpoof.value = SpoofProfile(preset, customUserAgent, customHeaders)
+        // the signature lives in each playlist now: this global choice applies to all of them
+        // (a single playlist can still be changed afterwards from its own page)
+        viewModelScope.launch {
+            repository.setAllPlaylistsSpoof(preset, customUserAgent, customHeaders)
+            restartCurrentChannel(null, _globalSpoof.value)
+        }
         _uiMessage.value = UiMessage(text = "Player spoofing set to: ${preset.displayName}")
+    }
+
+    /** Player spoofing engine of one playlist (playlist page > Player spoofing engine). */
+    fun setPlaylistSpoof(playlistId: Long, preset: SpoofPreset, customUserAgent: String = "", customHeaders: Map<String, String> = emptyMap()) {
+        viewModelScope.launch {
+            repository.setPlaylistSpoof(playlistId, preset, customUserAgent, customHeaders)
+            restartCurrentChannel(playlistId, SpoofProfile(preset, customUserAgent, customHeaders))
+            _uiMessage.value = UiMessage(text = "Player spoofing for this playlist: ${preset.displayName}")
+        }
+    }
+
+    /** Re-opens the playing channel so a new spoofing engine takes effect immediately. */
+    private suspend fun restartCurrentChannel(onlyPlaylistId: Long?, profile: SpoofProfile) {
+        val cur = currentChannel.value ?: return
+        if (onlyPlaylistId != null && cur.playlistId != onlyPlaylistId) return
+        val latest = repository.getChannel(cur.id) ?: cur
+        playerManager.playChannel(latest, allPlaylists.value.firstOrNull { it.id == latest.playlistId }?.toSpoofProfile() ?: profile)
+    }
+
+    // ---- Inline "Update ..." rows (spinner + result message) ----
+    private val _updateStates = MutableStateFlow<Map<String, UpdateRowState>>(emptyMap())
+    val updateStates: StateFlow<Map<String, UpdateRowState>> = _updateStates.asStateFlow()
+
+    private fun setUpdateState(key: String, state: UpdateRowState) {
+        _updateStates.update { it + (key to state) }
+    }
+
+    private fun isUpdateRunning(key: String) = _updateStates.value[key]?.running == true
+
+    /** Forget finished results (running updates keep going) when the settings page is closed. */
+    fun clearUpdateStates() {
+        _updateStates.update { map -> map.filterValues { it.running } }
+    }
+
+    fun refreshPlaylist(playlistId: Long) {
+        val key = UpdateKeys.playlist(playlistId)
+        if (isUpdateRunning(key)) return
+        setUpdateState(key, UpdateRowState(running = true))
+        viewModelScope.launch {
+            repository.refreshPlaylist(playlistId).fold(
+                onSuccess = { setUpdateState(key, UpdateRowState(message = "The playlist is successfully updated")) },
+                onFailure = { setUpdateState(key, UpdateRowState(message = "Update failed: ${it.localizedMessage ?: "unknown error"}", isError = true)) }
+            )
+        }
+    }
+
+    fun refreshAllPlaylists() {
+        val key = UpdateKeys.ALL_PLAYLISTS
+        if (isUpdateRunning(key)) return
+        setUpdateState(key, UpdateRowState(running = true))
+        viewModelScope.launch {
+            val list = allPlaylists.value
+            if (list.isEmpty()) {
+                setUpdateState(key, UpdateRowState(message = "No playlists to update", isError = true))
+                return@launch
+            }
+            var ok = 0
+            val failures = mutableListOf<String>()
+            for (pl in list) {
+                repository.refreshPlaylist(pl.id).fold(
+                    onSuccess = { ok++ },
+                    onFailure = { failures += "${pl.name}: ${it.localizedMessage ?: "error"}" }
+                )
+            }
+            setUpdateState(
+                key,
+                if (failures.isEmpty()) UpdateRowState(message = "All playlists are successfully updated")
+                else UpdateRowState(message = "$ok updated, ${failures.size} failed (${failures.first()})", isError = true)
+            )
+        }
     }
 
     fun playChannel(channel: ChannelEntity) {
         resumeHandled = true
         prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
-        playerManager.playChannel(channel, _globalSpoof.value)
+        playerManager.playChannel(
+            channel,
+            allPlaylists.value.firstOrNull { it.id == channel.playlistId }?.toSpoofProfile() ?: _globalSpoof.value
+        )
         viewModelScope.launch { repository.recordHistory(channel) }
     }
 
@@ -523,15 +606,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun triggerUpdateEpg() {
+        val key = UpdateKeys.EPG
+        if (isUpdateRunning(key)) return
+        setUpdateState(key, UpdateRowState(running = true))
         viewModelScope.launch {
-            _isLoading.value = true
             val sources = allEpgSources.value.filter { it.isEnabled }
             if (sources.isEmpty()) {
-                _isLoading.value = false
-                _uiMessage.value = UiMessage(text = "No EPG sources available to update", isError = true)
+                setUpdateState(key, UpdateRowState(message = "No EPG sources available to update", isError = true))
                 return@launch
             }
             var totalCount = 0
+            var failed = 0
             val settings = _epgSettings.value
             for (src in sources) {
                 val res = repository.importXmltv(
@@ -541,11 +626,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     pastDaysToKeep = settings.pastDaysToKeep,
                     storeDescriptions = settings.storeProgramDescriptions
                 )
-                res.onSuccess { totalCount += it }
+                res.onSuccess { totalCount += it }.onFailure { failed++ }
             }
-            _isLoading.value = false
             _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
-            _uiMessage.value = UiMessage(text = "EPG updated successfully ($totalCount programs)")
+            setUpdateState(
+                key,
+                if (failed == sources.size) UpdateRowState(message = "EPG update failed", isError = true)
+                else UpdateRowState(message = "EPG updated successfully ($totalCount programs)")
+            )
         }
     }
 
