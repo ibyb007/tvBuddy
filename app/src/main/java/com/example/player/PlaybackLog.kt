@@ -103,6 +103,14 @@ object PlaybackLog {
         return out
     }
 
+    /** Error pages are often gzip-compressed (shown as garbage otherwise): unpack them for the log. */
+    private fun decodeBody(bytes: ByteArray): ByteArray {
+        if (bytes.size < 2 || bytes[0] != 0x1f.toByte() || bytes[1] != 0x8b.toByte()) return bytes
+        val out = java.io.ByteArrayOutputStream()
+        try { java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.copyTo(out) } } catch (_: Throwable) {}
+        return if (out.size() > 0) out.toByteArray() else bytes
+    }
+
     fun stateName(state: Int): String = when (state) {
         androidx.media3.common.Player.STATE_IDLE -> "IDLE"
         androidx.media3.common.Player.STATE_BUFFERING -> "BUFFERING"
@@ -145,7 +153,7 @@ object PlaybackLog {
                             sb.append("    response header $k: ${entry.value?.joinToString()}\n")
                         }
                     }
-                    val body = try { String(cur.responseBody, Charsets.UTF_8).take(300) } catch (_: Throwable) { "" }
+                    val body = try { String(decodeBody(cur.responseBody), Charsets.UTF_8).take(300) } catch (_: Throwable) { "" }
                     if (body.isNotBlank()) sb.append("    response body (first 300 chars): ${body.replace('\n', ' ')}\n")
                 }
                 is HttpDataSource.HttpDataSourceException -> {
