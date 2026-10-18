@@ -102,6 +102,8 @@ class TvBuddyPlayerManager(
     private var activeType = C.CONTENT_TYPE_OTHER
     private var typeFallbackAllowed = false
     private var forcedType: Int? = null
+    /** 0 = not tried, 1 = trying an ".m3u8" link as a plain media file, 2 = done (don't try again) */
+    private var progressiveProbe = 0
     private var suspendedForBackground = false
     private var pausedByLifecycle = false
     private val retryRunnable = Runnable {
@@ -180,6 +182,25 @@ class TvBuddyPlayerManager(
                                 "Player error on '${lastChannel?.name}' [${PlaybackLog.contentTypeName(activeType)}, attempt ${retryCount + 1}, " +
                                     "retryable=${isRetryable(error)}]: ${PlaybackLog.describePlaybackException(error)}"
                             )
+                        }
+
+                        // The plain-media guess below failed too: go back to HLS and let the normal retry logic run.
+                        if (progressiveProbe == 1) {
+                            progressiveProbe = 2
+                            forcedType = null
+                            typeFallbackAllowed = false
+                        }
+                        // An ".m3u8" link that answers with / redirects to a normal media file (providers do this for
+                        // "event not found" / "activate" clips): it isn't a playlist, so play it as a regular file.
+                        if (lastChannel != null && progressiveProbe == 0 && activeType == C.CONTENT_TYPE_HLS &&
+                            forcedType == null && error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED
+                        ) {
+                            PlaybackLog.warn("FALLBACK", "HLS link did not return a playlist, retrying as a plain media file")
+                            progressiveProbe = 1
+                            forcedType = C.CONTENT_TYPE_OTHER
+                            _isBuffering.value = true
+                            mainHandler.post { lastChannel?.let { startPlayback(it, lastSpoof) } }
+                            return
                         }
 
                         // Unknown container (e.g. extension-less redirect link that is really HLS/DASH):
@@ -449,6 +470,7 @@ class TvBuddyPlayerManager(
         cancelRetry()
         retryCount = 0
         forcedType = null
+        progressiveProbe = 0
         suspendedForBackground = false
         pausedByLifecycle = false
         lastChannel = channel
