@@ -5,6 +5,11 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.ui.draw.alpha
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -971,19 +976,38 @@ private fun RailPanel(
     ) {
         // fixed-width inner layout so labels are simply revealed while the rail widens
         Box(modifier = Modifier.requiredWidth((RAIL_EXPANDED_PX * k).dp).fillMaxHeight()) {
-            // logo
-            Text(
-                text = buildAnnotatedString {
-                    withStyle(SpanStyle(color = BrowseBlue, fontWeight = FontWeight.Bold)) { append("tv") }
-                    if (expanded) {
-                        withStyle(SpanStyle(color = Color(0xFFD7DCE2), fontWeight = FontWeight.Medium)) { append("Buddy") }
-                    }
-                },
-                fontSize = (if (expanded) 60 else 52).times(k).sp,
+            // logo: "tv" always sits at the top of the rail; "Buddy" is revealed as the rail widens
+            val logoSize by animateFloatAsState(if (expanded) 60f else 46f, tween(220), label = "logoSize")
+            val logoStart by animateDpAsState(((if (expanded) 40 else 30) * k).dp, tween(220), label = "logoStart")
+            Row(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(start = (if (expanded) 40 else 34).times(k).dp, top = (40 * k).dp)
-            )
+                    .padding(start = logoStart, top = (40 * k).dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "tv",
+                    color = BrowseBlue,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = (logoSize * k).sp,
+                    maxLines = 1,
+                    softWrap = false
+                )
+                AnimatedVisibility(
+                    visible = expanded,
+                    enter = expandHorizontally(tween(220)) + fadeIn(tween(220)),
+                    exit = shrinkHorizontally(tween(220)) + fadeOut(tween(120))
+                ) {
+                    Text(
+                        text = "Buddy",
+                        color = Color(0xFFD7DCE2),
+                        fontWeight = FontWeight.Medium,
+                        fontSize = (logoSize * k).sp,
+                        maxLines = 1,
+                        softWrap = false
+                    )
+                }
+            }
 
             // Search / TV / Favorites
             Column(
@@ -1012,36 +1036,53 @@ private fun RailItem(
     isCurrentPage: Boolean
 ) {
     val highlighted = expanded && railFocused && isSelected
-    val iconTint = when {
-        highlighted -> Color.Black
-        isCurrentPage -> Color.White
-        else -> Color.White.copy(alpha = if (expanded) 0.9f else 0.45f)
-    }
+    val iconTint by animateColorAsState(
+        when {
+            highlighted -> Color.Black
+            isCurrentPage -> Color.White
+            else -> Color.White.copy(alpha = if (expanded) 0.9f else 0.45f)
+        },
+        tween(220), label = "railIconTint"
+    )
+    val pillColor by animateColorAsState(
+        if (highlighted) PillFocused else if (expanded && isCurrentPage) PillApplied else Color.Transparent,
+        tween(220), label = "railPill"
+    )
+    // sizes follow the rail width, so items grow / shrink with it instead of popping
+    val itemStart by animateDpAsState(((if (expanded) 32 else 0) * k).dp, tween(220), label = "railItemStart")
+    val itemWidth by animateDpAsState(((if (expanded) 376f else RAIL_COLLAPSED_PX) * k).dp, tween(220), label = "railItemWidth")
+    val leadSpace by animateDpAsState(((if (expanded) 24 else 38) * k).dp, tween(220), label = "railLead")
+    // labels fade in once the rail has started to open, and disappear quickly when it shrinks
+    val labelAlpha by animateFloatAsState(
+        if (expanded) 1f else 0f,
+        if (expanded) tween(200, delayMillis = 80) else tween(80),
+        label = "railLabelAlpha"
+    )
     Row(
         modifier = Modifier
-            .padding(start = (if (expanded) 32 else 0).times(k).dp, top = (8 * k).dp, bottom = (8 * k).dp)
-            .width(((if (expanded) 376f else RAIL_COLLAPSED_PX) * k).dp)
+            .padding(start = itemStart, top = (8 * k).dp, bottom = (8 * k).dp)
+            .width(itemWidth)
             .height((80 * k).dp)
             .clip(RoundedCornerShape((14 * k).dp))
-            .background(if (highlighted) PillFocused else if (expanded && isCurrentPage) PillApplied else Color.Transparent),
+            .background(pillColor),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Spacer(Modifier.width((if (expanded) 24 else 38).times(k).dp))
+        Spacer(Modifier.width(leadSpace))
         Icon(
             entry.icon,
             contentDescription = entry.label,
             tint = iconTint,
             modifier = Modifier.size((38 * k).dp)
         )
-        if (expanded) {
-            Spacer(Modifier.width((22 * k).dp))
-            Text(
-                entry.label,
-                color = if (highlighted) Color.Black else Color.White,
-                fontSize = (33 * k).sp,
-                maxLines = 1
-            )
-        }
+        Spacer(Modifier.width((22 * k).dp))
+        Text(
+            entry.label,
+            color = if (highlighted) Color.Black else Color.White,
+            fontSize = (33 * k).sp,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.alpha(labelAlpha)
+        )
     }
 }
 
