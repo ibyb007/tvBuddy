@@ -406,6 +406,10 @@ class TvBuddyRepository(
         channelGroupDao.setGroupVisibility(playlistId, groupTitle, isVisible)
     }
 
+    suspend fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>) = withContext(Dispatchers.IO) {
+        channelGroupDao.setGroupsVisibility(playlistId, changes)
+    }
+
     suspend fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean) = withContext(Dispatchers.IO) {
         channelGroupDao.setAllGroupsVisibility(playlistId, isVisible)
     }
