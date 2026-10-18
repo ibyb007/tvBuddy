@@ -157,6 +157,7 @@ class TvBuddyPlayerManager(
                 playWhenReady = true
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        PlaybackLog.info("STATE", PlaybackLog.stateName(playbackState) + " (playWhenReady=$playWhenReady)")
                         _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
                         _isPlaying.value = (playbackState == Player.STATE_READY && playWhenReady)
                         if (playbackState == Player.STATE_READY) {
@@ -173,6 +174,11 @@ class TvBuddyPlayerManager(
 
                     override fun onPlayerError(error: PlaybackException) {
                         mainHandler.removeCallbacks(resetRetryRunnable)
+                        PlaybackLog.error(
+                            "ERROR",
+                            "Player error on '${lastChannel?.name}' [${PlaybackLog.contentTypeName(activeType)}, attempt ${retryCount + 1}, " +
+                                "retryable=${isRetryable(error)}]: ${PlaybackLog.describePlaybackException(error)}"
+                        )
 
                         // Unknown container (e.g. extension-less redirect link that is really HLS/DASH):
                         // try the next format right away instead of showing the extractor error.
@@ -187,6 +193,7 @@ class TvBuddyPlayerManager(
                                 else -> null
                             }
                             if (next != null) {
+                                PlaybackLog.warn("FALLBACK", "Format guess ${PlaybackLog.contentTypeName(activeType)} failed to parse, retrying as ${PlaybackLog.contentTypeName(next)}")
                                 forcedType = next
                                 _isBuffering.value = true
                                 mainHandler.post { lastChannel?.let { startPlayback(it, lastSpoof) } }
@@ -196,6 +203,7 @@ class TvBuddyPlayerManager(
 
                         // Live stream moved on while we were away/stalled: jump back to the live edge.
                         if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                            PlaybackLog.warn("RECOVER", "Behind live window: jumping to live edge")
                             seekToDefaultPosition()
                             prepare()
                             return
@@ -205,6 +213,7 @@ class TvBuddyPlayerManager(
                         // instead of leaving the channel dead until the user zaps away.
                         if (lastChannel != null && isRetryable(error) && retryCount < MAX_RETRIES) {
                             retryCount++
+                            PlaybackLog.warn("RETRY", "Auto retry $retryCount/$MAX_RETRIES in ${retryCount * RETRY_STEP_MS} ms")
                             retryPending = true
                             _isBuffering.value = true
                             _isPlaying.value = false
@@ -239,6 +248,7 @@ class TvBuddyPlayerManager(
                                 "Playback Error (${error.errorCodeName}): $detailedCause"
                             }
                         }
+                        PlaybackLog.error("FAILED", "Giving up on '${lastChannel?.name}' after $retryCount retries. Message shown to user: $message")
                         _errorMessage.value = message
                     }
 
@@ -261,6 +271,38 @@ class TvBuddyPlayerManager(
                         decoderReuseEvaluation: androidx.media3.exoplayer.DecoderReuseEvaluation?
                     ) {
                         applyVideoFormat(format)
+                    }
+
+                    override fun onLoadError(
+                        eventTime: AnalyticsListener.EventTime,
+                        loadEventInfo: androidx.media3.exoplayer.source.LoadEventInfo,
+                        mediaLoadData: androidx.media3.exoplayer.source.MediaLoadData,
+                        error: java.io.IOException,
+                        wasCanceled: Boolean
+                    ) {
+                        PlaybackLog.error(
+                            "LOAD",
+                            "Load error (dataType=${mediaLoadData.dataType}, canceled=$wasCanceled, " +
+                                "after ${loadEventInfo.loadDurationMs} ms, ${loadEventInfo.bytesLoaded} bytes) " +
+                                "uri=${PlaybackLog.redactUrl(loadEventInfo.uri.toString())}",
+                            error
+                        )
+                    }
+
+                    override fun onDrmSessionManagerError(eventTime: AnalyticsListener.EventTime, error: Exception) {
+                        PlaybackLog.error("DRM", "DRM session manager error", error)
+                    }
+
+                    override fun onAudioSinkError(eventTime: AnalyticsListener.EventTime, audioSinkError: Exception) {
+                        PlaybackLog.error("AUDIO", "Audio sink error", audioSinkError)
+                    }
+
+                    override fun onAudioCodecError(eventTime: AnalyticsListener.EventTime, audioCodecError: Exception) {
+                        PlaybackLog.error("AUDIO", "Audio codec error", audioCodecError)
+                    }
+
+                    override fun onVideoCodecError(eventTime: AnalyticsListener.EventTime, videoCodecError: Exception) {
+                        PlaybackLog.error("VIDEO", "Video codec error", videoCodecError)
                     }
                 })
                 mainHandler.removeCallbacks(fpsRunnable)
@@ -436,6 +478,12 @@ class TvBuddyPlayerManager(
             } catch (_: Exception) {}
         }
         headers["User-Agent"] = userAgent
+        PlaybackLog.info(
+            "START",
+            "Channel '${channel.name}' (id=${channel.id}, playlist=${channel.playlistId}) url=${PlaybackLog.redactUrl(channel.streamUrl)} " +
+                "drm=${channel.drmType} spoof=${globalSpoof.preset.displayName} userAgent=$userAgent " +
+                "headers=${headers.keys.joinToString()} forcedType=${forcedType?.let { PlaybackLog.contentTypeName(it) } ?: "auto"}"
+        )
 
         // 2. Build HttpDataSource Factory with spoof headers
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
@@ -486,6 +534,7 @@ class TvBuddyPlayerManager(
                     }
                     if (!isCryptoSupported) {
                         _isBuffering.value = false
+                        PlaybackLog.error("DRM", "ClearKey crypto scheme not supported on this device")
                         _errorMessage.value = "ClearKey decryption is not provisioned in this environment's media framework. Standard on certified physical Android TV and mobile devices."
                         return
                     }
@@ -499,6 +548,7 @@ class TvBuddyPlayerManager(
 
                 if (!isCryptoSupported) {
                     _isBuffering.value = false
+                    PlaybackLog.error("DRM", "${drmType.title} crypto scheme not supported on this device")
                     _errorMessage.value = "${drmType.title} hardware crypto is not provisioned in this environment. Hardware DRM playback is supported on certified physical Android TV & mobile devices."
                     return
                 }
@@ -554,6 +604,7 @@ class TvBuddyPlayerManager(
             else -> C.CONTENT_TYPE_OTHER
         }
         activeType = type
+        PlaybackLog.info("SOURCE", "Using ${PlaybackLog.contentTypeName(type)} media source (forced=${forcedType != null})")
         // Links such as short/redirect URLs have no extension, so the real format is unknown:
         // if the first guess fails to parse, onPlayerError tries the next format automatically.
         typeFallbackAllowed = forcedType != null || (type == C.CONTENT_TYPE_OTHER && !hasContainerExt)
