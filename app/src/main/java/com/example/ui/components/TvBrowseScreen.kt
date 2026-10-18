@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -974,8 +975,10 @@ private fun RailPanel(
             .clipToBounds()
             .background(RailBg.copy(alpha = bgAlpha))
     ) {
-        // fixed-width inner layout so labels are simply revealed while the rail widens
-        Box(modifier = Modifier.requiredWidth((RAIL_EXPANDED_PX * k).dp).fillMaxHeight()) {
+        // fixed-width inner layout so labels are simply revealed while the rail widens.
+        // Must be start-aligned: a plain requiredWidth() larger than the rail gets CENTERED by Compose,
+        // which pushed the logo and icons off the left edge while the rail is collapsed.
+        Box(modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true).width((RAIL_EXPANDED_PX * k).dp).fillMaxHeight()) {
             // logo: "tv" always sits at the top of the rail; "Buddy" is revealed as the rail widens
             val logoSize by animateFloatAsState(if (expanded) 60f else 62f, tween(220), label = "logoSize")
             val logoStart by animateDpAsState(((if (expanded) 40 else 26) * k).dp, tween(220), label = "logoStart")
