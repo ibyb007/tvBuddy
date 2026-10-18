@@ -157,6 +157,7 @@ fun TvPlayerOverlay(
     onOpenPlaylists: () -> Unit = {},
     onOpenPlaylistSettings: (Long) -> Unit = {},
     onOpenEpgSettings: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     onOpenGroups: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -295,7 +296,7 @@ fun TvPlayerOverlay(
                 if (channel?.isFavorite == true) Icons.Default.Star else Icons.Outlined.StarOutline
             ) { channel?.let(onToggleFavorite) },
             TvMenuItem(aspectMode.title, Icons.Default.AspectRatio) { onCycleAspect() },
-            TvMenuItem("Settings", Icons.Default.Settings) { settingsIndex = 0; panel = TvPanel.SETTINGS }
+            TvMenuItem("Settings", Icons.Default.Settings) { panel = TvPanel.NONE; onOpenSettings() }
         )
     }
 
