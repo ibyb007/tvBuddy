@@ -7,6 +7,11 @@ import java.io.StringReader
 
 object M3uParser {
 
+    private val drmCommentRegex = Regex(
+        "^#\\s*DRM\\s*:\\s*([A-Za-z.]+)\\s*(?:[-\u2013]\\s*License\\s*:\\s*(\\S+))?",
+        RegexOption.IGNORE_CASE
+    )
+
     private val epgAttrRegex = Regex(
         "(?:url-tvg|x-tvg-url|tvg-url)\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)'|([^\\s,]+))",
         RegexOption.IGNORE_CASE
@@ -136,6 +141,15 @@ object M3uParser {
                         }
                     }
                 }
+                trimmed.startsWith("#") && drmCommentRegex.containsMatchIn(trimmed) -> {
+                    // Provider comment form: "# DRM: clearkey - License: https://host/key.php?id=..."
+                    val m = drmCommentRegex.find(trimmed)!!
+                    val type = DrmType.fromString(m.groupValues[1])
+                    if (type != DrmType.NONE) {
+                        currentDrmType = type
+                        m.groupValues[2].takeIf { it.isNotBlank() }?.let { currentDrmLicenseUrl = it }
+                    }
+                }
                 !trimmed.startsWith("#") -> {
                     if (hasPendingChannel || trimmed.startsWith("http") || trimmed.startsWith("rtsp")) {
                         var streamUrl = trimmed
@@ -150,6 +164,8 @@ object M3uParser {
                                     "referer", "referrer", "http-referer", "http-referrer" -> currentHeaders["Referer"] = v
                                     "origin" -> currentHeaders["Origin"] = v
                                     "cookie" -> currentHeaders["Cookie"] = v
+                                    // player hints (not HTTP headers): the format is detected from the URL / content
+                                    "manifest-type", "manifest_type", "inputstream.adaptive.manifest_type" -> {}
                                     else -> currentHeaders[k] = v
                                 }
                             }
