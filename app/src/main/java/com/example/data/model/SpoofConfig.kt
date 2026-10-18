@@ -21,7 +21,8 @@ data class SpoofProfile(
     fun getUserAgent(): String {
         return when (preset) {
             // Same shapes the real apps send (providers that check the client reject anything else)
-            SpoofPreset.TIVIMATE -> "TiviMate/5.0.4 (Linux; Android ${Build.VERSION.RELEASE})"
+            // captured from a real TiviMate 5.3.3 request: only User-Agent (+ Accept-Encoding/Connection from the HTTP stack)
+            SpoofPreset.TIVIMATE -> "TiviMate/5.3.3 (Android ${Build.VERSION.RELEASE})"
             SpoofPreset.OTT_NAVIGATOR -> "OTT Navigator/1.7.0.2 (Linux;Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) ExoPlayerLib/2.19.1"
             SpoofPreset.VLC -> "VLC/3.5.4 (Linux; Android 12; LibVLC/3.5.4)"
             SpoofPreset.APPLE_TV -> "AppleCoreMedia/1.0.0.19E241 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_us)"
@@ -33,12 +34,10 @@ data class SpoofProfile(
     fun getEffectiveHeaders(): Map<String, String> {
         val headers = mutableMapOf<String, String>()
         headers["User-Agent"] = getUserAgent()
-        headers["Accept"] = "*/*"
+        // the real TiviMate sends no Accept / Accept-Language header
+        if (preset != SpoofPreset.TIVIMATE) headers["Accept"] = "*/*"
 
         when (preset) {
-            SpoofPreset.TIVIMATE -> {
-                headers["Accept-Language"] = "en-US,en;q=0.9"
-            }
             SpoofPreset.OTT_NAVIGATOR -> {
                 headers["Accept-Language"] = "en-US,en;q=0.9"
             }
