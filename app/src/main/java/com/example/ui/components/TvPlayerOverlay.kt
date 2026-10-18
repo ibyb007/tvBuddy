@@ -936,7 +936,6 @@ private fun Badge(text: String) {
 }
 
 /** Scale so panel sizes match TiviMate's proportions on any TV density (design grid: 1080 px tall). */
-@Composable
 /**
  * Keeps a lazy list's top item in step with [target]. Single steps animate (smooth key repeat);
  * anything bigger (list replaced, group switched, page just opened) jumps instantly so the list never
