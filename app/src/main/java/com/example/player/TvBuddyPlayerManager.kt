@@ -174,11 +174,13 @@ class TvBuddyPlayerManager(
 
                     override fun onPlayerError(error: PlaybackException) {
                         mainHandler.removeCallbacks(resetRetryRunnable)
-                        PlaybackLog.error(
-                            "ERROR",
-                            "Player error on '${lastChannel?.name}' [${PlaybackLog.contentTypeName(activeType)}, attempt ${retryCount + 1}, " +
-                                "retryable=${isRetryable(error)}]: ${PlaybackLog.describePlaybackException(error)}"
-                        )
+                        if (PlaybackLog.isEnabled) {
+                            PlaybackLog.error(
+                                "ERROR",
+                                "Player error on '${lastChannel?.name}' [${PlaybackLog.contentTypeName(activeType)}, attempt ${retryCount + 1}, " +
+                                    "retryable=${isRetryable(error)}]: ${PlaybackLog.describePlaybackException(error)}"
+                            )
+                        }
 
                         // Unknown container (e.g. extension-less redirect link that is really HLS/DASH):
                         // try the next format right away instead of showing the extractor error.
@@ -280,13 +282,17 @@ class TvBuddyPlayerManager(
                         error: java.io.IOException,
                         wasCanceled: Boolean
                     ) {
-                        PlaybackLog.error(
-                            "LOAD",
-                            "Load error (dataType=${mediaLoadData.dataType}, canceled=$wasCanceled, " +
-                                "after ${loadEventInfo.loadDurationMs} ms, ${loadEventInfo.bytesLoaded} bytes) " +
-                                "uri=${PlaybackLog.redactUrl(loadEventInfo.uri.toString())}",
-                            error
-                        )
+                        if (!PlaybackLog.isEnabled) return
+                        try {
+                            PlaybackLog.error(
+                                "LOAD",
+                                "Load error (dataType=${mediaLoadData.dataType}, canceled=$wasCanceled, " +
+                                    "after ${loadEventInfo.loadDurationMs} ms, ${loadEventInfo.bytesLoaded} bytes) " +
+                                    "uri=${PlaybackLog.redactUrl(loadEventInfo.uri.toString())}",
+                                error
+                            )
+                        } catch (_: Throwable) {
+                        }
                     }
 
                     override fun onDrmSessionManagerError(eventTime: AnalyticsListener.EventTime, error: Exception) {
