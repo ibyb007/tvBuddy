@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.flatMapLatest
 import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
+import com.example.data.model.parseHeadersJson
+import com.example.data.model.toSpoofProfile
 import com.example.data.network.StalkerClient
 import com.example.data.network.XtreamClient
 import com.example.data.parser.JsonPlaylistParser
@@ -264,6 +266,136 @@ class TvBuddyRepository(
 
     suspend fun updatePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
         playlistDao.updatePlaylist(playlist)
+    }
+
+    suspend fun getChannel(id: Long): ChannelEntity? = withContext(Dispatchers.IO) {
+        channelDao.getChannelById(id)
+    }
+
+    // ---- Per-playlist player spoofing ----
+
+    /** Saves the spoofing engine of one playlist and re-signs the channels that still carry its old defaults. */
+    suspend fun setPlaylistSpoof(
+        playlistId: Long,
+        preset: SpoofPreset,
+        customUserAgent: String,
+        customHeaders: Map<String, String>
+    ) = withContext(Dispatchers.IO) {
+        val pl = playlistDao.getPlaylistById(playlistId) ?: return@withContext
+        applySpoof(pl, SpoofProfile(preset, customUserAgent, customHeaders))
+    }
+
+    suspend fun setAllPlaylistsSpoof(
+        preset: SpoofPreset,
+        customUserAgent: String,
+        customHeaders: Map<String, String>
+    ) = withContext(Dispatchers.IO) {
+        val profile = SpoofProfile(preset, customUserAgent, customHeaders)
+        playlistDao.getAllPlaylists().first().forEach { applySpoof(it, profile) }
+    }
+
+    private suspend fun applySpoof(pl: PlaylistEntity, profile: SpoofProfile) {
+        val old = pl.toSpoofProfile()
+        val oldUa = old.getUserAgent()
+        val oldHeaders = old.getEffectiveHeaders()
+        val newUa = profile.getUserAgent()
+        val newHeaders = profile.getEffectiveHeaders()
+
+        // The signature is baked into every channel at import time, so rewrite it. Values a channel
+        // sets itself (e.g. #EXTVLCOPT user-agent) are different from the old defaults and are kept.
+        val updated = channelDao.getChannelsByPlaylist(pl.id).first().mapNotNull { ch ->
+            val ua = if (ch.httpUserAgent.isNullOrBlank() || ch.httpUserAgent == oldUa) newUa else ch.httpUserAgent
+            val own = parseHeadersJson(ch.httpHeadersJson).filter { (k, v) -> oldHeaders[k] != v }
+            val json = JSONObject(newHeaders + own).toString()
+            if (ua == ch.httpUserAgent && json == ch.httpHeadersJson) null
+            else ch.copy(httpUserAgent = ua, httpHeadersJson = json)
+        }
+        updated.chunked(500).forEach { channelDao.insertChannels(it) }
+
+        val latest = playlistDao.getPlaylistById(pl.id) ?: pl
+        playlistDao.updatePlaylist(
+            latest.copy(
+                spoofPreset = profile.preset.name,
+                customUserAgent = if (profile.preset == SpoofPreset.CUSTOM) profile.customUserAgent.ifBlank { null } else latest.customUserAgent,
+                customHeadersJson = if (profile.customHeaders.isNotEmpty()) JSONObject(profile.customHeaders).toString() else null
+            )
+        )
+    }
+
+    // ---- Playlist refresh ("Update playlist") ----
+
+    private fun downloadText(url: String, headers: Map<String, String>): String {
+        val req = Request.Builder().url(url).apply { headers.forEach { (k, v) -> header(k, v) } }.build()
+        return okHttpClient.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
+            resp.body?.string().orEmpty()
+        }
+    }
+
+    /**
+     * Downloads the playlist again and replaces its channels. Channels that still exist keep their
+     * id (and therefore favorites / resume position); vanished ones are removed, new ones added.
+     */
+    suspend fun refreshPlaylist(playlistId: Long): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val pl = playlistDao.getPlaylistById(playlistId) ?: throw Exception("Playlist not found")
+            val spoof = pl.toSpoofProfile()
+            val ua = spoof.getUserAgent()
+            val headers = spoof.getEffectiveHeaders()
+
+            val fresh: List<ChannelEntity> = when (pl.type) {
+                PlaylistType.M3U -> {
+                    if (!pl.sourceUrl.startsWith("http", ignoreCase = true)) {
+                        throw Exception("This playlist was pasted, it has no URL to update from")
+                    }
+                    val content = downloadText(pl.sourceUrl, headers)
+                    if (!content.contains("#EXTM3U", ignoreCase = true) && !content.contains("#EXTINF", ignoreCase = true)) {
+                        throw Exception("Provider returned a non-playlist page")
+                    }
+                    M3uParser.parse(content, pl.id, ua, headers)
+                }
+                PlaylistType.XTREAM -> {
+                    val auth = xtreamClient.authenticate(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), ua)
+                    if (!auth.success) throw Exception(auth.message)
+                    xtreamClient.fetchChannels(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, ua)
+                }
+                PlaylistType.STALKER -> {
+                    val auth = stalkerClient.handshake(pl.sourceUrl, pl.macAddress.orEmpty(), ua)
+                    if (!auth.success) throw Exception(auth.message)
+                    stalkerClient.fetchChannels(pl.sourceUrl, pl.macAddress.orEmpty(), pl.id, ua)
+                }
+                PlaylistType.RAW_JSON -> {
+                    if (!pl.sourceUrl.startsWith("http", ignoreCase = true)) {
+                        throw Exception("This playlist was pasted, it has no URL to update from")
+                    }
+                    val content = downloadText(pl.sourceUrl, mapOf("User-Agent" to ua))
+                    JsonPlaylistParser.parse(content, pl.id, ua, headers)
+                }
+            }
+            if (fresh.isEmpty()) throw Exception("The provider returned no channels")
+
+            val old = channelDao.getChannelsByPlaylist(pl.id).first()
+            val used = HashSet<Long>()
+            fun take(list: List<ChannelEntity>?) = list?.firstOrNull { used.add(it.id) }
+            val byUrl = old.groupBy { it.streamUrl }
+            val byStreamId = old.filter { it.streamId.isNotBlank() }.groupBy { it.streamId }
+            val merged = fresh.map { ch ->
+                val match = take(byUrl[ch.streamUrl])
+                    ?: ch.streamId.takeIf { it.isNotBlank() }?.let { take(byStreamId[it]) }
+                if (match != null) ch.copy(id = match.id, isFavorite = match.isFavorite) else ch
+            }
+
+            merged.chunked(500).forEach { channelDao.insertChannels(it) }
+            val keptIds = merged.map { it.id }.filter { it != 0L }.toSet()
+            old.filter { it.id !in keptIds }.map { it.id }.chunked(500).forEach { channelDao.deleteChannelsByIds(it) }
+
+            syncGroupsForPlaylist(pl.id, merged, pl.showNewlyAddedGroups)
+            val latest = playlistDao.getPlaylistById(pl.id) ?: pl
+            playlistDao.updatePlaylist(latest.copy(channelCount = merged.size, lastUpdated = System.currentTimeMillis()))
+            Result.success(merged.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     suspend fun reorderPlaylists(orderedIds: List<Long>) = withContext(Dispatchers.IO) {
