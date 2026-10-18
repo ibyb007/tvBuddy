@@ -7,6 +7,9 @@ import java.io.StringReader
 
 object M3uParser {
 
+    /** "##EXTINF:", "# #EXTINF:" ... : an EXTINF entry that was commented out. */
+    private val commentedExtinfRegex = Regex("^#+\\s*#+\\s*EXTINF\\s*:", RegexOption.IGNORE_CASE)
+
     private val drmCommentRegex = Regex(
         "^#\\s*DRM\\s*:\\s*([A-Za-z.]+)\\s*(?:[-\u2013]\\s*License\\s*:\\s*(\\S+))?",
         RegexOption.IGNORE_CASE
@@ -40,9 +43,9 @@ object M3uParser {
     fun normalizeM3uContent(rawContent: String): String {
         var text = rawContent.replace("\r\n", "\n").replace("\r", "\n")
         // Split tags if they appear joined without preceding newline
-        text = text.replace(Regex("(?<!\n)(#(?:EXTINF|KODIPROP|EXTVLCOPT|EXTGRP|EXT-X-|EXTM3U)):"), "\n$1:")
+        text = text.replace(Regex("(?<![\n#])(#(?:EXTINF|KODIPROP|EXTVLCOPT|EXTGRP|EXT-X-|EXTM3U)):"), "\n$1:")
         // Split URLs if attached directly after a tag value or channel name without newline
-        text = text.replace(Regex("([^\\s\\n\"=,/:|])(https?://)"), "$1\n$2")
+        text = text.replace(Regex("([^\\s\\n\"=,/:|#])(https?://)"), "$1\n$2")
         return text
     }
 
@@ -59,7 +62,7 @@ object M3uParser {
         defaultHeaders: Map<String, String> = emptyMap()
     ): List<ChannelEntity> {
         val plain = parseLines(content, playlistId, defaultUserAgent, defaultHeaders)
-        val declared = Regex("#EXTINF:", RegexOption.IGNORE_CASE).findAll(content).count()
+        val declared = Regex("(?<!#)#EXTINF:", RegexOption.IGNORE_CASE).findAll(content).count()
         if (plain.isNotEmpty() && plain.size >= declared) return plain
         val repaired = parseLines(normalizeM3uContent(content), playlistId, defaultUserAgent, defaultHeaders)
         return if (repaired.size > plain.size) repaired else plain
@@ -87,13 +90,34 @@ object M3uParser {
         var currentUserAgent: String? = defaultUserAgent
         val currentHeaders = defaultHeaders.toMutableMap()
         var hasPendingChannel = false
+        var commentedOut = false   // inside a "##EXTINF" (commented-out) entry: its URL line must be skipped
+
+        fun resetChannelState() {
+            currentName = ""
+            currentLogo = null
+            currentTvgId = ""
+            currentEpgName = ""
+            currentDrmType = DrmType.NONE
+            currentDrmLicenseUrl = null
+            currentDrmKeyIdKey = null
+            currentUserAgent = defaultUserAgent
+            currentHeaders.clear()
+            currentHeaders.putAll(defaultHeaders)
+            hasPendingChannel = false
+        }
 
         while (reader.readLine().also { line = it } != null) {
             val trimmed = line!!.trim()
             if (trimmed.isEmpty()) continue
 
             when {
+                commentedExtinfRegex.containsMatchIn(trimmed) -> {
+                    // "##EXTINF:..." = channel commented out by the provider: don't load it (nor its URL below)
+                    resetChannelState()
+                    commentedOut = true
+                }
                 trimmed.startsWith("#EXTINF:", ignoreCase = true) -> {
+                    if (commentedOut) { resetChannelState(); commentedOut = false }
                     hasPendingChannel = true
                     currentTvgId = extractAttribute(trimmed, "tvg-id")
                     currentEpgName = extractAttribute(trimmed, "tvg-name")
@@ -150,6 +174,11 @@ object M3uParser {
                         m.groupValues[2].takeIf { it.isNotBlank() }?.let { currentDrmLicenseUrl = it }
                     }
                 }
+                !trimmed.startsWith("#") && commentedOut -> {
+                    // stream URL of a commented-out channel
+                    resetChannelState()
+                    commentedOut = false
+                }
                 !trimmed.startsWith("#") -> {
                     if (hasPendingChannel || trimmed.startsWith("http") || trimmed.startsWith("rtsp")) {
                         var streamUrl = trimmed
@@ -195,18 +224,7 @@ object M3uParser {
                             )
                         )
 
-                        // Reset channel state
-                        currentName = ""
-                        currentLogo = null
-                        currentTvgId = ""
-                        currentEpgName = ""
-                        currentDrmType = DrmType.NONE
-                        currentDrmLicenseUrl = null
-                        currentDrmKeyIdKey = null
-                        currentUserAgent = defaultUserAgent
-                        currentHeaders.clear()
-                        currentHeaders.putAll(defaultHeaders)
-                        hasPendingChannel = false
+                        resetChannelState()
                     }
                 }
             }
