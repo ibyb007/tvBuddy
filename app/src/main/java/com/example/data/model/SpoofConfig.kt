@@ -1,5 +1,8 @@
 package com.example.data.model
 
+import com.example.data.local.entity.PlaylistEntity
+import org.json.JSONObject
+
 enum class SpoofPreset(val displayName: String, val description: String) {
     TIVIMATE("TiviMate", "Spoofs TiviMate IPTV Player on Android TV"),
     OTT_NAVIGATOR("OTT Navigator", "Spoofs OTT Navigator / Studio Scillarium"),
@@ -46,4 +49,21 @@ data class SpoofProfile(
         headers.putAll(customHeaders)
         return headers
     }
+}
+
+/** Parses a {"Header":"value"} JSON object; anything invalid gives an empty map. */
+fun parseHeadersJson(json: String?): Map<String, String> {
+    if (json.isNullOrBlank()) return emptyMap()
+    return try {
+        val o = JSONObject(json)
+        buildMap { o.keys().forEach { k -> put(k, o.getString(k)) } }
+    } catch (_: Exception) {
+        emptyMap()
+    }
+}
+
+/** The player spoofing engine saved for this playlist. */
+fun PlaylistEntity.toSpoofProfile(): SpoofProfile {
+    val preset = runCatching { SpoofPreset.valueOf(spoofPreset) }.getOrDefault(SpoofPreset.TIVIMATE)
+    return SpoofProfile(preset, customUserAgent.orEmpty(), parseHeadersJson(customHeadersJson))
 }
