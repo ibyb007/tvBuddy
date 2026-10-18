@@ -3,12 +3,13 @@ package com.example.data.model
 import android.os.Build
 import com.example.data.local.entity.PlaylistEntity
 import org.json.JSONObject
+import java.util.Locale
 
 enum class SpoofPreset(val displayName: String, val description: String) {
     TIVIMATE("TiviMate", "Spoofs TiviMate IPTV Player on Android TV"),
     OTT_NAVIGATOR("OTT Navigator", "Spoofs OTT Navigator / Studio Scillarium"),
     VLC("VLC Media Player", "Standard LibVLC Player signature"),
-    APPLE_TV("Apple TV / CoreMedia", "AppleCoreMedia streaming signature"),
+    SPARKLE_TV("Sparkle TV", "Spoofs the Sparkle TV player"),
     EXOPLAYER("ExoPlayer Standard", "Default ExoPlayer client"),
     CUSTOM("Custom Signature", "Custom User-Agent and request headers")
 }
@@ -18,14 +19,18 @@ data class SpoofProfile(
     val customUserAgent: String = "",
     val customHeaders: Map<String, String> = emptyMap()
 ) {
+    /** Short stable per-device id of the shape OTT Navigator puts in its user agent (e.g. "1q2vzy"). */
+    private fun deviceTag(): String =
+        java.lang.Long.toString((Build.MODEL + Build.DEVICE).hashCode().toLong() and 0xffffffffL, 36).padEnd(6, '0').take(6)
+
     fun getUserAgent(): String {
         return when (preset) {
             // Same shapes the real apps send (providers that check the client reject anything else)
-            // captured from a real TiviMate 5.3.3 request: only User-Agent (+ Accept-Encoding/Connection from the HTTP stack)
+            // TiviMate, OTT Navigator and Sparkle TV strings were captured from real requests (ua_logger.py)
             SpoofPreset.TIVIMATE -> "TiviMate/5.3.3 (Android ${Build.VERSION.RELEASE})"
-            SpoofPreset.OTT_NAVIGATOR -> "OTT Navigator/1.7.0.2 (Linux;Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) ExoPlayerLib/2.19.1"
+            SpoofPreset.OTT_NAVIGATOR -> "OTT Navigator/1.7.0.2.4 (Linux;Android ${Build.VERSION.RELEASE}; ${Locale.getDefault().language}; ${deviceTag()})"
             SpoofPreset.VLC -> "VLC/3.5.4 (Linux; Android 12; LibVLC/3.5.4)"
-            SpoofPreset.APPLE_TV -> "AppleCoreMedia/1.0.0.19E241 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_us)"
+            SpoofPreset.SPARKLE_TV -> "SparkleTV/2.3.0 (${Build.MODEL}, Android ${Build.VERSION.RELEASE})"
             SpoofPreset.EXOPLAYER -> "ExoPlayerLib/2.19.1 (tvBuddy IPTV)"
             SpoofPreset.CUSTOM -> customUserAgent.ifBlank { "tvBuddy/1.0.0" }
         }
@@ -34,18 +39,10 @@ data class SpoofProfile(
     fun getEffectiveHeaders(): Map<String, String> {
         val headers = mutableMapOf<String, String>()
         headers["User-Agent"] = getUserAgent()
-        // the real TiviMate sends no Accept / Accept-Language header
-        if (preset != SpoofPreset.TIVIMATE) headers["Accept"] = "*/*"
-
-        when (preset) {
-            SpoofPreset.OTT_NAVIGATOR -> {
-                headers["Accept-Language"] = "en-US,en;q=0.9"
-            }
-            SpoofPreset.APPLE_TV -> {
-                headers["Connection"] = "keep-alive"
-            }
-            else -> {}
-        }
+        // the real TiviMate / OTT Navigator / Sparkle TV send nothing but User-Agent (the HTTP stack adds
+        // Accept-Encoding and Connection), so don't add an Accept header for them
+        val uaOnly = preset == SpoofPreset.TIVIMATE || preset == SpoofPreset.OTT_NAVIGATOR || preset == SpoofPreset.SPARKLE_TV
+        if (!uaOnly) headers["Accept"] = "*/*"
 
         headers.putAll(customHeaders)
         return headers
