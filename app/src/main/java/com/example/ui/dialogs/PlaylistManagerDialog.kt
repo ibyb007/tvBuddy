@@ -58,6 +58,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusDirection
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.tween
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.compositionLocalOf
+import com.example.data.model.toSpoofProfile
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.graphics.Color
@@ -103,6 +113,79 @@ sealed class TiviSettingsRoute {
     data object AddEpgSourceUrl : TiviSettingsRoute()
 }
 
+/** State of an inline "Update ..." row: spinner while [running], then a result [message]. */
+data class UpdateRowState(
+    val running: Boolean = false,
+    val message: String? = null,
+    val isError: Boolean = false
+)
+
+object UpdateKeys {
+    const val ALL_PLAYLISTS = "playlists:all"
+    const val EPG = "epg"
+    fun playlist(id: Long) = "playlist:$id"
+}
+
+/** Screen shown in the drawer + its depth in the back stack (depth decides the slide direction). */
+private data class NavEntry(val route: TiviSettingsRoute, val depth: Int)
+
+/**
+ * Remembers which row was focused on every screen so BACK lands on the row that opened the child
+ * screen, and decides which row of a newly shown screen takes focus.
+ */
+private class DrawerFocusMemory {
+    private val lastByRoute = HashMap<TiviSettingsRoute, String>()
+    private var currentRoute: TiviSettingsRoute? = null
+    private var restoreTitle: String? = null
+    private var claimed = false
+
+    val settled: Boolean get() = claimed
+
+    fun enter(route: TiviSettingsRoute, restoring: Boolean) {
+        currentRoute = route
+        restoreTitle = if (restoring) lastByRoute[route] else null
+        claimed = false
+    }
+
+    fun onFocused(title: String) {
+        currentRoute?.let { lastByRoute[it] = title }
+        claimed = true
+    }
+
+    /** True for the single row that should grab focus when its screen appears. */
+    fun claim(title: String): Boolean {
+        if (claimed) return false
+        val want = restoreTitle
+        return if (want == null || want == title) { claimed = true; true } else false
+    }
+}
+
+private val LocalDrawerFocus = compositionLocalOf<DrawerFocusMemory?> { null }
+
+/**
+ * The pages above [route] in the settings flow, so BACK walks the same path the user took
+ * (Settings > Playlists > playlist) instead of closing the whole drawer.
+ */
+private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when (route) {
+    is TiviSettingsRoute.Main -> listOf(route)
+    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.ReorderPlaylists, is TiviSettingsRoute.PlaylistDetail ->
+        listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, route)
+    is TiviSettingsRoute.PlaylistEpgSources ->
+        listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
+    is TiviSettingsRoute.PlaylistEpgPriority ->
+        listOf(
+            TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId),
+            TiviSettingsRoute.PlaylistEpgSources(route.playlistId), route
+        )
+    // opened as a shortcut from the TV groups panel: BACK returns straight to it
+    is TiviSettingsRoute.ManageGroups -> listOf(route)
+    is TiviSettingsRoute.ReorderGroups -> listOf(TiviSettingsRoute.ManageGroups(route.playlistId), route)
+    is TiviSettingsRoute.EpgSources -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, route)
+    is TiviSettingsRoute.AddEpgSourceUrl ->
+        listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
+}
+
 private val TiviDrawerBg = Color(0xEB181B20)
 private val TiviModalBg = Color(0xFF1E2229)
 private val TiviFocusBg = Color(0xFFE8EAED)
@@ -140,18 +223,29 @@ fun PlaylistManagerDialog(
     epgSettings: EpgGlobalSettingsState = EpgGlobalSettingsState(),
     onUpdateEpgSettings: (EpgGlobalSettingsState) -> Unit = {},
     onTriggerUpdateEpg: () -> Unit = {},
-    onTriggerClearEpg: () -> Unit = {}
+    onTriggerClearEpg: () -> Unit = {},
+    updateStates: Map<String, UpdateRowState> = emptyMap(),
+    onClearUpdateStates: () -> Unit = {},
+    onOpenSpoofEngine: () -> Unit = {},
+    onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {}
 ) {
-    val navStack = remember { mutableStateListOf(initialRoute) }
+    val navStack = remember { mutableStateListOf<TiviSettingsRoute>().apply { addAll(routeChain(initialRoute)) } }
     val currentRoute = navStack.lastOrNull() ?: TiviSettingsRoute.Main
+    val currentEntry = NavEntry(currentRoute, navStack.size)
+    val focusMemory = remember { DrawerFocusMemory().also { it.enter(currentRoute, false) } }
+
+    DisposableEffect(Unit) { onDispose { onClearUpdateStates() } }
 
     fun navigateTo(route: TiviSettingsRoute) {
+        focusMemory.enter(route, false)
         navStack.add(route)
     }
 
     fun navigateBack() {
         if (navStack.size > 1) {
             navStack.removeAt(navStack.lastIndex)
+            // land on the row that opened the screen we just left
+            focusMemory.enter(navStack.last(), true)
         } else {
             onDismiss()
         }
@@ -174,16 +268,20 @@ fun PlaylistManagerDialog(
             decorFitsSystemWindows = false
         )
     ) {
+        CompositionLocalProvider(LocalDrawerFocus provides focusMemory) {
         BackHandler {
             navigateBack()
         }
 
-        // Remote control: put focus on the first row whenever a screen opens
+        // Rows claim focus themselves (first row, or the row we came from on BACK). This is only
+        // the safety net for screens whose rows do not (e.g. the URL entry screen).
         val focusManager = LocalFocusManager.current
-        LaunchedEffect(currentRoute) {
-            delay(400) // wait for the slide animation so the old screen is gone
-            if (!focusManager.moveFocus(FocusDirection.Enter)) {
-                focusManager.moveFocus(FocusDirection.Down)
+        LaunchedEffect(currentEntry) {
+            delay(450)
+            if (!focusMemory.settled) {
+                if (!focusManager.moveFocus(FocusDirection.Enter)) {
+                    focusManager.moveFocus(FocusDirection.Down)
+                }
             }
         }
 
@@ -215,16 +313,22 @@ fun PlaylistManagerDialog(
                         .pointerInput(Unit) { detectTapGestures(onTap = { }) } // Consume taps inside drawer
                 ) {
                     AnimatedContent(
-                        targetState = currentRoute,
+                        targetState = currentEntry,
                         transitionSpec = {
-                            (slideInHorizontally { width -> width / 3 } + fadeIn())
-                                .togetherWith(slideOutHorizontally { width -> -width / 3 } + fadeOut())
+                            val forward = targetState.depth >= initialState.depth
+                            val dir = if (forward) 1 else -1
+                            // old screen leaves quickly, new one fades in right after: never two screens of text on top of each other
+                            (slideInHorizontally(tween(220)) { w -> dir * w / 6 } + fadeIn(tween(180, delayMillis = 70)))
+                                .togetherWith(slideOutHorizontally(tween(160)) { w -> -dir * w / 6 } + fadeOut(tween(90)))
+                                .using(SizeTransform(clip = false))
                         },
                         label = "TiviMateDrawerTransition"
-                    ) { route ->
+                    ) { entry ->
+                        val route = entry.route
                         when (route) {
                             is TiviSettingsRoute.Main -> MainSettingsMenu(
                                 onOpenPlaylists = { navigateTo(TiviSettingsRoute.Playlists) },
+                                onOpenSpoofEngine = onOpenSpoofEngine,
                                 onOpenEpg = { navigateTo(TiviSettingsRoute.Epg) }
                             )
 
@@ -237,6 +341,7 @@ fun PlaylistManagerDialog(
                                     onAddNewPlaylist()
                                 },
                                 onUpdateAllPlaylists = onUpdateAllPlaylists,
+                                updateState = updateStates[UpdateKeys.ALL_PLAYLISTS],
                                 onCycleSorting = {
                                     val next = if (playlistsSorting == "By name") "Custom" else "By name"
                                     onChangePlaylistsSorting(next)
@@ -294,6 +399,9 @@ fun PlaylistManagerDialog(
                                         onOpenManageGroups = {
                                             navigateTo(TiviSettingsRoute.ManageGroups(playlist.id))
                                         },
+                                        spoofLabel = playlist.toSpoofProfile().preset.displayName,
+                                        onEditSpoof = { onEditPlaylistSpoof(playlist) },
+                                        updateState = updateStates[UpdateKeys.playlist(playlist.id)],
                                         onRefreshPlaylist = { onRefreshSinglePlaylist(playlist.id) },
                                         onDeletePlaylist = {
                                             onDeletePlaylist(playlist)
@@ -384,6 +492,7 @@ fun PlaylistManagerDialog(
                                 onOpenEpgSources = { navigateTo(TiviSettingsRoute.EpgSources) },
                                 onChangeState = onUpdateEpgSettings,
                                 onUpdateEpg = onTriggerUpdateEpg,
+                                updateState = updateStates[UpdateKeys.EPG],
                                 onClearEpg = onTriggerClearEpg
                             )
 
@@ -443,6 +552,7 @@ fun PlaylistManagerDialog(
                 }
             )
         }
+        }
     }
 }
 
@@ -459,6 +569,7 @@ private data class TextEditPrompt(
 @Composable
 private fun MainSettingsMenu(
     onOpenPlaylists: () -> Unit,
+    onOpenSpoofEngine: () -> Unit,
     onOpenEpg: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -470,12 +581,21 @@ private fun MainSettingsMenu(
             item {
                 TiviMenuRow(
                     title = "Playlists",
+                    subtitle = "Add, remove and manage playlists",
                     onClick = onOpenPlaylists
                 )
             }
             item {
                 TiviMenuRow(
+                    title = "Player spoofing engine",
+                    subtitle = "Choose the player signature sent to providers",
+                    onClick = onOpenSpoofEngine
+                )
+            }
+            item {
+                TiviMenuRow(
                     title = "EPG",
+                    subtitle = "EPG sources and update options",
                     onClick = onOpenEpg
                 )
             }
@@ -494,6 +614,7 @@ private fun PlaylistsSubMenu(
     onSelectPlaylist: (PlaylistEntity) -> Unit,
     onAddPlaylist: () -> Unit,
     onUpdateAllPlaylists: () -> Unit,
+    updateState: UpdateRowState?,
     onCycleSorting: () -> Unit,
     onReorderPlaylists: () -> Unit
 ) {
@@ -540,8 +661,9 @@ private fun PlaylistsSubMenu(
                 )
             }
             item {
-                TiviMenuRow(
+                TiviUpdateRow(
                     title = "Update all playlists",
+                    state = updateState,
                     onClick = onUpdateAllPlaylists
                 )
             }
@@ -622,6 +744,9 @@ private fun PlaylistDetailSubMenu(
     onEditUserAgent: () -> Unit,
     onOpenPlaylistEpgSources: () -> Unit,
     onOpenManageGroups: () -> Unit,
+    spoofLabel: String,
+    onEditSpoof: () -> Unit,
+    updateState: UpdateRowState?,
     onRefreshPlaylist: () -> Unit,
     onDeletePlaylist: () -> Unit
 ) {
@@ -705,6 +830,13 @@ private fun PlaylistDetailSubMenu(
             }
             item {
                 TiviMenuRow(
+                    title = "Player spoofing engine",
+                    subtitle = spoofLabel,
+                    onClick = onEditSpoof
+                )
+            }
+            item {
+                TiviMenuRow(
                     title = "Manage groups",
                     onClick = onOpenManageGroups
                 )
@@ -735,8 +867,9 @@ private fun PlaylistDetailSubMenu(
                 )
             }
             item {
-                TiviMenuRow(
+                TiviUpdateRow(
                     title = "Update playlist",
+                    state = updateState,
                     onClick = onRefreshPlaylist
                 )
             }
@@ -1000,6 +1133,7 @@ private fun EpgSettingsSubMenu(
     onOpenEpgSources: () -> Unit,
     onChangeState: (EpgGlobalSettingsState) -> Unit,
     onUpdateEpg: () -> Unit,
+    updateState: UpdateRowState?,
     onClearEpg: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1069,8 +1203,9 @@ private fun EpgSettingsSubMenu(
                 )
             }
             item {
-                TiviMenuRow(
+                TiviUpdateRow(
                     title = "Update EPG",
+                    state = updateState,
                     onClick = onUpdateEpg
                 )
             }
@@ -1355,21 +1490,44 @@ private fun TiviMenuRow(
     title: String,
     subtitle: String? = null,
     enabled: Boolean = true,
+    busy: Boolean = false,
+    isError: Boolean = false,
+    focusRequester: FocusRequester? = null,
     leadingIcon: (@Composable (Boolean) -> Unit)? = null,
     trailingContent: (@Composable (Boolean) -> Unit)? = null,
     onClick: () -> Unit
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
+    val memory = LocalDrawerFocus.current
+    val requester = focusRequester ?: remember { FocusRequester() }
+    val active = enabled && !busy
+
+    // first row of a new screen / the row we came from on BACK takes focus right away
+    val claimsFocus = remember { active && memory?.claim(title) == true }
+    LaunchedEffect(Unit) {
+        if (claimsFocus) {
+            repeat(4) {
+                try {
+                    requester.requestFocus()
+                    return@LaunchedEffect
+                } catch (_: Exception) {
+                    delay(60)
+                }
+            }
+        }
+    }
 
     val bgColor = if (isFocused) TiviFocusBg else Color.Transparent
     val titleColor = when {
-        !enabled -> TiviSecondaryText.copy(alpha = 0.45f)
+        !active -> TiviSecondaryText.copy(alpha = 0.55f)
         isFocused -> TiviFocusText
         else -> TiviPrimaryText
     }
     val subColor = when {
-        !enabled -> TiviSecondaryText.copy(alpha = 0.35f)
+        isError && isFocused -> Color(0xFFB3261E)
+        isError -> Color(0xFFFF8A80)
+        !active -> TiviSecondaryText.copy(alpha = 0.45f)
         isFocused -> TiviFocusText.copy(alpha = 0.75f)
         else -> TiviSecondaryText
     }
@@ -1380,9 +1538,11 @@ private fun TiviMenuRow(
             .padding(horizontal = 12.dp, vertical = 2.dp)
             .clip(RoundedCornerShape(4.dp))
             .background(bgColor)
-            .focusable(enabled = enabled, interactionSource = interactionSource)
+            .focusRequester(requester)
+            .onFocusChanged { if (it.isFocused) memory?.onFocused(title) }
+            .focusable(enabled = active, interactionSource = interactionSource)
             .clickable(
-                enabled = enabled,
+                enabled = active,
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = onClick
@@ -1390,7 +1550,14 @@ private fun TiviMenuRow(
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (leadingIcon != null) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                strokeWidth = 2.dp,
+                color = TiviSecondaryText
+            )
+            Spacer(modifier = Modifier.width(14.dp))
+        } else if (leadingIcon != null) {
             leadingIcon(isFocused)
             Spacer(modifier = Modifier.width(14.dp))
         }
@@ -1410,7 +1577,7 @@ private fun TiviMenuRow(
                     text = subtitle,
                     color = subColor,
                     fontSize = 12.sp,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
@@ -1421,6 +1588,42 @@ private fun TiviMenuRow(
             trailingContent(isFocused)
         }
     }
+}
+
+/**
+ * "Update ..." action row: while it runs the row is dimmed and shows a spinner on the left; when it
+ * finishes the result is shown under the title and the row gets focus back.
+ */
+@Composable
+private fun TiviUpdateRow(
+    title: String,
+    state: UpdateRowState?,
+    onClick: () -> Unit
+) {
+    val requester = remember { FocusRequester() }
+    val running = state?.running == true
+    var wasRunning by remember { mutableStateOf(false) }
+    LaunchedEffect(running) {
+        if (wasRunning && !running) {
+            for (attempt in 0 until 4) {
+                delay(60)
+                try {
+                    requester.requestFocus()
+                    break
+                } catch (_: Exception) {
+                }
+            }
+        }
+        wasRunning = running
+    }
+    TiviMenuRow(
+        title = title,
+        subtitle = state?.message,
+        busy = running,
+        isError = state?.isError == true,
+        focusRequester = requester,
+        onClick = { if (!running) onClick() }
+    )
 }
 
 @Composable
