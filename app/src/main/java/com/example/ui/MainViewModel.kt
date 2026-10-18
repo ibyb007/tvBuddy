@@ -531,6 +531,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible) }
     }
 
+    // ---- Playback log (Settings > Playback log) ----
+    val playbackLogEnabled: StateFlow<Boolean> = com.example.player.PlaybackLog.enabled
+    val playbackLogCount: StateFlow<Int> = com.example.player.PlaybackLog.entryCount
+
+    /** ON starts a fresh recording, OFF discards what was recorded. */
+    fun setPlaybackLogging(enabled: Boolean) {
+        com.example.player.PlaybackLog.setEnabled(enabled)
+        _uiMessage.value = UiMessage(
+            text = if (enabled) "Playback log is recording. Play the failing channel, then export it."
+            else "Playback log turned off and cleared"
+        )
+    }
+
+    fun exportPlaybackLog() {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.example.player.PlaybackLog.exportToFile(app)
+            }
+            val text = result.fold(
+                onSuccess = { "Playback log saved: $it" },
+                onFailure = { "Could not save the log: ${it.localizedMessage ?: "unknown error"}" }
+            )
+            // the settings drawer covers the normal message area, so also show a toast
+            android.widget.Toast.makeText(app, text, android.widget.Toast.LENGTH_LONG).show()
+            _uiMessage.value = UiMessage(text = text, isError = result.isFailure)
+        }
+    }
+
+    fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>) {
+        viewModelScope.launch { repository.setGroupsVisibility(playlistId, changes) }
+    }
+
     fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean) {
         viewModelScope.launch { repository.setAllGroupsVisibility(playlistId, isVisible) }
     }
