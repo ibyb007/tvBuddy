@@ -120,6 +120,8 @@ fun HomeScreen(
     val epgSettings by viewModel.epgSettings.collectAsStateWithLifecycle()
     val playlistsSorting by viewModel.playlistsSorting.collectAsStateWithLifecycle()
     val updateStates by viewModel.updateStates.collectAsStateWithLifecycle()
+    val playbackLogEnabled by viewModel.playbackLogEnabled.collectAsStateWithLifecycle()
+    val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
     var spoofPlaylistId by remember { mutableStateOf<Long?>(null) }
     val tvSelection by viewModel.tvSelection.collectAsStateWithLifecycle()
     val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
@@ -823,6 +825,7 @@ fun HomeScreen(
             allGroups = allChannelGroups,
             onSetAllGroupsVisibility = { id, visible -> viewModel.setAllGroupsVisibility(id, visible) },
             onSetGroupVisibility = { id, title, visible -> viewModel.setGroupVisibility(id, title, visible) },
+            onSetGroupsVisibility = { id, changes -> viewModel.setGroupsVisibility(id, changes) },
             onReorderGroups = { id, titles -> viewModel.reorderGroups(id, titles) },
             epgSources = allEpgSources,
             playlistEpgCrossRefs = allPlaylistEpgCrossRefs,
@@ -837,6 +840,10 @@ fun HomeScreen(
             onRefreshSinglePlaylist = { viewModel.refreshPlaylist(it) },
             updateStates = updateStates,
             onClearUpdateStates = { viewModel.clearUpdateStates() },
+            playbackLogEnabled = playbackLogEnabled,
+            playbackLogCount = playbackLogCount,
+            onTogglePlaybackLog = { viewModel.setPlaybackLogging(it) },
+            onExportPlaybackLog = { viewModel.exportPlaybackLog() },
             onOpenSpoofEngine = { showSpoofDialog = true },
             onEditPlaylistSpoof = { spoofPlaylistId = it.id },
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
