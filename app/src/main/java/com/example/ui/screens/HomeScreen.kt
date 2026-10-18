@@ -81,6 +81,7 @@ import com.example.ui.dialogs.EpgGuideDialog
 import com.example.ui.dialogs.PlaylistManagerDialog
 import com.example.ui.dialogs.QualityPickerDialog
 import com.example.ui.dialogs.SpoofSettingsDialog
+import com.example.data.model.toSpoofProfile
 import com.example.ui.dialogs.TiviSettingsRoute
 import com.example.ui.dialogs.TrackSelectionDialog
 import com.example.ui.dialogs.iptvTextFieldColors
@@ -118,6 +119,8 @@ fun HomeScreen(
     val allPlaylistEpgCrossRefs by viewModel.allPlaylistEpgCrossRefs.collectAsStateWithLifecycle()
     val epgSettings by viewModel.epgSettings.collectAsStateWithLifecycle()
     val playlistsSorting by viewModel.playlistsSorting.collectAsStateWithLifecycle()
+    val updateStates by viewModel.updateStates.collectAsStateWithLifecycle()
+    var spoofPlaylistId by remember { mutableStateOf<Long?>(null) }
     val tvSelection by viewModel.tvSelection.collectAsStateWithLifecycle()
     val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
     val favOnlyGroups by viewModel.favOnlyGroups.collectAsStateWithLifecycle()
@@ -392,6 +395,7 @@ fun HomeScreen(
                     onOpenPlaylists = { openSettings(TiviSettingsRoute.Playlists) },
                     onOpenPlaylistSettings = { id -> openSettings(TiviSettingsRoute.PlaylistDetail(id)) },
                     onOpenEpgSettings = { openSettings(TiviSettingsRoute.Epg) },
+                    onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     onOpenGroups = {
                         tvBrowseOverlay = true
                         tvBrowse = TvBrowseLevel.GROUPS
@@ -788,6 +792,16 @@ fun HomeScreen(
         )
     }
 
+    spoofPlaylistId?.let { id ->
+        playlists.firstOrNull { it.id == id }?.let { pl ->
+            SpoofSettingsDialog(
+                currentProfile = pl.toSpoofProfile(),
+                onDismiss = { spoofPlaylistId = null },
+                onSaveProfile = { preset, ua, headers -> viewModel.setPlaylistSpoof(pl.id, preset, ua, headers) }
+            )
+        }
+    }
+
     if (showDrmDebugger) {
         DrmDebuggerDialog(
             onDismiss = { showDrmDebugger = false },
@@ -819,6 +833,12 @@ fun HomeScreen(
             onReorderPlaylistEpgPriority = { pl, ids -> viewModel.reorderPlaylistEpgPriority(pl, ids) },
             epgSettings = epgSettings,
             onUpdateEpgSettings = { viewModel.updateEpgSettings(it) },
+            onUpdateAllPlaylists = { viewModel.refreshAllPlaylists() },
+            onRefreshSinglePlaylist = { viewModel.refreshPlaylist(it) },
+            updateStates = updateStates,
+            onClearUpdateStates = { viewModel.clearUpdateStates() },
+            onOpenSpoofEngine = { showSpoofDialog = true },
+            onEditPlaylistSpoof = { spoofPlaylistId = it.id },
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
             onTriggerClearEpg = { viewModel.triggerClearEpg() }
         )
