@@ -977,8 +977,8 @@ private fun RailPanel(
         // fixed-width inner layout so labels are simply revealed while the rail widens
         Box(modifier = Modifier.requiredWidth((RAIL_EXPANDED_PX * k).dp).fillMaxHeight()) {
             // logo: "tv" always sits at the top of the rail; "Buddy" is revealed as the rail widens
-            val logoSize by animateFloatAsState(if (expanded) 60f else 46f, tween(220), label = "logoSize")
-            val logoStart by animateDpAsState(((if (expanded) 40 else 30) * k).dp, tween(220), label = "logoStart")
+            val logoSize by animateFloatAsState(if (expanded) 60f else 62f, tween(220), label = "logoSize")
+            val logoStart by animateDpAsState(((if (expanded) 40 else 26) * k).dp, tween(220), label = "logoStart")
             Row(
                 modifier = Modifier
                     .align(Alignment.TopStart)
@@ -1001,7 +1001,7 @@ private fun RailPanel(
                     Text(
                         text = "Buddy",
                         color = Color(0xFFD7DCE2),
-                        fontWeight = FontWeight.Medium,
+                        fontWeight = FontWeight.Normal,
                         fontSize = (logoSize * k).sp,
                         maxLines = 1,
                         softWrap = false
