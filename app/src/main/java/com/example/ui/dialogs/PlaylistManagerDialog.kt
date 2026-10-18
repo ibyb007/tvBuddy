@@ -70,6 +70,10 @@ import androidx.compose.runtime.compositionLocalOf
 import com.example.data.model.toSpoofProfile
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalWindowInfo
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -138,6 +142,11 @@ private class DrawerFocusMemory {
     private var currentRoute: TiviSettingsRoute? = null
     private var restoreTitle: String? = null
     private var claimed = false
+    private var focusedRows = 0
+
+    /** True while any row of the drawer holds focus (observable, so the drawer can recover lost focus). */
+    var hasFocus by mutableStateOf(false)
+        private set
 
     val settled: Boolean get() = claimed
 
@@ -147,9 +156,26 @@ private class DrawerFocusMemory {
         claimed = false
     }
 
+    /** Shows [route] and puts focus on the row called [title] (null = first row), e.g. the next playlist after a delete. */
+    fun enterAt(route: TiviSettingsRoute, title: String?) {
+        currentRoute = route
+        restoreTitle = title
+        claimed = false
+    }
+
     fun onFocused(title: String) {
         currentRoute?.let { lastByRoute[it] = title }
         claimed = true
+    }
+
+    fun rowGainedFocus() {
+        focusedRows++
+        hasFocus = true
+    }
+
+    fun rowLostFocus() {
+        focusedRows = (focusedRows - 1).coerceAtLeast(0)
+        hasFocus = focusedRows > 0
     }
 
     /** True for the single row that should grab focus when its screen appears. */
@@ -212,6 +238,7 @@ fun PlaylistManagerDialog(
     allGroups: List<ChannelGroupEntity> = emptyList(),
     onSetAllGroupsVisibility: (Long, Boolean) -> Unit = { _, _ -> },
     onSetGroupVisibility: (Long, String, Boolean) -> Unit = { _, _, _ -> },
+    onSetGroupsVisibility: ((Long, Map<String, Boolean>) -> Unit)? = null,
     onReorderGroups: (Long, List<String>) -> Unit = { _, _ -> },
     epgSources: List<EpgSourceEntity> = emptyList(),
     playlistEpgCrossRefs: List<PlaylistEpgCrossRef> = emptyList(),
@@ -226,6 +253,10 @@ fun PlaylistManagerDialog(
     onTriggerClearEpg: () -> Unit = {},
     updateStates: Map<String, UpdateRowState> = emptyMap(),
     onClearUpdateStates: () -> Unit = {},
+    playbackLogEnabled: Boolean = false,
+    playbackLogCount: Int = 0,
+    onTogglePlaybackLog: (Boolean) -> Unit = {},
+    onExportPlaybackLog: () -> Unit = {},
     onOpenSpoofEngine: () -> Unit = {},
     onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {}
 ) {
@@ -241,11 +272,12 @@ fun PlaylistManagerDialog(
         navStack.add(route)
     }
 
-    fun navigateBack() {
+    fun navigateBack(focusTitle: String? = null, focusFirst: Boolean = false) {
         if (navStack.size > 1) {
             navStack.removeAt(navStack.lastIndex)
-            // land on the row that opened the screen we just left
-            focusMemory.enter(navStack.last(), true)
+            // land on the row that opened the screen we just left (or an explicit row, e.g. after a delete)
+            if (focusTitle != null || focusFirst) focusMemory.enterAt(navStack.last(), focusTitle)
+            else focusMemory.enter(navStack.last(), true)
         } else {
             onDismiss()
         }
@@ -281,6 +313,22 @@ fun PlaylistManagerDialog(
             if (!focusMemory.settled) {
                 if (!focusManager.moveFocus(FocusDirection.Enter)) {
                     focusManager.moveFocus(FocusDirection.Down)
+                }
+            }
+        }
+
+        // If focus gets lost while the drawer is in use (e.g. the focused row was removed), put it back
+        // on a row instead of leaving the drawer with nothing focused.
+        val windowFocused = LocalWindowInfo.current.isWindowFocused
+        LaunchedEffect(focusMemory.hasFocus, currentEntry, textEditDialogState != null, windowFocused) {
+            if (!focusMemory.hasFocus && focusMemory.settled && windowFocused &&
+                textEditDialogState == null && currentRoute !is TiviSettingsRoute.AddEpgSourceUrl
+            ) {
+                delay(300)
+                if (!focusMemory.hasFocus) {
+                    if (!focusManager.moveFocus(FocusDirection.Enter)) {
+                        focusManager.moveFocus(FocusDirection.Down)
+                    }
                 }
             }
         }
@@ -329,7 +377,11 @@ fun PlaylistManagerDialog(
                             is TiviSettingsRoute.Main -> MainSettingsMenu(
                                 onOpenPlaylists = { navigateTo(TiviSettingsRoute.Playlists) },
                                 onOpenSpoofEngine = onOpenSpoofEngine,
-                                onOpenEpg = { navigateTo(TiviSettingsRoute.Epg) }
+                                onOpenEpg = { navigateTo(TiviSettingsRoute.Epg) },
+                                logEnabled = playbackLogEnabled,
+                                logCount = playbackLogCount,
+                                onToggleLog = onTogglePlaybackLog,
+                                onExportLog = onExportPlaybackLog
                             )
 
                             is TiviSettingsRoute.Playlists -> PlaylistsSubMenu(
@@ -404,8 +456,14 @@ fun PlaylistManagerDialog(
                                         updateState = updateStates[UpdateKeys.playlist(playlist.id)],
                                         onRefreshPlaylist = { onRefreshSinglePlaylist(playlist.id) },
                                         onDeletePlaylist = {
+                                            // focus goes to the next playlist (or the previous one when the last was deleted)
+                                            val ordered = if (playlistsSorting.equals("By name", ignoreCase = true)) {
+                                                playlists.sortedBy { it.name.lowercase() }
+                                            } else playlists
+                                            val idx = ordered.indexOfFirst { it.id == playlist.id }
+                                            val target = ordered.getOrNull(idx + 1) ?: ordered.getOrNull(idx - 1)
+                                            navigateBack(focusTitle = target?.name, focusFirst = true)
                                             onDeletePlaylist(playlist)
-                                            navigateBack()
                                         }
                                     )
                                 }
@@ -463,10 +521,14 @@ fun PlaylistManagerDialog(
                                         onReorderGroups = {
                                             navigateTo(TiviSettingsRoute.ReorderGroups(playlist.id))
                                         },
-                                        onShowAllGroups = { onSetAllGroupsVisibility(playlist.id, true) },
-                                        onHideAllGroups = { onSetAllGroupsVisibility(playlist.id, false) },
-                                        onToggleGroup = { groupTitle, visible ->
-                                            onSetGroupVisibility(playlist.id, groupTitle, visible)
+                                        onCommitGroupVisibility = { changes ->
+                                            if (changes.isNotEmpty()) {
+                                                val batch = onSetGroupsVisibility
+                                                if (batch != null) batch(playlist.id, changes)
+                                                else changes.forEach { (title, visible) ->
+                                                    onSetGroupVisibility(playlist.id, title, visible)
+                                                }
+                                            }
                                         }
                                     )
                                 }
@@ -570,7 +632,11 @@ private data class TextEditPrompt(
 private fun MainSettingsMenu(
     onOpenPlaylists: () -> Unit,
     onOpenSpoofEngine: () -> Unit,
-    onOpenEpg: () -> Unit
+    onOpenEpg: () -> Unit,
+    logEnabled: Boolean,
+    logCount: Int,
+    onToggleLog: (Boolean) -> Unit,
+    onExportLog: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "Settings")
@@ -598,6 +664,25 @@ private fun MainSettingsMenu(
                     subtitle = "EPG sources and update options",
                     onClick = onOpenEpg
                 )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Playback log (logcat)",
+                    subtitle = if (logEnabled) "Recording playback errors ($logCount entries). Turning off clears the log"
+                    else "Record playback errors and their reasons",
+                    checked = logEnabled,
+                    onCheckedChange = onToggleLog
+                )
+            }
+            if (logEnabled) {
+                item {
+                    TiviMenuRow(
+                        title = "Export playback log",
+                        subtitle = if (logCount > 0) "Save as a .txt file in Downloads" else "Nothing recorded yet",
+                        enabled = logCount > 0,
+                        onClick = onExportLog
+                    )
+                }
             }
         }
     }
@@ -1006,10 +1091,21 @@ private fun ManageGroupsSubMenu(
     groups: List<ChannelGroupEntity>,
     onUpdatePlaylistEntity: (PlaylistEntity) -> Unit,
     onReorderGroups: () -> Unit,
-    onShowAllGroups: () -> Unit,
-    onHideAllGroups: () -> Unit,
-    onToggleGroup: (String, Boolean) -> Unit
+    onCommitGroupVisibility: (Map<String, Boolean>) -> Unit
 ) {
+    // Switches flip instantly in local state. The database (which makes the whole channel list behind the
+    // drawer recompute) is only written once, when this screen is left, so toggling stays smooth and BACK
+    // is never competing with a burst of list rebuilds.
+    val pending: SnapshotStateMap<String, Boolean> = remember(playlist.id) { mutableStateMapOf() }
+    val latestGroups by rememberUpdatedState(groups)
+    val latestCommit by rememberUpdatedState(onCommitGroupVisibility)
+    DisposableEffect(playlist.id) {
+        onDispose {
+            val stored = latestGroups.associate { it.groupTitle to it.isVisible }
+            val changes = pending.filter { (title, visible) -> stored[title] != null && stored[title] != visible }
+            latestCommit(changes.toMap())
+        }
+    }
     val groupsSorting = remember(playlist) { playlist.readStringProp("groupsSorting", "By order in playlist") }
     val showNewlyAdded = remember(playlist) { playlist.readBooleanProp("showNewlyAddedGroups", true) }
 
@@ -1047,13 +1143,13 @@ private fun ManageGroupsSubMenu(
             item {
                 TiviMenuRow(
                     title = "Show all groups",
-                    onClick = onShowAllGroups
+                    onClick = { groups.forEach { pending[it.groupTitle] = true } }
                 )
             }
             item {
                 TiviMenuRow(
                     title = "Hide all groups",
-                    onClick = onHideAllGroups
+                    onClick = { groups.forEach { pending[it.groupTitle] = false } }
                 )
             }
             item {
@@ -1069,12 +1165,11 @@ private fun ManageGroupsSubMenu(
             item { DrawerSectionHeader(title = "Groups") }
 
             items(sortedGroups, key = { "${it.playlistId}_${it.groupTitle}" }) { group ->
+                val shown = pending[group.groupTitle] ?: group.isVisible
                 TiviSwitchRow(
                     title = group.groupTitle,
-                    checked = group.isVisible,
-                    onCheckedChange = { visible ->
-                        onToggleGroup(group.groupTitle, visible)
-                    }
+                    checked = shown,
+                    onCheckedChange = { visible -> pending[group.groupTitle] = visible }
                 )
             }
         }
@@ -1493,6 +1588,7 @@ private fun TiviMenuRow(
     busy: Boolean = false,
     isError: Boolean = false,
     focusRequester: FocusRequester? = null,
+    onFocusChange: ((Boolean) -> Unit)? = null,
     leadingIcon: (@Composable (Boolean) -> Unit)? = null,
     trailingContent: (@Composable (Boolean) -> Unit)? = null,
     onClick: () -> Unit
@@ -1501,7 +1597,13 @@ private fun TiviMenuRow(
     val isFocused by interactionSource.collectIsFocusedAsState()
     val memory = LocalDrawerFocus.current
     val requester = focusRequester ?: remember { FocusRequester() }
-    val active = enabled && !busy
+    val active = enabled
+    // a busy row keeps focus (so it is not thrown to another row) but looks unfocused and ignores clicks
+    val showFocus = isFocused && !busy
+    val hadFocus = remember { booleanArrayOf(false) }
+    DisposableEffect(Unit) {
+        onDispose { if (hadFocus[0]) { hadFocus[0] = false; memory?.rowLostFocus() } }
+    }
 
     // first row of a new screen / the row we came from on BACK takes focus right away
     val claimsFocus = remember { active && memory?.claim(title) == true }
@@ -1518,17 +1620,17 @@ private fun TiviMenuRow(
         }
     }
 
-    val bgColor = if (isFocused) TiviFocusBg else Color.Transparent
+    val bgColor = if (showFocus) TiviFocusBg else Color.Transparent
     val titleColor = when {
-        !active -> TiviSecondaryText.copy(alpha = 0.55f)
-        isFocused -> TiviFocusText
+        !active || busy -> TiviSecondaryText.copy(alpha = 0.55f)
+        showFocus -> TiviFocusText
         else -> TiviPrimaryText
     }
     val subColor = when {
-        isError && isFocused -> Color(0xFFB3261E)
+        isError && showFocus -> Color(0xFFB3261E)
         isError -> Color(0xFFFF8A80)
-        !active -> TiviSecondaryText.copy(alpha = 0.45f)
-        isFocused -> TiviFocusText.copy(alpha = 0.75f)
+        !active || busy -> TiviSecondaryText.copy(alpha = 0.45f)
+        showFocus -> TiviFocusText.copy(alpha = 0.75f)
         else -> TiviSecondaryText
     }
 
@@ -1539,13 +1641,22 @@ private fun TiviMenuRow(
             .clip(RoundedCornerShape(4.dp))
             .background(bgColor)
             .focusRequester(requester)
-            .onFocusChanged { if (it.isFocused) memory?.onFocused(title) }
+            .onFocusChanged {
+                if (it.isFocused) {
+                    if (!hadFocus[0]) { hadFocus[0] = true; memory?.rowGainedFocus() }
+                    memory?.onFocused(title)
+                } else if (hadFocus[0]) {
+                    hadFocus[0] = false
+                    memory?.rowLostFocus()
+                }
+                onFocusChange?.invoke(it.isFocused)
+            }
             .focusable(enabled = active, interactionSource = interactionSource)
             .clickable(
                 enabled = active,
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick
+                onClick = { if (!busy) onClick() }
             )
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
@@ -1558,7 +1669,7 @@ private fun TiviMenuRow(
             )
             Spacer(modifier = Modifier.width(14.dp))
         } else if (leadingIcon != null) {
-            leadingIcon(isFocused)
+            leadingIcon(showFocus)
             Spacer(modifier = Modifier.width(14.dp))
         }
 
@@ -1567,7 +1678,7 @@ private fun TiviMenuRow(
                 text = title,
                 color = titleColor,
                 fontSize = 15.sp,
-                fontWeight = if (isFocused) FontWeight.Medium else FontWeight.Normal,
+                fontWeight = if (showFocus) FontWeight.Medium else FontWeight.Normal,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -1585,7 +1696,7 @@ private fun TiviMenuRow(
 
         if (trailingContent != null) {
             Spacer(modifier = Modifier.width(8.dp))
-            trailingContent(isFocused)
+            trailingContent(showFocus)
         }
     }
 }
@@ -1601,10 +1712,15 @@ private fun TiviUpdateRow(
     onClick: () -> Unit
 ) {
     val requester = remember { FocusRequester() }
+    val memory = LocalDrawerFocus.current
     val running = state?.running == true
     var wasRunning by remember { mutableStateOf(false) }
+    var rowFocused by remember { mutableStateOf(false) }
     LaunchedEffect(running) {
-        if (wasRunning && !running) {
+        // The row keeps focus while it runs (it only looks unfocused, UP/DOWN move to the neighbours).
+        // When it finishes, take focus back only if it still has it, or if nothing else has it:
+        // never pull focus away from a row the user has moved to meanwhile.
+        if (wasRunning && !running && (rowFocused || memory?.hasFocus != true)) {
             for (attempt in 0 until 4) {
                 delay(60)
                 try {
@@ -1622,7 +1738,8 @@ private fun TiviUpdateRow(
         busy = running,
         isError = state?.isError == true,
         focusRequester = requester,
-        onClick = { if (!running) onClick() }
+        onFocusChange = { rowFocused = it },
+        onClick = onClick
     )
 }
 
