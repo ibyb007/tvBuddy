@@ -333,6 +333,48 @@ class TvBuddyRepository(
     }
 
     /**
+     * Downloads an M3U playlist with the given player signature first and, when [allowFallback] is set, then
+     * (only for the download) with the other built-in signatures, because providers answer unknown clients
+     * with a Telegram redirect or a non-playlist page. Returns the text and the signature that worked.
+     */
+    private fun fetchM3uText(url: String, primary: SpoofProfile, allowFallback: Boolean = true): Pair<String, SpoofProfile> {
+        val candidates = buildList {
+            add(primary)
+            if (allowFallback) SpoofPreset.entries
+                    .filter { it != primary.preset && it != SpoofPreset.CUSTOM && it != SpoofPreset.EXOPLAYER }
+                    .forEach { add(SpoofProfile(it, "", primary.customHeaders)) }
+        }
+        var lastProblem = "No valid M3U returned"
+        for (candidate in candidates) {
+            try {
+                val reqBuilder = Request.Builder().url(url)
+                candidate.getEffectiveHeaders().forEach { (k, v) -> reqBuilder.header(k, v) }
+                val body = okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        lastProblem = "HTTP ${resp.code}: ${resp.message}"
+                        null
+                    } else {
+                        val finalHost = resp.request.url.host
+                        val text = resp.body?.string() ?: ""
+                        if (finalHost.contains("t.me") || finalHost.contains("telegram")) {
+                            lastProblem = "Provider redirected to Telegram (player signature '${candidate.preset.displayName}' rejected)"
+                            null
+                        } else if (!text.contains("#EXTM3U", ignoreCase = true) &&
+                            !text.contains("#EXTINF", ignoreCase = true)) {
+                            lastProblem = "Provider returned a non-playlist page for '${candidate.preset.displayName}'"
+                            null
+                        } else text
+                    }
+                }
+                if (body != null) return body to candidate
+            } catch (e: Exception) {
+                lastProblem = e.message ?: e.javaClass.simpleName
+            }
+        }
+        throw Exception(lastProblem)
+    }
+
+    /**
      * Downloads the playlist again and replaces its channels. Channels that still exist keep their
      * id (and therefore favorites / resume position); vanished ones are removed, new ones added.
      */
@@ -348,10 +390,8 @@ class TvBuddyRepository(
                     if (!pl.sourceUrl.startsWith("http", ignoreCase = true)) {
                         throw Exception("This playlist was pasted, it has no URL to update from")
                     }
-                    val content = downloadText(pl.sourceUrl, headers)
-                    if (!content.contains("#EXTM3U", ignoreCase = true) && !content.contains("#EXTINF", ignoreCase = true)) {
-                        throw Exception("Provider returned a non-playlist page")
-                    }
+                    // one attempt with the playlist's own signature: no extra requests against a provider that may rate-limit / ban
+                    val content = fetchM3uText(pl.sourceUrl, spoof, allowFallback = false).first
                     M3uParser.parse(content, pl.id, ua, headers)
                 }
                 PlaylistType.XTREAM -> {
@@ -427,53 +467,15 @@ class TvBuddyRepository(
         customHeaders: Map<String, String> = emptyMap()
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            var spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
-            var effectiveHeaders = spoof.getEffectiveHeaders()
+            val spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
+            val effectiveHeaders = spoof.getEffectiveHeaders()
 
             val content = if (isRawContent) {
                 sourceUrlOrContent
             } else {
-                val candidates = buildList {
-                    add(spoof)
-                    SpoofPreset.entries
-                        .filter { it != spoofPreset && it != SpoofPreset.CUSTOM && it != SpoofPreset.EXOPLAYER }
-                        .forEach { add(SpoofProfile(it, "", customHeaders)) }
-                }
-                var found: String? = null
-                var lastProblem = "No valid M3U returned"
-                for (candidate in candidates) {
-                    val headers = candidate.getEffectiveHeaders()
-                    try {
-                        val reqBuilder = Request.Builder().url(sourceUrlOrContent)
-                        headers.forEach { (k, v) -> reqBuilder.header(k, v) }
-                        val body = okHttpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                            if (!resp.isSuccessful) {
-                                lastProblem = "HTTP ${resp.code}: ${resp.message}"
-                                null
-                            } else {
-                                val finalHost = resp.request.url.host
-                                val text = resp.body?.string() ?: ""
-                                if (finalHost.contains("t.me") || finalHost.contains("telegram")) {
-                                    lastProblem = "Provider redirected to Telegram (player signature '${candidate.preset.displayName}' rejected)"
-                                    null
-                                } else if (!text.contains("#EXTM3U", ignoreCase = true) &&
-                                    !text.contains("#EXTINF", ignoreCase = true)) {
-                                    lastProblem = "Provider returned a non-playlist page for '${candidate.preset.displayName}'"
-                                    null
-                                } else text
-                            }
-                        }
-                        if (body != null) {
-                            found = body
-                            spoof = candidate
-                            effectiveHeaders = headers
-                            break
-                        }
-                    } catch (e: Exception) {
-                        lastProblem = e.message ?: e.javaClass.simpleName
-                    }
-                }
-                found ?: throw Exception(lastProblem)
+                // Other player signatures may be tried to DOWNLOAD the playlist, but the signature the user
+                // picked stays the one saved for playback (it used to be silently replaced by the one that worked).
+                fetchM3uText(sourceUrlOrContent, spoof).first
             }
 
             val playlistId = playlistDao.insertPlaylist(
