@@ -63,22 +63,28 @@ object PlaybackLog {
 
     fun info(tag: String, msg: String) = add("I", tag, msg)
     fun warn(tag: String, msg: String) = add("W", tag, msg)
-    fun error(tag: String, msg: String, t: Throwable? = null) =
+    fun error(tag: String, msg: String, t: Throwable? = null) {
+        if (!on) return // never do any work (or risk anything) while logging is off
         add("E", tag, if (t == null) msg else "$msg\n${describeThrowable(t)}")
+    }
 
+    /** Logging must never be able to crash playback, so everything here is guarded. */
     private fun add(level: String, tag: String, msg: String) {
         if (!on) return
-        val entry = "${stamp()} $level/$tag: $msg"
-        synchronized(lock) {
-            if (!on) return
-            lines.addLast(entry)
-            while (lines.size > MAX_LINES) lines.removeFirst()
-            _entryCount.value = lines.size
-        }
-        when (level) {
-            "E" -> Log.e(TAG, "$tag: $msg")
-            "W" -> Log.w(TAG, "$tag: $msg")
-            else -> Log.i(TAG, "$tag: $msg")
+        try {
+            val entry = "${stamp()} $level/$tag: $msg"
+            synchronized(lock) {
+                if (!on) return
+                lines.addLast(entry)
+                while (lines.size > MAX_LINES) lines.removeFirst()
+                _entryCount.value = lines.size
+            }
+            when (level) {
+                "E" -> Log.e(TAG, "$tag: $msg")
+                "W" -> Log.w(TAG, "$tag: $msg")
+                else -> Log.i(TAG, "$tag: $msg")
+            }
+        } catch (_: Throwable) {
         }
     }
 
@@ -114,7 +120,13 @@ object PlaybackLog {
     }
 
     /** Cause chain, HTTP details and the top of the innermost stack trace. */
-    fun describeThrowable(t: Throwable): String {
+    fun describeThrowable(t: Throwable): String = try {
+        describeThrowableUnsafe(t)
+    } catch (e: Throwable) {
+        "  error: ${t.javaClass.name}: ${t.message} (details unavailable: ${e.javaClass.simpleName})"
+    }
+
+    private fun describeThrowableUnsafe(t: Throwable): String {
         val sb = StringBuilder()
         var cur: Throwable? = t
         var depth = 0
@@ -127,9 +139,10 @@ object PlaybackLog {
                     sb.append("    http status: ${cur.responseCode} ${cur.responseMessage ?: ""}\n")
                     sb.append("    request url: ${redactUrl(cur.dataSpec.uri.toString())}\n")
                     val interesting = listOf("Server", "Location", "Retry-After", "Content-Type", "WWW-Authenticate", "X-Error", "Via")
-                    cur.headerFields.forEach { (k, v) ->
+                    for (entry in cur.headerFields.entries) {
+                        val k: String? = entry.key
                         if (k != null && interesting.any { it.equals(k, true) }) {
-                            sb.append("    response header $k: ${v.joinToString()}\n")
+                            sb.append("    response header $k: ${entry.value?.joinToString()}\n")
                         }
                     }
                     val body = try { String(cur.responseBody, Charsets.UTF_8).take(300) } catch (_: Throwable) { "" }
@@ -148,8 +161,11 @@ object PlaybackLog {
         return sb.toString().trimEnd()
     }
 
-    fun describePlaybackException(e: PlaybackException): String =
+    fun describePlaybackException(e: PlaybackException): String = try {
         "${e.errorCodeName} (code ${e.errorCode})\n${describeThrowable(e)}"
+    } catch (_: Throwable) {
+        "error code ${e.errorCode}"
+    }
 
     // ---- export ----
 
