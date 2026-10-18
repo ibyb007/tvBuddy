@@ -937,6 +937,17 @@ private fun Badge(text: String) {
 
 /** Scale so panel sizes match TiviMate's proportions on any TV density (design grid: 1080 px tall). */
 @Composable
+/**
+ * Keeps a lazy list's top item in step with [target]. Single steps animate (smooth key repeat);
+ * anything bigger (list replaced, group switched, page just opened) jumps instantly so the list never
+ * visibly "flies" to its position. Does nothing when the list is already there.
+ */
+internal suspend fun androidx.compose.foundation.lazy.LazyListState.followTarget(target: Int, jump: Boolean) {
+    if (firstVisibleItemIndex == target && firstVisibleItemScrollOffset == 0) return
+    if (jump) scrollToItem(target) else animateScrollToItem(target)
+}
+
+@Composable
 internal fun rememberUiScale(): Float = LocalConfiguration.current.screenHeightDp / 1080f
 
 @Composable
@@ -951,9 +962,14 @@ internal fun ChannelListPanel(
     highlightSelected: Boolean = true
 ) {
     val k = rememberUiScale()
-    val listState = rememberLazyListState()
-    LaunchedEffect(selectedIndex) {
-        listState.animateScrollToItem((selectedIndex - 3).coerceAtLeast(0))
+    // opens already positioned on the selected row (no scroll animation when the panel appears)
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (selectedIndex - 3).coerceAtLeast(0))
+    val prevIndex = remember { intArrayOf(selectedIndex, channelsList.size) }
+    LaunchedEffect(selectedIndex, channelsList.size) {
+        val jump = kotlin.math.abs(selectedIndex - prevIndex[0]) > 2 || prevIndex[1] != channelsList.size
+        prevIndex[0] = selectedIndex
+        prevIndex[1] = channelsList.size
+        listState.followTarget((selectedIndex - 3).coerceAtLeast(0), jump)
     }
     val selected = channelsList.getOrNull(selectedIndex)
     val schedule = remember(selected?.id, now / 60_000L) { selected?.let(scheduleFor) ?: emptyList() }
