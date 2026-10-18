@@ -35,6 +35,12 @@ interface ChannelGroupDao {
     @Query("UPDATE channel_groups SET isVisible = :isVisible WHERE playlistId = :playlistId AND groupTitle = :groupTitle")
     suspend fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean)
 
+    /** Applies several visibility changes in one transaction so observers are notified once. */
+    @Transaction
+    suspend fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>) {
+        changes.forEach { (title, visible) -> setGroupVisibility(playlistId, title, visible) }
+    }
+
     @Query("UPDATE channel_groups SET isVisible = :isVisible WHERE playlistId = :playlistId")
     suspend fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean)
 
