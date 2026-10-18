@@ -17,6 +17,13 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import coil.Coil
+import coil.ImageLoader
+import okhttp3.OkHttpClient
+import java.net.CookieHandler
+import java.net.CookieManager
+import java.net.CookiePolicy
+import java.util.concurrent.TimeUnit
 import com.example.ui.MainViewModel
 import com.example.ui.screens.HomeScreen
 import com.example.ui.theme.DarkBackground
@@ -31,6 +38,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        installNetworkDefaults()
 
         // Detect if running on an Android TV device
         val isTv = isRunningOnTv()
@@ -54,6 +62,46 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * - Cookie handler: HLS providers (Akamai/Hotstar style) hand out auth cookies on the master playlist
+     *   that the variant playlists / segments need; HttpURLConnection (used by ExoPlayer) only keeps
+     *   them when a default CookieHandler exists.
+     * - Logo loader: many hosts (Wikimedia, Amazon CDN, ...) reject OkHttp's default "okhttp/x.y"
+     *   User-Agent, so channel logos are fetched with a browser-style one. AVIF is not advertised
+     *   because Coil cannot decode it on older Android versions.
+     */
+    private fun installNetworkDefaults() {
+        if (CookieHandler.getDefault() == null) {
+            CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))
+        }
+        val client = OkHttpClient.Builder()
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
+            .addInterceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header("User-Agent", LOGO_USER_AGENT)
+                        .header("Accept", "image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8,*/*;q=0.5")
+                        .build()
+                )
+            }
+            .build()
+        Coil.setImageLoader(
+            ImageLoader.Builder(applicationContext)
+                .okHttpClient(client)
+                .respectCacheHeaders(false) // logo hosts often send no-store; keep them cached on the TV
+                .build()
+        )
+    }
+
+    private companion object {
+        const val LOGO_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 12; TV) AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/124.0.0.0 Safari/537.36 tvBuddy/1.0"
     }
 
     fun enterPipMode() {
