@@ -1,5 +1,6 @@
 package com.example.data.model
 
+import android.os.Build
 import com.example.data.local.entity.PlaylistEntity
 import org.json.JSONObject
 
@@ -19,8 +20,9 @@ data class SpoofProfile(
 ) {
     fun getUserAgent(): String {
         return when (preset) {
-            SpoofPreset.TIVIMATE -> "TiviMate/5.0.4 (Linux; Android 12; Free/Premium)"
-            SpoofPreset.OTT_NAVIGATOR -> "OTT Navigator/1.6.8.5 (Android TV; Android 11; OTT-Nav)"
+            // Same shapes the real apps send (providers that check the client reject anything else)
+            SpoofPreset.TIVIMATE -> "TiviMate/5.0.4 (Linux; Android ${Build.VERSION.RELEASE})"
+            SpoofPreset.OTT_NAVIGATOR -> "OTT Navigator/1.7.0.2 (Linux;Android ${Build.VERSION.RELEASE}; ${Build.MODEL}) ExoPlayerLib/2.19.1"
             SpoofPreset.VLC -> "VLC/3.5.4 (Linux; Android 12; LibVLC/3.5.4)"
             SpoofPreset.APPLE_TV -> "AppleCoreMedia/1.0.0.19E241 (Apple TV; U; CPU OS 15_4 like Mac OS X; en_us)"
             SpoofPreset.EXOPLAYER -> "ExoPlayerLib/2.19.1 (tvBuddy IPTV)"
