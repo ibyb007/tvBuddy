@@ -269,7 +269,17 @@ fun TvBrowseScreen(
     val now by produceBrowseNow()
 
     var level by remember { mutableStateOf(initialLevel) }
-    var groupFocus by remember { mutableIntStateOf(0) }
+    // start on the applied group so the groups list opens already positioned (no scroll on open)
+    var groupFocus by remember {
+        mutableIntStateOf(indexOfSelection(buildRows(sections, emptySet()), selection).coerceAtLeast(0))
+    }
+    // true once the user has moved focus between groups; then the channel list shows channels from the
+    // first one instead of jumping to the playing channel
+    var browsedGroups by remember { mutableStateOf(false) }
+    // starts on the playing channel so the list is already in place when the page opens
+    var guideRow by remember {
+        mutableIntStateOf(channels.indexOfFirst { it.id == playingChannel?.id }.coerceAtLeast(0))
+    }
     var railIndex by remember { mutableIntStateOf(1) }                 // 0 Search, 1 TV, 2 Favorites, 3 Settings
     var optionsRow by remember { mutableStateOf<GroupRow?>(null) }
     var optionsIndex by remember { mutableIntStateOf(0) }
@@ -283,6 +293,7 @@ fun TvBrowseScreen(
 
     LaunchedEffect(level) {
         if (level == TvBrowseLevel.GROUPS) groupFocus = appliedIndex.coerceAtLeast(0)
+        else browsedGroups = false
     }
     LaunchedEffect(optionsRow != null) { onOptionsVisible(optionsRow != null) }
     DisposableEffect(Unit) { onDispose { onOptionsVisible(false) } }
@@ -293,6 +304,9 @@ fun TvBrowseScreen(
         if (sel != selection) {
             delay(150)
             onSelectGroup(sel)
+        } else if (browsedGroups) {
+            // back on the group that is already applied: show it from its first channel
+            guideRow = 0
         }
     }
 
@@ -312,13 +326,16 @@ fun TvBrowseScreen(
 
     // ---------------- grid focus ----------------
     val channelIds = remember(channels) { channels.map { it.id } }
-    var guideRow by remember { mutableIntStateOf(0) }
     var cursorMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var originMs by remember { mutableLongStateOf(windowStart) }
     LaunchedEffect(channelIds) {
         val playingId = playingChannel?.id
         val idx = if (playingId == null) -1 else channels.indexOfFirst { it.id == playingId }
-        guideRow = if (idx >= 0) idx else 0
+        guideRow = when {
+            browsedGroups && level == TvBrowseLevel.GROUPS -> 0     // moving over groups: start at the top
+            idx >= 0 -> idx
+            else -> 0
+        }
         cursorMs = System.currentTimeMillis()
         originMs = windowStart
     }
@@ -465,9 +482,16 @@ fun TvBrowseScreen(
                 else -> return false
             }
             TvBrowseLevel.GROUPS -> when (key) {
-                Key.DirectionUp -> groupFocus = (groupFocus - 1).coerceAtLeast(0)
-                Key.DirectionDown -> groupFocus = (groupFocus + 1).coerceAtMost((rows.size - 1).coerceAtLeast(0))
-                Key.DirectionRight -> if (!isRepeat) level = TvBrowseLevel.GUIDE
+                Key.DirectionUp -> { browsedGroups = true; groupFocus = (groupFocus - 1).coerceAtLeast(0) }
+                Key.DirectionDown -> { browsedGroups = true; groupFocus = (groupFocus + 1).coerceAtMost((rows.size - 1).coerceAtLeast(0)) }
+                Key.DirectionRight -> if (!isRepeat) {
+                    if (!browsedGroups) {
+                        // opened with BACK/LEFT twice and nothing browsed: RIGHT returns to the playing channel
+                        val idx = channels.indexOfFirst { it.id == playingChannel?.id }
+                        if (idx >= 0) guideRow = idx
+                    }
+                    level = TvBrowseLevel.GUIDE
+                }
                 Key.DirectionLeft -> if (!isRepeat) {
                     if (overlayMode) {
                         // climb the tree: group -> its playlist -> playlist above; nothing above the top
@@ -638,9 +662,14 @@ private fun BrowseContent(
     onPreviewBounds: (Rect) -> Unit
 ) {
     val dpPerMs = (BROWSE_HALF_HOUR_PX * k) / HALF_HOUR_MS
-    val listState = rememberLazyListState()
+    // opens already positioned on the selected row; later jumps (group switch) are instant, single steps animate
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (selectedRow - 3).coerceAtLeast(0))
+    val prevRow = remember { intArrayOf(selectedRow, channels.size) }
     LaunchedEffect(selectedRow, channels.size) {
-        listState.animateScrollToItem((selectedRow - 3).coerceAtLeast(0))
+        val jump = kotlin.math.abs(selectedRow - prevRow[0]) > 2 || prevRow[1] != channels.size
+        prevRow[0] = selectedRow
+        prevRow[1] = channels.size
+        listState.followTarget((selectedRow - 3).coerceAtLeast(0), jump)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -1031,9 +1060,9 @@ private fun GroupsPanel(
     focused: Boolean,
     bgAlpha: Float = 1f
 ) {
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (focusIndex - 3).coerceAtLeast(0))
     LaunchedEffect(focusIndex, focused) {
-        if (focused) listState.animateScrollToItem((focusIndex - 3).coerceAtLeast(0))
+        if (focused) listState.followTarget((focusIndex - 3).coerceAtLeast(0), jump = false)
     }
     Box(
         modifier = Modifier
