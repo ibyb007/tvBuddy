@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -154,6 +155,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.initializeDefaultsIfNeeded()
         }
         repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
+
+        // Warm the logo cache in the background a few seconds after the channel list settles
+        viewModelScope.launch {
+            repository.allChannels.collectLatest { chs ->
+                if (chs.isEmpty()) return@collectLatest
+                kotlinx.coroutines.delay(4_000)
+                LogoLoader.prefetch(getApplication<Application>(), chs.mapNotNull { it.logoUrl })
+            }
+        }
 
         // Make sure every playlist has its group rows (older playlists were imported before groups were tracked),
         // so "Manage groups" always lists all groups of a playlist.
