@@ -66,6 +66,9 @@ android {
     compose = true
     buildConfig = true
   }
+  // WARP mode exec()s libusque.so as a subprocess, which Android only allows from the extracted
+  // native-library directory, so native libs must be extracted at install time (not mmap'd from the APK).
+  packaging { jniLibs { useLegacyPackaging = true } }
   testOptions { unitTests { isIncludeAndroidResources = true } }
   dependenciesInfo {
     includeInApk = false
