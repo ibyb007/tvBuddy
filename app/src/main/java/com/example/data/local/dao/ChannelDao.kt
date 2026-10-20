@@ -20,6 +20,10 @@ interface ChannelDao {
     @Query("SELECT * FROM channels WHERE playlistId = :playlistId AND contentType = :contentType ORDER BY channelNumber ASC, id ASC")
     fun getChannelsByPlaylistAndType(playlistId: Long, contentType: String): Flow<List<ChannelEntity>>
 
+    /** Movies or shows of every playlist (the Movies / Shows pages filter hidden groups themselves). */
+    @Query("SELECT * FROM channels WHERE contentType = :contentType ORDER BY channelNumber ASC, id ASC")
+    fun getChannelsByType(contentType: String): Flow<List<ChannelEntity>>
+
     @Query("DELETE FROM channels WHERE playlistId = :playlistId AND contentType = :contentType")
     suspend fun deleteChannelsByPlaylistAndType(playlistId: Long, contentType: String)
 
