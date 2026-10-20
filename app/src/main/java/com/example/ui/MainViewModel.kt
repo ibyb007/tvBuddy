@@ -267,19 +267,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         FilterState(category, query, tvMode, selection, viewPrefs.first, viewPrefs.second)
     }
 
-    // Filtered channels respecting active playlists and group visibility.
-    // Phone mode filters by category chip; TV mode by the playlist/group picked in the groups panel.
-    val visibleChannels: StateFlow<List<ChannelEntity>> = combine(
-        rawChannels,
-        allPlaylists,
-        allChannelGroups,
-        filterState
-    ) { channels, playlists, groups, fs ->
+    /** Applies a TV group selection (playlist / favourites / group, fav-only + name-sort options) to the channel list. */
+    private fun applySelection(
+        channels: List<ChannelEntity>,
+        playlists: List<PlaylistEntity>,
+        groups: List<ChannelGroupEntity>,
+        selection: TvGroupSelection,
+        favOnly: Set<String>,
+        nameSorted: Set<String>
+    ): List<ChannelEntity> {
         val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
         val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
 
         // A selection that points at a playlist that no longer exists behaves like "all playlists"
-        val sel = fs.selection.let { s ->
+        val sel = selection.let { s ->
             if (s.playlistId != null && playlists.none { it.id == s.playlistId }) TvGroupSelection() else s
         }
         val selKey = if (sel.kind == TvGroupKind.GROUP && sel.playlistId != null) "${sel.playlistId}_${sel.groupTitle}" else null
@@ -287,36 +288,98 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val filtered = channels.filter { channel ->
             if (activePlaylistIds != null && channel.playlistId !in activePlaylistIds) return@filter false
             if ("${channel.playlistId}_${channel.groupTitle}" in hiddenGroupKeys) return@filter false
-
-            val matchesQuery = fs.query.isBlank() ||
-                channel.name.contains(fs.query, ignoreCase = true) ||
-                channel.groupTitle.contains(fs.query, ignoreCase = true)
-            if (!matchesQuery) return@filter false
-
-            if (fs.tvMode) {
-                if (sel.playlistId != null && channel.playlistId != sel.playlistId) return@filter false
-                when (sel.kind) {
-                    TvGroupKind.ALL -> true
-                    TvGroupKind.FAVORITES -> channel.isFavorite
-                    TvGroupKind.GROUP ->
-                        channel.groupTitle == sel.groupTitle && (selKey == null || selKey !in fs.favOnly || channel.isFavorite)
-                }
-            } else {
-                when (fs.category) {
-                    "All" -> true
-                    "★ Favorites" -> channel.isFavorite
-                    else -> channel.groupTitle.equals(fs.category, ignoreCase = true)
-                }
+            if (sel.playlistId != null && channel.playlistId != sel.playlistId) return@filter false
+            when (sel.kind) {
+                TvGroupKind.ALL -> true
+                TvGroupKind.FAVORITES -> channel.isFavorite
+                TvGroupKind.GROUP ->
+                    channel.groupTitle == sel.groupTitle && (selKey == null || selKey !in favOnly || channel.isFavorite)
             }
         }
+        return if (selKey != null && selKey in nameSorted) filtered.sortedBy { it.name.lowercase() } else filtered
+    }
 
-        if (fs.tvMode && selKey != null && selKey in fs.nameSorted) {
-            filtered.sortedBy { it.name.lowercase() }
+    /**
+     * The channels of the current selection (TV: group picked in the groups panel; phone: category chip),
+     * WITHOUT the search filter. A channel's number is its 1-based position in this list.
+     */
+    val selectionChannels: StateFlow<List<ChannelEntity>> = combine(
+        rawChannels,
+        allPlaylists,
+        allChannelGroups,
+        filterState
+    ) { channels, playlists, groups, fs ->
+        if (fs.tvMode) {
+            applySelection(channels, playlists, groups, fs.selection, fs.favOnly, fs.nameSorted)
         } else {
-            filtered
+            // phone mode: category chip
+            val all = applySelection(channels, playlists, groups, TvGroupSelection(), emptySet(), emptySet())
+            when (fs.category) {
+                "All" -> all
+                "★ Favorites" -> all.filter { it.isFavorite }
+                else -> all.filter { it.groupTitle.equals(fs.category, ignoreCase = true) }
+            }
         }
     }.flowOn(kotlinx.coroutines.Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // Filtered channels respecting active playlists and group visibility, plus the search box.
+    val visibleChannels: StateFlow<List<ChannelEntity>> = combine(selectionChannels, _searchQuery) { list, query ->
+        if (query.isBlank()) list
+        else list.filter { it.name.contains(query, ignoreCase = true) || it.groupTitle.contains(query, ignoreCase = true) }
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    // ---- Playing context (TV) ----
+    // The list the playing channel was started from. Its numbering ("5" in Sports) and the UP/DOWN zapping
+    // follow it, independent of whatever group is merely being browsed in the groups panel.
+    private val _playContext = MutableStateFlow(loadPlayContext())
+    val playContext: StateFlow<TvGroupSelection> = _playContext.asStateFlow()
+
+    /** Channels of the playing context (no search filter). Falls back to all channels when the playing channel isn't in it. */
+    val playingList: StateFlow<List<ChannelEntity>> = combine(
+        rawChannels,
+        allPlaylists,
+        allChannelGroups,
+        combine(_playContext, groupViewPrefs, playerManager.currentChannel) { c, v, cur -> Triple(c, v, cur) }
+    ) { channels, playlists, groups, (ctx, viewPrefs, cur) ->
+        val inContext = applySelection(channels, playlists, groups, ctx, viewPrefs.first, viewPrefs.second)
+        if (cur == null || inContext.any { it.id == cur.id }) inContext
+        else applySelection(channels, playlists, groups, TvGroupSelection(), emptySet(), emptySet())
+    }.flowOn(kotlinx.coroutines.Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    /** Makes [selection] the list used for numbering / zapping of the playing channel. */
+    fun setPlayContext(selection: TvGroupSelection) {
+        if (_playContext.value == selection) return
+        _playContext.value = selection
+        prefs.edit()
+            .putLong(KEY_CTX_PLAYLIST, selection.playlistId ?: -1L)
+            .putString(KEY_CTX_KIND, selection.kind.name)
+            .putString(KEY_CTX_GROUP, selection.groupTitle)
+            .apply()
+    }
+
+    /** Plays a channel picked from the TV page: the group being browsed becomes the playing context. */
+    fun playChannelFromSelection(channel: ChannelEntity) {
+        setPlayContext(_tvSelection.value)
+        playChannelIfNeeded(channel)
+    }
+
+    /** Opening the TV page from playback starts on the group the playing channel belongs to. */
+    fun syncSelectionToPlayContext() {
+        if (currentChannel.value != null) selectTvGroup(_playContext.value)
+    }
+
+    private fun loadPlayContext(): TvGroupSelection {
+        if (!prefs.contains(KEY_CTX_KIND)) return loadTvSelection()
+        val pid = prefs.getLong(KEY_CTX_PLAYLIST, -1L).takeIf { it >= 0L }
+        val kind = runCatching { TvGroupKind.valueOf(prefs.getString(KEY_CTX_KIND, null) ?: "ALL") }
+            .getOrDefault(TvGroupKind.ALL)
+        val group = prefs.getString(KEY_CTX_GROUP, null)
+        return if (kind == TvGroupKind.GROUP && (pid == null || group == null)) TvGroupSelection()
+        else TvGroupSelection(pid, kind, group)
+    }
 
     init {
         // Drop a stored selection whose playlist / group has been deleted, hidden or deactivated
@@ -486,24 +549,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (channel.id != currentChannel.value?.id || !playerManager.isStreamActive()) playChannel(channel)
     }
 
-    fun playNextChannel() {
+    /** TV zaps inside the playing context (wraps around: UP on #1 -> last, DOWN on last -> #1); phone uses the visible list. */
+    private fun zap(delta: Int) {
+        val list = if (_isTvMode.value) playingList.value else visibleChannels.value
+        if (list.isEmpty()) return
         val current = currentChannel.value ?: return
-        val list = visibleChannels.value
         val currentIndex = list.indexOfFirst { it.id == current.id }
-        if (currentIndex != -1 && list.isNotEmpty()) {
-            playChannel(list[(currentIndex + 1) % list.size])
-        }
+        val next = if (currentIndex == -1) 0 else (currentIndex + delta + list.size) % list.size
+        playChannel(list[next])
     }
 
-    fun playPreviousChannel() {
-        val current = currentChannel.value ?: return
-        val list = visibleChannels.value
-        val currentIndex = list.indexOfFirst { it.id == current.id }
-        if (currentIndex != -1 && list.isNotEmpty()) {
-            val prevIndex = if (currentIndex - 1 < 0) list.size - 1 else currentIndex - 1
-            playChannel(list[prevIndex])
-        }
-    }
+    fun playNextChannel() = zap(+1)
+
+    fun playPreviousChannel() = zap(-1)
 
     fun toggleFavorite(channel: ChannelEntity) {
         // use the latest stored state: callers may hold a stale copy (e.g. the player's current channel)
@@ -817,6 +875,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val KEY_SEL_PLAYLIST = "tv_sel_playlist"
         const val KEY_SEL_KIND = "tv_sel_kind"
         const val KEY_SEL_GROUP = "tv_sel_group"
+        const val KEY_CTX_PLAYLIST = "tv_ctx_playlist"
+        const val KEY_CTX_KIND = "tv_ctx_kind"
+        const val KEY_CTX_GROUP = "tv_ctx_group"
         const val KEY_GROUP_FAV_ONLY = "tv_group_fav_only"
         const val KEY_GROUP_NAME_SORT = "tv_group_name_sort"
     }
