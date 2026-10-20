@@ -122,6 +122,7 @@ fun HomeScreen(
     val allCurrentPrograms by viewModel.allCurrentPrograms.collectAsStateWithLifecycle()
     val recentChannels by viewModel.recentChannels.collectAsStateWithLifecycle()
     val allChannelGroups by viewModel.allChannelGroups.collectAsStateWithLifecycle()
+    val importState by viewModel.importState.collectAsStateWithLifecycle()
     val allEpgSources by viewModel.allEpgSources.collectAsStateWithLifecycle()
     val allPlaylistEpgCrossRefs by viewModel.allPlaylistEpgCrossRefs.collectAsStateWithLifecycle()
     val epgSettings by viewModel.epgSettings.collectAsStateWithLifecycle()
@@ -768,11 +769,23 @@ fun HomeScreen(
     if (showAddDialog) {
         AddPlaylistDialog(
             isTvMode = isTvMode,
-            onDismiss = { showAddDialog = false },
+            onDismiss = {
+                viewModel.resetImportState()
+                showAddDialog = false
+            },
             onAddM3u = { name, src, isRaw, spoof -> viewModel.addM3uPlaylist(name, src, isRaw, spoof) },
-            onAddXtream = { name, srv, u, p, spoof -> viewModel.addXtreamPlaylist(name, srv, u, p, spoof) },
-            onAddStalker = { name, portal, mac, spoof -> viewModel.addStalkerPlaylist(name, portal, mac, spoof) },
-            onAddJson = { name, src, isRaw, spoof -> viewModel.addJsonPlaylist(name, src, isRaw, spoof) }
+            onAddXtream = { name, srv, u, p, spoof, tv, vod -> viewModel.addXtreamPlaylist(name, srv, u, p, spoof, tv, vod) },
+            onAddStalker = { name, portal, mac, spoof, adv ->
+                viewModel.addStalkerPlaylist(
+                    name, portal, mac, spoof,
+                    adv.username, adv.password, adv.deviceId, adv.deviceId2, adv.serial,
+                    adv.includeTv, adv.includeVod
+                )
+            },
+            onAddJson = { name, src, isRaw, spoof -> viewModel.addJsonPlaylist(name, src, isRaw, spoof) },
+            importState = importState,
+            onFinishImport = { id, name -> viewModel.finishImport(id, name) },
+            onDiscardImport = { id -> viewModel.discardImport(id) }
         )
     }
 
@@ -841,9 +854,10 @@ fun HomeScreen(
             onUpdatePlaylist = { viewModel.updatePlaylist(it) },
             allGroups = allChannelGroups,
             onSetAllGroupsVisibility = { id, visible -> viewModel.setAllGroupsVisibility(id, visible) },
-            onSetGroupVisibility = { id, title, visible -> viewModel.setGroupVisibility(id, title, visible) },
-            onSetGroupsVisibility = { id, changes -> viewModel.setGroupsVisibility(id, changes) },
-            onReorderGroups = { id, titles -> viewModel.reorderGroups(id, titles) },
+            onSetGroupVisibility = { id, title, visible, type -> viewModel.setGroupVisibility(id, title, visible, type) },
+            onSetGroupsVisibility = { id, changes, type -> viewModel.setGroupsVisibility(id, changes, type) },
+            onReorderGroups = { id, titles, type -> viewModel.reorderGroups(id, titles, type) },
+            onApplyPortalParams = { viewModel.applyPortalParams(it) },
             epgSources = allEpgSources,
             playlistEpgCrossRefs = allPlaylistEpgCrossRefs,
             onAddEpgSource = { viewModel.addEpgSource(it) },
