@@ -514,6 +514,29 @@ class TvBuddyRepository(
         channelGroupDao.updateGroupOrders(playlistId, contentType, orderedTitles)
     }
 
+    fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getChannelsByType(contentType)
+
+    /**
+     * Turns a movie into something the player can open. Xtream movies are direct links already; Stalker movies
+     * carry a portal command that has to be exchanged for a real link first. Shows are not playable yet
+     * (their episodes are not fetched).
+     */
+    suspend fun resolvePlayable(channel: ChannelEntity): Result<ChannelEntity> = withContext(Dispatchers.IO) {
+        try {
+            if (channel.contentType == ContentType.SHOW) throw Exception("Episodes of shows can't be played yet")
+            val pl = playlistDao.getPlaylistById(channel.playlistId) ?: throw Exception("Playlist not found")
+            if (pl.type != PlaylistType.STALKER || channel.contentType != ContentType.MOVIE) return@withContext Result.success(channel)
+            val ua = pl.toSpoofProfile().getUserAgent()
+            val params = pl.toStalkerParams()
+            val auth = stalkerClient.login(pl.sourceUrl, params, ua)
+            if (!auth.success) throw Exception(auth.message)
+            val link = stalkerClient.resolveStreamLink(pl.sourceUrl, params.normalizedMac, channel.streamUrl, auth.token, ua, "vod")
+            Result.success(channel.copy(streamUrl = link))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun getPlaylist(id: Long): PlaylistEntity? = withContext(Dispatchers.IO) { playlistDao.getPlaylistById(id) }
 
     suspend fun addM3uPlaylist(
