@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FormatListBulleted
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonChecked
@@ -115,7 +116,7 @@ private val StripCardSelected = Color(0xFF3A3F47).copy(alpha = 0.5f)
  *
  * Remote control while watching (no panel open):
  *   OK (click)      -> info banner + channel strip (TV guide tile first); DOWN there opens the action bar
- *   OK (long press) -> action bar (channels, guide, quality, audio, subtitles, favourite ...)
+ *   OK (long press) -> action bar (channels, audio boost, quality, audio, subtitles, favourite ...)
  *   LEFT            -> channel list
  *   UP / DOWN       -> previous / next channel
  *   RIGHT           -> last played channel
@@ -147,6 +148,8 @@ fun TvPlayerOverlay(
     onCycleAspect: () -> Unit,
     onOpenQualityPicker: () -> Unit = {},
     onOpenEpgGuide: () -> Unit = {},
+    audioBoostProfile: com.example.player.AudioBoostProfile = com.example.player.AudioBoostProfile.OFF,
+    onCycleAudioBoost: () -> Unit = {},
     onOpenAudioTracks: () -> Unit,
     audioTracks: List<TrackInfo> = emptyList(),
     onSelectAudioTrack: (TrackInfo) -> Unit = {},
@@ -283,7 +286,7 @@ fun TvPlayerOverlay(
         } else videoQuality.title.substringBefore(" ")
         return listOf(
             TvMenuItem("Channels list", Icons.Default.FormatListBulleted) { openChannelList() },
-            TvMenuItem("TV guide", Icons.Default.Schedule) { openGuide() },
+            TvMenuItem("Audio boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq) { onCycleAudioBoost() },
             TvMenuItem(qualityLabel, Icons.Default.HighQuality) { panel = TvPanel.NONE; onOpenQualityPicker() },
             TvMenuItem(audioLabel, Icons.AutoMirrored.Filled.VolumeUp) {
                 val sel = audioTracks.indexOfFirst { it.isSelected }
