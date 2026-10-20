@@ -39,6 +39,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -97,6 +99,7 @@ import coil.compose.AsyncImage
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.player.AspectMode
+import com.example.data.model.ContentType
 import com.example.ui.TvGroupKind
 import com.example.ui.TvGroupSection
 import com.example.ui.TvGroupSelection
@@ -258,6 +261,10 @@ fun TvBrowseScreen(
     onClearSearch: () -> Unit,
     onOpenSettings: () -> Unit,
     onExit: () -> Unit,
+    /** Movies / Shows entries appear in the rail only when an active playlist actually has that VOD. */
+    hasMovies: Boolean = false,
+    hasShows: Boolean = false,
+    onOpenVod: (contentType: String) -> Unit = {},
     /** Reports where the preview window sits (root coordinates) so the shared video surface can follow it. */
     onPreviewBounds: (Rect) -> Unit = {},
     /**
@@ -288,7 +295,8 @@ fun TvBrowseScreen(
     var guideRow by remember {
         mutableIntStateOf(channels.indexOfFirst { it.id == playingChannel?.id }.coerceAtLeast(0))
     }
-    var railIndex by remember { mutableIntStateOf(1) }                 // 0 Search, 1 TV, 2 Favorites, 3 Settings
+    val railEntries = remember(hasMovies, hasShows) { buildRailEntries(hasMovies, hasShows) }
+    var railIndex by remember { mutableIntStateOf(1) }                 // index into railEntries (Search, TV, [Movies], [Shows], Favorites, Settings)
     var optionsRow by remember { mutableStateOf<GroupRow?>(null) }
     var optionsIndex by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
@@ -441,10 +449,12 @@ fun TvBrowseScreen(
                     level = TvBrowseLevel.GUIDE
                 }
             }
-            TvBrowseLevel.RAIL -> when (railIndex) {
-                0 -> onOpenSearch()
-                1 -> level = TvBrowseLevel.GUIDE
-                2 -> { onSelectGroup(TvGroupSelection(null, TvGroupKind.FAVORITES)); level = TvBrowseLevel.GUIDE }
+            TvBrowseLevel.RAIL -> when (railEntries.getOrNull(railIndex)?.id) {
+                RailId.SEARCH -> onOpenSearch()
+                RailId.TV -> level = TvBrowseLevel.GUIDE
+                RailId.MOVIES -> onOpenVod(ContentType.MOVIE)
+                RailId.SHOWS -> onOpenVod(ContentType.SHOW)
+                RailId.FAVORITES -> { onSelectGroup(TvGroupSelection(null, TvGroupKind.FAVORITES)); level = TvBrowseLevel.GUIDE }
                 else -> onOpenSettings()
             }
         }
@@ -512,7 +522,7 @@ fun TvBrowseScreen(
             }
             TvBrowseLevel.RAIL -> when (key) {
                 Key.DirectionUp -> railIndex = (railIndex - 1).coerceAtLeast(0)
-                Key.DirectionDown -> railIndex = (railIndex + 1).coerceAtMost(3)
+                Key.DirectionDown -> railIndex = (railIndex + 1).coerceAtMost(railEntries.lastIndex)
                 Key.DirectionRight -> if (!isRepeat) level = TvBrowseLevel.GROUPS
                 Key.DirectionLeft -> {}
                 else -> return false
@@ -620,6 +630,7 @@ fun TvBrowseScreen(
                 expanded = level == TvBrowseLevel.RAIL,
                 focused = level == TvBrowseLevel.RAIL,
                 selectedIndex = railIndex,
+                entries = railEntries,
                 bgAlpha = if (overlayMode) 0.92f else 1f
             )
             GroupsPanel(
@@ -955,14 +966,19 @@ private fun BrowseRow(
 // Rail
 // ---------------------------------------------------------------------------------------------
 
-private class RailEntry(val label: String, val icon: ImageVector)
+private enum class RailId { SEARCH, TV, MOVIES, SHOWS, FAVORITES, SETTINGS }
 
-private val RAIL_ENTRIES = listOf(
-    RailEntry("Search", Icons.Default.Search),
-    RailEntry("TV", Icons.Default.Tv),
-    RailEntry("Favorites", Icons.Default.Star),
-    RailEntry("Settings", Icons.Default.Settings)
-)
+private class RailEntry(val id: RailId, val label: String, val icon: ImageVector)
+
+/** Search, TV, Movies and Shows (only when there is VOD), Favorites; Settings is pinned to the bottom. */
+private fun buildRailEntries(hasMovies: Boolean, hasShows: Boolean): List<RailEntry> = buildList {
+    add(RailEntry(RailId.SEARCH, "Search", Icons.Default.Search))
+    add(RailEntry(RailId.TV, "TV", Icons.Default.Tv))
+    if (hasMovies) add(RailEntry(RailId.MOVIES, "Movies", Icons.Default.Movie))
+    if (hasShows) add(RailEntry(RailId.SHOWS, "Shows", Icons.Default.VideoLibrary))
+    add(RailEntry(RailId.FAVORITES, "Favorites", Icons.Default.Star))
+    add(RailEntry(RailId.SETTINGS, "Settings", Icons.Default.Settings))
+}
 
 @Composable
 private fun RailPanel(
@@ -971,6 +987,7 @@ private fun RailPanel(
     expanded: Boolean,
     focused: Boolean,
     selectedIndex: Int,
+    entries: List<RailEntry>,
     bgAlpha: Float = 1f
 ) {
     Box(
@@ -1023,12 +1040,16 @@ private fun RailPanel(
                     .align(Alignment.CenterStart)
                     .offset(y = (70 * k).dp)
             ) {
-                for (i in 0..2) RailItem(k, RAIL_ENTRIES[i], expanded, focused, i == selectedIndex, i == 1)
+                entries.forEachIndexed { i, entry ->
+                    if (entry.id != RailId.SETTINGS) {
+                        RailItem(k, entry, expanded, focused, i == selectedIndex, entry.id == RailId.TV)
+                    }
+                }
             }
 
             // Settings (bottom)
             Box(modifier = Modifier.align(Alignment.BottomStart).padding(bottom = (32 * k).dp)) {
-                RailItem(k, RAIL_ENTRIES[3], expanded, focused, selectedIndex == 3, false)
+                RailItem(k, entries.last(), expanded, focused, selectedIndex == entries.lastIndex, false)
             }
         }
     }
