@@ -636,6 +636,10 @@ class TvBuddyRepository(
         )
     }
 
+    suspend fun removeHistory(channelId: Long) = withContext(Dispatchers.IO) {
+        historyDao.deleteHistoryByChannel(channelId)
+    }
+
     suspend fun clearHistory() = withContext(Dispatchers.IO) {
         historyDao.clearHistory()
     }
