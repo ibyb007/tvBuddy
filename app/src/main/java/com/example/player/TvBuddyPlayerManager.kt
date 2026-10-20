@@ -112,6 +112,36 @@ class TvBuddyPlayerManager(
     }
     private val resetRetryRunnable = Runnable { retryCount = 0 }
 
+    // ---- Audio boost (LoudnessEnhancer / DynamicsProcessing on the player's audio session) ----
+    private val boostPrefs = context.getSharedPreferences("tvbuddy_prefs", Context.MODE_PRIVATE)
+    private val audioBoost = AudioBoostEngine()
+    private val _audioBoostProfile = MutableStateFlow(
+        AudioBoostProfile.fromName(boostPrefs.getString(KEY_AUDIO_BOOST, null))
+    )
+    val audioBoostProfile: StateFlow<AudioBoostProfile> = _audioBoostProfile.asStateFlow()
+
+    fun setAudioBoostProfile(profile: AudioBoostProfile) {
+        _audioBoostProfile.value = profile
+        boostPrefs.edit().putString(KEY_AUDIO_BOOST, profile.name).apply()
+        applyAudioBoost()
+    }
+
+    /** Off -> Rich -> Cinematic -> Dialogue -> Off. Returns the new profile. */
+    fun cycleAudioBoostProfile(): AudioBoostProfile {
+        val next = _audioBoostProfile.value.next()
+        setAudioBoostProfile(next)
+        return next
+    }
+
+    private fun applyAudioBoost() {
+        val p = exoPlayer ?: return
+        try {
+            audioBoost.apply(p.audioSessionId, _audioBoostProfile.value)
+        } catch (t: Throwable) {
+            PlaybackLog.info("AUDIO", "Audio boost failed: ${t.message}")
+        }
+    }
+
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying.asStateFlow()
 
@@ -157,6 +187,7 @@ class TvBuddyPlayerManager(
             .setSeekForwardIncrementMs(10_000)
             .build().apply {
                 playWhenReady = true
+                audioBoost.apply(audioSessionId, _audioBoostProfile.value)
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         PlaybackLog.info("STATE", PlaybackLog.stateName(playbackState) + " (playWhenReady=$playWhenReady)")
@@ -172,6 +203,14 @@ class TvBuddyPlayerManager(
 
                     override fun onIsPlayingChanged(playing: Boolean) {
                         _isPlaying.value = playing
+                        // Safety net: on some devices the audio session id is only final once playback starts.
+                        if (playing && _audioBoostProfile.value != AudioBoostProfile.OFF && !audioBoost.isActive) {
+                            applyAudioBoost()
+                        }
+                    }
+
+                    override fun onAudioSessionIdChanged(audioSessionId: Int) {
+                        audioBoost.apply(audioSessionId, _audioBoostProfile.value)
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
@@ -460,6 +499,7 @@ class TvBuddyPlayerManager(
         const val RETRY_STEP_MS = 1_500L
         const val STABLE_PLAY_MS = 10_000L
         const val FPS_SAMPLE_MS = 2000L
+        const val KEY_AUDIO_BOOST = "audio_boost_profile"
         val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 50f, 59.94f, 60f)
     }
 
@@ -863,6 +903,7 @@ class TvBuddyPlayerManager(
         exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
+        audioBoost.release()
         _isPlaying.value = false
         _isBuffering.value = false
         _currentChannel.value = null
