@@ -1,6 +1,7 @@
 package com.example.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.example.data.local.TvBuddyDatabase
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ChannelGroupEntity
@@ -10,12 +11,15 @@ import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
 import kotlinx.coroutines.flow.flatMapLatest
+import com.example.data.model.ContentType
+import com.example.data.model.ImportCounts
 import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.model.parseHeadersJson
 import com.example.data.model.toSpoofProfile
 import com.example.data.network.StalkerClient
+import com.example.data.network.StalkerParams
 import com.example.data.network.XtreamClient
 import com.example.data.parser.JsonPlaylistParser
 import com.example.data.parser.M3uParser
@@ -76,6 +80,8 @@ class TvBuddyRepository(
     val allEpgSources: Flow<List<EpgSourceEntity>> = epgSourceDao.getAllEpgSources()
     val allPlaylistEpgCrossRefs: Flow<List<PlaylistEpgCrossRef>> = epgSourceDao.getAllPlaylistEpgCrossRefs()
     val allChannelGroups: Flow<List<ChannelGroupEntity>> = channelGroupDao.getAllGroups()
+    /** Groups of live TV only: movie / show groups never take part in the channel list. */
+    val liveChannelGroups: Flow<List<ChannelGroupEntity>> = channelGroupDao.getLiveGroups()
 
     private fun startPlaylistEpgImport(playlistId: Long, urls: List<String>, userAgent: String) {
         if (urls.isEmpty()) return
@@ -127,26 +133,60 @@ class TvBuddyRepository(
     }
 
     // ---- Group Management helpers ----
+    /**
+     * Makes sure every group of [channels] has a row (per content type: TV, movies, shows). Existing rows keep
+     * their visibility and manual order; new groups follow "Show newly added groups".
+     */
     suspend fun syncGroupsForPlaylist(playlistId: Long, channels: List<ChannelEntity>, showNewlyAdded: Boolean) = withContext(Dispatchers.IO) {
-        val existingGroups = channelGroupDao.getGroupsByPlaylistOnce(playlistId).associateBy { it.groupTitle }
-        val distinctTitles = channels.map { it.groupTitle }.distinct().filter { it.isNotBlank() }
-
-        val newGroupEntities = distinctTitles.mapIndexed { index, title ->
-            val existing = existingGroups[title]
-            if (existing != null) {
-                existing.copy(originalOrder = index)
-            } else {
-                ChannelGroupEntity(
+        val existing = channelGroupDao.getGroupsByPlaylistOnce(playlistId).associateBy { it.contentType to it.groupTitle }
+        val rows = ArrayList<ChannelGroupEntity>()
+        channels.groupBy { it.contentType }.forEach { (type, list) ->
+            list.map { it.groupTitle }.distinct().filter { it.isNotBlank() }.forEachIndexed { index, title ->
+                val old = existing[type to title]
+                rows += old?.copy(originalOrder = index) ?: ChannelGroupEntity(
                     playlistId = playlistId,
                     groupTitle = title,
+                    contentType = type,
                     isVisible = showNewlyAdded,
                     originalOrder = index,
                     sortOrder = index
                 )
             }
         }
-        channelGroupDao.insertGroups(newGroupEntities)
+        rows.chunked(1000).forEach { channelGroupDao.insertGroups(it) }
     }
+
+    /** Inserts many channels in one transaction so the channel list behind the UI is rebuilt once, not per chunk. */
+    private suspend fun insertChannelsBulk(channels: List<ChannelEntity>) {
+        if (channels.isEmpty()) return
+        database.withTransaction { channels.chunked(1000).forEach { channelDao.insertChannels(it) } }
+    }
+
+    private fun countsOf(channels: List<ChannelEntity>) = ImportCounts(
+        tv = channels.count { it.contentType == ContentType.TV },
+        movies = channels.count { it.contentType == ContentType.MOVIE },
+        shows = channels.count { it.contentType == ContentType.SHOW }
+    )
+
+    /** Epoch seconds (Xtream) become dd/MM/yy; anything else the portal reports is shown as it is. */
+    private fun formatExpiration(raw: String?): String? {
+        val v = raw?.trim().orEmpty()
+        if (v.isEmpty() || v.equals("null", true) || v.equals("unknown", true) || v == "0") return null
+        val epoch = v.toLongOrNull()
+        return if (epoch != null && v.length >= 9) SimpleDateFormat("dd/MM/yy", Locale.US).format(Date(epoch * 1000L)) else v
+    }
+
+    private fun PlaylistEntity.toStalkerParams() = StalkerParams(
+        mac = macAddress.orEmpty(),
+        username = username.orEmpty(),
+        password = password.orEmpty(),
+        deviceId = deviceId.orEmpty(),
+        deviceId2 = deviceId2.orEmpty(),
+        serial = serialNumber.orEmpty()
+    )
+
+    /** Result of adding a playlist: what the "Playlist is processed" screen shows. */
+    data class ImportResult(val playlistId: Long, val name: String, val counts: ImportCounts)
 
     // ---- EPG Source & Import management ----
     suspend fun addEpgSource(url: String, name: String = url.substringAfterLast("/").ifBlank { "EPG Source" }): Long = withContext(Dispatchers.IO) {
@@ -385,6 +425,7 @@ class TvBuddyRepository(
             val ua = spoof.getUserAgent()
             val headers = spoof.getEffectiveHeaders()
 
+            var expiration: String? = null
             val fresh: List<ChannelEntity> = when (pl.type) {
                 PlaylistType.M3U -> {
                     if (!pl.sourceUrl.startsWith("http", ignoreCase = true)) {
@@ -397,12 +438,18 @@ class TvBuddyRepository(
                 PlaylistType.XTREAM -> {
                     val auth = xtreamClient.authenticate(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), ua)
                     if (!auth.success) throw Exception(auth.message)
-                    xtreamClient.fetchChannels(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, ua)
+                    expiration = formatExpiration(auth.expDate)
+                    xtreamClient.fetchChannels(
+                        pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, ua,
+                        includeTv = pl.includeTv, includeVod = pl.includeVod
+                    )
                 }
                 PlaylistType.STALKER -> {
-                    val auth = stalkerClient.handshake(pl.sourceUrl, pl.macAddress.orEmpty(), ua)
+                    val params = pl.toStalkerParams()
+                    val auth = stalkerClient.login(pl.sourceUrl, params, ua)
                     if (!auth.success) throw Exception(auth.message)
-                    stalkerClient.fetchChannels(pl.sourceUrl, pl.macAddress.orEmpty(), pl.id, ua)
+                    expiration = formatExpiration(auth.expiration)
+                    stalkerClient.fetchContent(pl.sourceUrl, params, pl.id, ua, pl.includeTv, pl.includeVod, auth)
                 }
                 PlaylistType.RAW_JSON -> {
                     if (!pl.sourceUrl.startsWith("http", ignoreCase = true)) {
@@ -413,25 +460,34 @@ class TvBuddyRepository(
                 }
             }
             if (fresh.isEmpty()) throw Exception("The provider returned no channels")
+            if (pl.type == PlaylistType.STALKER || pl.type == PlaylistType.XTREAM) {
+                if (!pl.includeTv && !pl.includeVod) throw Exception("Enable TV channels or VOD first")
+            }
 
             val old = channelDao.getChannelsByPlaylist(pl.id).first()
             val used = HashSet<Long>()
             fun take(list: List<ChannelEntity>?) = list?.firstOrNull { used.add(it.id) }
-            val byUrl = old.groupBy { it.streamUrl }
-            val byStreamId = old.filter { it.streamId.isNotBlank() }.groupBy { it.streamId }
+            // ids are only comparable within one content type: live channel 123 and movie 123 are different things
+            val byUrl = old.groupBy { it.contentType to it.streamUrl }
+            val byStreamId = old.filter { it.streamId.isNotBlank() }.groupBy { it.contentType to it.streamId }
             val merged = fresh.map { ch ->
-                val match = take(byUrl[ch.streamUrl])
-                    ?: ch.streamId.takeIf { it.isNotBlank() }?.let { take(byStreamId[it]) }
+                val match = take(byUrl[ch.contentType to ch.streamUrl])
+                    ?: ch.streamId.takeIf { it.isNotBlank() }?.let { take(byStreamId[ch.contentType to it]) }
                 if (match != null) ch.copy(id = match.id, isFavorite = match.isFavorite) else ch
             }
 
-            merged.chunked(500).forEach { channelDao.insertChannels(it) }
+            insertChannelsBulk(merged)
             val keptIds = merged.map { it.id }.filter { it != 0L }.toSet()
             old.filter { it.id !in keptIds }.map { it.id }.chunked(500).forEach { channelDao.deleteChannelsByIds(it) }
 
+            // movies / shows switched off: their groups go with them
+            val counts = countsOf(merged)
+            if (counts.movies == 0) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.MOVIE)
+            if (counts.shows == 0) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.SHOW)
+            if (counts.tv == 0 && !pl.includeTv) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.TV)
+
             syncGroupsForPlaylist(pl.id, merged, pl.showNewlyAddedGroups)
-            val latest = playlistDao.getPlaylistById(pl.id) ?: pl
-            playlistDao.updatePlaylist(latest.copy(channelCount = merged.size, lastUpdated = System.currentTimeMillis()))
+            playlistDao.updateContentCounts(pl.id, counts.tv, counts.movies, counts.shows, expiration, System.currentTimeMillis())
             Result.success(merged.size)
         } catch (e: Exception) {
             Result.failure(e)
@@ -442,21 +498,23 @@ class TvBuddyRepository(
         playlistDao.updatePlaylistOrders(orderedIds)
     }
 
-    suspend fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean) = withContext(Dispatchers.IO) {
-        channelGroupDao.setGroupVisibility(playlistId, groupTitle, isVisible)
+    suspend fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean, contentType: String = ContentType.TV) = withContext(Dispatchers.IO) {
+        channelGroupDao.setGroupVisibility(playlistId, contentType, groupTitle, isVisible)
     }
 
-    suspend fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>) = withContext(Dispatchers.IO) {
-        channelGroupDao.setGroupsVisibility(playlistId, changes)
+    suspend fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>, contentType: String = ContentType.TV) = withContext(Dispatchers.IO) {
+        channelGroupDao.setGroupsVisibility(playlistId, contentType, changes)
     }
 
-    suspend fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean) = withContext(Dispatchers.IO) {
-        channelGroupDao.setAllGroupsVisibility(playlistId, isVisible)
+    suspend fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean, contentType: String = ContentType.TV) = withContext(Dispatchers.IO) {
+        channelGroupDao.setAllGroupsVisibility(playlistId, contentType, isVisible)
     }
 
-    suspend fun reorderGroups(playlistId: Long, orderedTitles: List<String>) = withContext(Dispatchers.IO) {
-        channelGroupDao.updateGroupOrders(playlistId, orderedTitles)
+    suspend fun reorderGroups(playlistId: Long, orderedTitles: List<String>, contentType: String = ContentType.TV) = withContext(Dispatchers.IO) {
+        channelGroupDao.updateGroupOrders(playlistId, contentType, orderedTitles)
     }
+
+    suspend fun getPlaylist(id: Long): PlaylistEntity? = withContext(Dispatchers.IO) { playlistDao.getPlaylistById(id) }
 
     suspend fun addM3uPlaylist(
         name: String,
@@ -465,7 +523,7 @@ class TvBuddyRepository(
         spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE,
         customUserAgent: String = "",
         customHeaders: Map<String, String> = emptyMap()
-    ): Result<Int> = withContext(Dispatchers.IO) {
+    ): Result<ImportResult> = withContext(Dispatchers.IO) {
         try {
             val spoof = SpoofProfile(spoofPreset, customUserAgent, customHeaders)
             val effectiveHeaders = spoof.getEffectiveHeaders()
@@ -496,18 +554,24 @@ class TvBuddyRepository(
                 defaultHeaders = effectiveHeaders
             )
 
-            if (channels.isNotEmpty()) {
-                channelDao.insertChannels(channels)
-                playlistDao.updateChannelCount(playlistId, channels.size)
-                syncGroupsForPlaylist(playlistId, channels, true)
-            }
-
+            val counts = storeImported(playlistId, channels, null)
             startPlaylistEpgImport(playlistId, M3uParser.extractEpgUrls(content), spoof.getUserAgent())
 
-            Result.success(channels.size)
+            Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /** Saves the channels of a freshly added playlist, its groups and its per-type counts. */
+    private suspend fun storeImported(playlistId: Long, channels: List<ChannelEntity>, expiration: String?): ImportCounts {
+        val counts = countsOf(channels)
+        if (channels.isNotEmpty()) {
+            insertChannelsBulk(channels)
+            syncGroupsForPlaylist(playlistId, channels, true)
+        }
+        playlistDao.updateContentCounts(playlistId, counts.tv, counts.movies, counts.shows, expiration, System.currentTimeMillis())
+        return counts
     }
 
     suspend fun addXtreamPlaylist(
@@ -515,8 +579,10 @@ class TvBuddyRepository(
         serverUrl: String,
         username: String,
         password: String,
-        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE
-    ): Result<Int> = withContext(Dispatchers.IO) {
+        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE,
+        includeTv: Boolean = true,
+        includeVod: Boolean = false
+    ): Result<ImportResult> = withContext(Dispatchers.IO) {
         try {
             val spoof = SpoofProfile(spoofPreset)
             val auth = xtreamClient.authenticate(serverUrl, username, password, spoof.getUserAgent())
@@ -529,17 +595,18 @@ class TvBuddyRepository(
                     sourceUrl = serverUrl,
                     username = username,
                     password = password,
-                    spoofPreset = spoofPreset.name
+                    spoofPreset = spoofPreset.name,
+                    includeTv = includeTv,
+                    includeVod = includeVod
                 )
             )
 
-            val channels = xtreamClient.fetchChannels(serverUrl, username, password, playlistId, spoof.getUserAgent())
-            if (channels.isNotEmpty()) {
-                channelDao.insertChannels(channels)
-                playlistDao.updateChannelCount(playlistId, channels.size)
-                syncGroupsForPlaylist(playlistId, channels, true)
-            }
-            Result.success(channels.size)
+            val channels = xtreamClient.fetchChannels(
+                serverUrl, username, password, playlistId, spoof.getUserAgent(),
+                includeTv = includeTv, includeVod = includeVod
+            )
+            val counts = storeImported(playlistId, channels, formatExpiration(auth.expDate))
+            Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -549,11 +616,19 @@ class TvBuddyRepository(
         name: String,
         portalUrl: String,
         macAddress: String,
-        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE
-    ): Result<Int> = withContext(Dispatchers.IO) {
+        spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE,
+        username: String = "",
+        password: String = "",
+        deviceId: String = "",
+        deviceId2: String = "",
+        serialNumber: String = "",
+        includeTv: Boolean = true,
+        includeVod: Boolean = false
+    ): Result<ImportResult> = withContext(Dispatchers.IO) {
         try {
             val spoof = SpoofProfile(spoofPreset)
-            val auth = stalkerClient.handshake(portalUrl, macAddress, spoof.getUserAgent())
+            val params = StalkerParams(macAddress, username, password, deviceId, deviceId2, serialNumber)
+            val auth = stalkerClient.login(portalUrl, params, spoof.getUserAgent())
             if (!auth.success) return@withContext Result.failure(Exception(auth.message))
 
             val playlistId = playlistDao.insertPlaylist(
@@ -562,17 +637,20 @@ class TvBuddyRepository(
                     type = PlaylistType.STALKER,
                     sourceUrl = portalUrl,
                     macAddress = macAddress,
-                    spoofPreset = spoofPreset.name
+                    username = username.ifBlank { null },
+                    password = password.ifBlank { null },
+                    deviceId = deviceId.ifBlank { null },
+                    deviceId2 = deviceId2.ifBlank { null },
+                    serialNumber = serialNumber.ifBlank { null },
+                    spoofPreset = spoofPreset.name,
+                    includeTv = includeTv,
+                    includeVod = includeVod
                 )
             )
 
-            val channels = stalkerClient.fetchChannels(portalUrl, macAddress, playlistId, spoof.getUserAgent())
-            if (channels.isNotEmpty()) {
-                channelDao.insertChannels(channels)
-                playlistDao.updateChannelCount(playlistId, channels.size)
-                syncGroupsForPlaylist(playlistId, channels, true)
-            }
-            Result.success(channels.size)
+            val channels = stalkerClient.fetchContent(portalUrl, params, playlistId, spoof.getUserAgent(), includeTv, includeVod, auth)
+            val counts = storeImported(playlistId, channels, formatExpiration(auth.expiration))
+            Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -583,7 +661,7 @@ class TvBuddyRepository(
         sourceUrlOrContent: String,
         isRawContent: Boolean = false,
         spoofPreset: SpoofPreset = SpoofPreset.TIVIMATE
-    ): Result<Int> = withContext(Dispatchers.IO) {
+    ): Result<ImportResult> = withContext(Dispatchers.IO) {
         try {
             val spoof = SpoofProfile(spoofPreset)
             val content = if (isRawContent) sourceUrlOrContent else {
@@ -604,12 +682,8 @@ class TvBuddyRepository(
             )
 
             val channels = JsonPlaylistParser.parse(content, playlistId, spoof.getUserAgent(), spoof.getEffectiveHeaders())
-            if (channels.isNotEmpty()) {
-                channelDao.insertChannels(channels)
-                playlistDao.updateChannelCount(playlistId, channels.size)
-                syncGroupsForPlaylist(playlistId, channels, true)
-            }
-            Result.success(channels.size)
+            val counts = storeImported(playlistId, channels, null)
+            Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
             Result.failure(e)
         }
