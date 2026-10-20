@@ -86,6 +86,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
 import com.example.data.local.entity.ChannelGroupEntity
+import com.example.data.model.ContentType
+import com.example.data.model.PlaylistType
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
@@ -111,7 +113,11 @@ sealed class TiviSettingsRoute {
     data class PlaylistEpgSources(val playlistId: Long) : TiviSettingsRoute()
     data class PlaylistEpgPriority(val playlistId: Long) : TiviSettingsRoute()
     data class ManageGroups(val playlistId: Long) : TiviSettingsRoute()
-    data class ReorderGroups(val playlistId: Long) : TiviSettingsRoute()
+    /** Groups of one content type (TV, movies, shows) of a portal playlist that also carries VOD. */
+    data class ManageGroupsType(val playlistId: Long, val contentType: String) : TiviSettingsRoute()
+    data class ReorderGroups(val playlistId: Long, val contentType: String = ContentType.TV) : TiviSettingsRoute()
+    /** Stalker / Xtream portal parameters (server, MAC, login, device ids, what to include). */
+    data class PortalParams(val playlistId: Long) : TiviSettingsRoute()
     data object Epg : TiviSettingsRoute()
     data object EpgSources : TiviSettingsRoute()
     data object AddEpgSourceUrl : TiviSettingsRoute()
@@ -207,7 +213,10 @@ private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when
         )
     // opened as a shortcut from the TV groups panel: BACK returns straight to it
     is TiviSettingsRoute.ManageGroups -> listOf(route)
+    is TiviSettingsRoute.ManageGroupsType -> listOf(TiviSettingsRoute.ManageGroups(route.playlistId), route)
     is TiviSettingsRoute.ReorderGroups -> listOf(TiviSettingsRoute.ManageGroups(route.playlistId), route)
+    is TiviSettingsRoute.PortalParams ->
+        listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.EpgSources -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, route)
     is TiviSettingsRoute.AddEpgSourceUrl ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
@@ -238,9 +247,10 @@ fun PlaylistManagerDialog(
     onRefreshSinglePlaylist: (Long) -> Unit = {},
     allGroups: List<ChannelGroupEntity> = emptyList(),
     onSetAllGroupsVisibility: (Long, Boolean) -> Unit = { _, _ -> },
-    onSetGroupVisibility: (Long, String, Boolean) -> Unit = { _, _, _ -> },
-    onSetGroupsVisibility: ((Long, Map<String, Boolean>) -> Unit)? = null,
-    onReorderGroups: (Long, List<String>) -> Unit = { _, _ -> },
+    onSetGroupVisibility: (Long, String, Boolean, String) -> Unit = { _, _, _, _ -> },
+    onSetGroupsVisibility: ((Long, Map<String, Boolean>, String) -> Unit)? = null,
+    onReorderGroups: (Long, List<String>, String) -> Unit = { _, _, _ -> },
+    onApplyPortalParams: (PlaylistEntity) -> Unit = {},
     epgSources: List<EpgSourceEntity> = emptyList(),
     playlistEpgCrossRefs: List<PlaylistEpgCrossRef> = emptyList(),
     onAddEpgSource: (String) -> Unit = {},
@@ -286,6 +296,13 @@ fun PlaylistManagerDialog(
         } else {
             onDismiss()
         }
+    }
+
+    fun commitGroupVisibility(playlistId: Long, contentType: String, changes: Map<String, Boolean>) {
+        if (changes.isEmpty()) return
+        val batch = onSetGroupsVisibility
+        if (batch != null) batch(playlistId, changes, contentType)
+        else changes.forEach { (title, visible) -> onSetGroupVisibility(playlistId, title, visible, contentType) }
     }
 
     // epgSourceId -> names of playlists using it (so a source extracted from one playlist is visible everywhere)
@@ -460,6 +477,9 @@ fun PlaylistManagerDialog(
                                         onOpenManageGroups = {
                                             navigateTo(TiviSettingsRoute.ManageGroups(playlist.id))
                                         },
+                                        onOpenPortalParams = {
+                                            navigateTo(TiviSettingsRoute.PortalParams(playlist.id))
+                                        },
                                         spoofLabel = playlist.toSpoofProfile().preset.displayName,
                                         onEditSpoof = { onEditPlaylistSpoof(playlist) },
                                         updateState = updateStates[UpdateKeys.playlist(playlist.id)],
@@ -523,21 +543,46 @@ fun PlaylistManagerDialog(
                                 val playlist = playlists.find { it.id == route.playlistId }
                                 if (playlist != null) {
                                     val playlistGroups = allGroups.filter { it.playlistId == playlist.id }
+                                    val types = ContentType.all.filter { t -> playlistGroups.any { it.contentType == t } }
+                                    if (types.any { it != ContentType.TV }) {
+                                        // portal with movies / shows: pick TV, Movies or Shows first
+                                        ManageGroupTypesSubMenu(
+                                            playlistName = playlist.name,
+                                            types = types,
+                                            onSelectType = { type ->
+                                                navigateTo(TiviSettingsRoute.ManageGroupsType(playlist.id, type))
+                                            }
+                                        )
+                                    } else {
+                                        ManageGroupsSubMenu(
+                                            playlist = playlist,
+                                            contentType = ContentType.TV,
+                                            groups = playlistGroups.filter { it.contentType == ContentType.TV },
+                                            onUpdatePlaylistEntity = onUpdatePlaylist,
+                                            onReorderGroups = {
+                                                navigateTo(TiviSettingsRoute.ReorderGroups(playlist.id, ContentType.TV))
+                                            },
+                                            onCommitGroupVisibility = { changes ->
+                                                commitGroupVisibility(playlist.id, ContentType.TV, changes)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            is TiviSettingsRoute.ManageGroupsType -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist != null) {
                                     ManageGroupsSubMenu(
                                         playlist = playlist,
-                                        groups = playlistGroups,
+                                        contentType = route.contentType,
+                                        groups = allGroups.filter { it.playlistId == playlist.id && it.contentType == route.contentType },
                                         onUpdatePlaylistEntity = onUpdatePlaylist,
                                         onReorderGroups = {
-                                            navigateTo(TiviSettingsRoute.ReorderGroups(playlist.id))
+                                            navigateTo(TiviSettingsRoute.ReorderGroups(playlist.id, route.contentType))
                                         },
                                         onCommitGroupVisibility = { changes ->
-                                            if (changes.isNotEmpty()) {
-                                                val batch = onSetGroupsVisibility
-                                                if (batch != null) batch(playlist.id, changes)
-                                                else changes.forEach { (title, visible) ->
-                                                    onSetGroupVisibility(playlist.id, title, visible)
-                                                }
-                                            }
+                                            commitGroupVisibility(playlist.id, route.contentType, changes)
                                         }
                                     )
                                 }
@@ -547,13 +592,27 @@ fun PlaylistManagerDialog(
                                 val playlist = playlists.find { it.id == route.playlistId }
                                 if (playlist != null) {
                                     val playlistGroups = allGroups
-                                        .filter { it.playlistId == playlist.id }
+                                        .filter { it.playlistId == playlist.id && it.contentType == route.contentType }
                                         .sortedBy { it.sortOrder }
                                     ReorderGroupsSubMenu(
                                         groups = playlistGroups,
                                         onSaveOrder = { orderedTitles ->
-                                            onReorderGroups(playlist.id, orderedTitles)
+                                            onReorderGroups(playlist.id, orderedTitles, route.contentType)
                                         }
+                                    )
+                                }
+                            }
+
+                            is TiviSettingsRoute.PortalParams -> {
+                                val playlist = playlists.find { it.id == route.playlistId }
+                                if (playlist != null) {
+                                    PortalParamsSubMenu(
+                                        playlist = playlist,
+                                        updateState = updateStates[UpdateKeys.playlist(playlist.id)],
+                                        onEditText = { title, initial, confirm ->
+                                            textEditDialogState = TextEditPrompt(title, initial, confirm)
+                                        },
+                                        onApply = onApplyPortalParams
                                     )
                                 }
                             }
@@ -795,7 +854,9 @@ private fun PlaylistsSubMenu(
             items(displayedPlaylists, key = { it.id }) { pl ->
                 TiviMenuRow(
                     title = pl.name,
-                    subtitle = "Channels: ${pl.channelCount}",
+                    subtitle = if (pl.movieCount > 0 || pl.showCount > 0)
+                        "Channels: ${pl.channelCount}, movies: ${pl.movieCount}, shows: ${pl.showCount}"
+                    else "Channels: ${pl.channelCount}",
                     leadingIcon = { focused ->
                         if (pl.isActive) {
                             Icon(
@@ -904,6 +965,7 @@ private fun PlaylistDetailSubMenu(
     onEditUserAgent: () -> Unit,
     onOpenPlaylistEpgSources: () -> Unit,
     onOpenManageGroups: () -> Unit,
+    onOpenPortalParams: () -> Unit,
     spoofLabel: String,
     onEditSpoof: () -> Unit,
     updateState: UpdateRowState?,
@@ -938,7 +1000,9 @@ private fun PlaylistDetailSubMenu(
                     onClick = onEditName
                 )
             }
-            item {
+            val isPortal = playlist.type == PlaylistType.STALKER || playlist.type == PlaylistType.XTREAM
+            // portals keep their server address with the other portal parameters
+            if (!isPortal) item {
                 TiviMenuRow(
                     title = "Playlist URL",
                     subtitle = playlist.sourceUrl,
@@ -993,6 +1057,12 @@ private fun PlaylistDetailSubMenu(
                     title = "Player spoofing engine",
                     subtitle = spoofLabel,
                     onClick = onEditSpoof
+                )
+            }
+            if (isPortal) item {
+                TiviMenuRow(
+                    title = if (playlist.type == PlaylistType.STALKER) "Stalker Portal parameters" else "Xtream Codes parameters",
+                    onClick = onOpenPortalParams
                 )
             }
             item {
@@ -1163,6 +1233,7 @@ private fun PlaylistEpgPrioritySubMenu(
 @Composable
 private fun ManageGroupsSubMenu(
     playlist: PlaylistEntity,
+    contentType: String,
     groups: List<ChannelGroupEntity>,
     onUpdatePlaylistEntity: (PlaylistEntity) -> Unit,
     onReorderGroups: () -> Unit,
@@ -1171,10 +1242,10 @@ private fun ManageGroupsSubMenu(
     // Switches flip instantly in local state. The database (which makes the whole channel list behind the
     // drawer recompute) is only written once, when this screen is left, so toggling stays smooth and BACK
     // is never competing with a burst of list rebuilds.
-    val pending: SnapshotStateMap<String, Boolean> = remember(playlist.id) { mutableStateMapOf() }
+    val pending: SnapshotStateMap<String, Boolean> = remember(playlist.id, contentType) { mutableStateMapOf() }
     val latestGroups by rememberUpdatedState(groups)
     val latestCommit by rememberUpdatedState(onCommitGroupVisibility)
-    DisposableEffect(playlist.id) {
+    DisposableEffect(playlist.id, contentType) {
         onDispose {
             val stored = latestGroups.associate { it.groupTitle to it.isVisible }
             val changes = pending.filter { (title, visible) -> stored[title] != null && stored[title] != visible }
@@ -1193,7 +1264,7 @@ private fun ManageGroupsSubMenu(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        DrawerHeader(title = "Manage groups")
+        DrawerHeader(title = if (contentType == ContentType.TV) "Manage groups" else "Manage groups  •  ${ContentType.label(contentType)}")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(bottom = 24.dp)
@@ -1239,12 +1310,121 @@ private fun ManageGroupsSubMenu(
 
             item { DrawerSectionHeader(title = "Groups") }
 
-            items(sortedGroups, key = { "${it.playlistId}_${it.groupTitle}" }) { group ->
+            items(sortedGroups, key = { "${it.playlistId}_${it.contentType}_${it.groupTitle}" }) { group ->
                 val shown = pending[group.groupTitle] ?: group.isVisible
                 TiviSwitchRow(
                     title = group.groupTitle,
                     checked = shown,
                     onCheckedChange = { visible -> pending[group.groupTitle] = visible }
+                )
+            }
+        }
+    }
+}
+
+/** First step of "Manage groups" for a portal that also has movies / shows: TV, Movies, Shows. */
+@Composable
+private fun ManageGroupTypesSubMenu(
+    playlistName: String,
+    types: List<String>,
+    onSelectType: (String) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Manage groups")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            items(types, key = { it }) { type ->
+                TiviMenuRow(
+                    title = ContentType.label(type),
+                    onClick = { onSelectType(type) }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Stalker Portal / Xtream Codes parameters: server, MAC, login, device ids and which content to fetch.
+ * Edits stay local until "Apply changes", which saves them and processes the playlist again.
+ */
+@Composable
+private fun PortalParamsSubMenu(
+    playlist: PlaylistEntity,
+    updateState: UpdateRowState?,
+    onEditText: (title: String, initial: String, onConfirm: (String) -> Unit) -> Unit,
+    onApply: (PlaylistEntity) -> Unit
+) {
+    var draft by remember(playlist.id) { mutableStateOf(playlist) }
+    val isStalker = playlist.type == PlaylistType.STALKER
+
+    fun differs(a: PlaylistEntity, b: PlaylistEntity) =
+        a.sourceUrl != b.sourceUrl || a.macAddress != b.macAddress || a.username != b.username ||
+            a.password != b.password || a.deviceId != b.deviceId || a.deviceId2 != b.deviceId2 ||
+            a.serialNumber != b.serialNumber || a.includeTv != b.includeTv || a.includeVod != b.includeVod
+
+    val dirty = differs(draft, playlist) && (draft.includeTv || draft.includeVod)
+    val running = updateState?.running == true
+
+    @Composable
+    fun TextParam(title: String, value: String?, secret: Boolean = false, onChange: (String) -> Unit) {
+        TiviMenuRow(
+            title = title,
+            subtitle = when {
+                value.isNullOrBlank() -> "Not set"
+                secret -> "•".repeat(minOf(value.length, 12))
+                else -> value
+            },
+            onClick = { onEditText(title, value.orEmpty()) { onChange(it.trim()) } }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = if (isStalker) "Stalker Portal parameters" else "Xtream Codes parameters")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            item { TextParam("Server address", draft.sourceUrl) { if (it.isNotBlank()) draft = draft.copy(sourceUrl = it) } }
+            if (isStalker) {
+                item { TextParam("MAC address", draft.macAddress) { if (it.isNotBlank()) draft = draft.copy(macAddress = it.uppercase()) } }
+            }
+            item { TextParam("Username", draft.username) { draft = draft.copy(username = it.ifBlank { null }) } }
+            item { TextParam("Password", draft.password, secret = true) { draft = draft.copy(password = it.ifBlank { null }) } }
+            if (isStalker) {
+                item { TextParam("Device ID", draft.deviceId) { draft = draft.copy(deviceId = it.ifBlank { null }) } }
+                item { TextParam("Device ID 2", draft.deviceId2) { draft = draft.copy(deviceId2 = it.ifBlank { null }) } }
+                item { TextParam("Serial number", draft.serialNumber) { draft = draft.copy(serialNumber = it.ifBlank { null }) } }
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Include TV channels",
+                    checked = draft.includeTv,
+                    onCheckedChange = { draft = draft.copy(includeTv = it) }
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Include VOD",
+                    checked = draft.includeVod,
+                    onCheckedChange = { draft = draft.copy(includeVod = it) }
+                )
+            }
+            item {
+                TiviUpdateRow(
+                    title = "Apply changes",
+                    state = updateState,
+                    enabled = dirty || running,
+                    onClick = { onApply(draft) }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Expiration date",
+                    subtitle = playlist.expirationDate ?: "Unknown",
+                    enabled = false,
+                    onClick = {}
                 )
             }
         }
@@ -1784,6 +1964,7 @@ private fun TiviMenuRow(
 private fun TiviUpdateRow(
     title: String,
     state: UpdateRowState?,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val requester = remember { FocusRequester() }
@@ -1810,6 +1991,7 @@ private fun TiviUpdateRow(
     TiviMenuRow(
         title = title,
         subtitle = state?.message,
+        enabled = enabled,
         busy = running,
         isError = state?.isError == true,
         focusRequester = requester,
