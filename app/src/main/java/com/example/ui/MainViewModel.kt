@@ -534,7 +534,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // Previous channel (+ the group it was started from) for the RIGHT key; survives group / playlist switches
+    private var previousEntry: Pair<ChannelEntity, TvGroupSelection>? = null
+    private var currentEntryContext: TvGroupSelection = _playContext.value
+
+    /** RIGHT key: back to the last played channel, in whatever group / playlist it was. */
+    fun recallPreviousChannel() {
+        val (channel, ctx) = previousEntry ?: return
+        setPlayContext(ctx)
+        playChannel(channel)
+    }
+
+    /**
+     * Channel picked while watching (recent strip, channel list, guide, zapping). If it isn't part of the
+     * playing group, the playing group becomes the channel's own group, so numbering, zapping and the TV page follow it.
+     */
+    fun playChannelFromPlayer(channel: ChannelEntity) {
+        if (_isTvMode.value && !contextContains(channel)) {
+            setPlayContext(
+                if (playingList.value.any { it.id == channel.id }) TvGroupSelection()   // "All channels" fallback list
+                else TvGroupSelection(channel.playlistId, TvGroupKind.GROUP, channel.groupTitle)
+            )
+        }
+        playChannel(channel)
+    }
+
+    private fun contextContains(channel: ChannelEntity): Boolean =
+        applySelection(
+            rawChannels.value, allPlaylists.value, allChannelGroups.value,
+            _playContext.value, _favOnlyGroups.value, _nameSortedGroups.value
+        ).any { it.id == channel.id }
+
     fun playChannel(channel: ChannelEntity) {
+        currentChannel.value?.let { cur ->
+            if (cur.id != channel.id) previousEntry = cur to currentEntryContext
+        }
+        currentEntryContext = _playContext.value
         resumeHandled = true
         prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
         playerManager.playChannel(
