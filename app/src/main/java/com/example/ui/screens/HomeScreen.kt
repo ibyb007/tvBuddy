@@ -105,6 +105,13 @@ fun HomeScreen(
 
     val isTvMode by viewModel.isTvMode.collectAsStateWithLifecycle()
     val channels by viewModel.visibleChannels.collectAsStateWithLifecycle()
+    // TV: channels of the group the playing channel was started from (numbering + UP/DOWN zapping)
+    val playingList by viewModel.playingList.collectAsStateWithLifecycle()
+    // TV page: number of each channel = its position inside the selected group (independent of the search box)
+    val selectionChannels by viewModel.selectionChannels.collectAsStateWithLifecycle()
+    val browseNumbering = remember(selectionChannels) {
+        selectionChannels.withIndex().associate { (i, c) -> c.id to i + 1 }
+    }
     val categories by viewModel.categories.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedCategory.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
@@ -176,6 +183,8 @@ fun HomeScreen(
     // true when the TV page was opened from full-screen playback (LEFT, LEFT): video stays full-screen behind it
     var tvBrowseOverlay by remember { mutableStateOf(false) }
     LaunchedEffect(tvBrowse) { if (tvBrowse == null) tvBrowseOverlay = false }
+    // Opening the TV page while a channel plays starts on the group that channel was started from
+    LaunchedEffect(tvBrowse != null) { if (tvBrowse != null) viewModel.syncSelectionToPlayContext() }
     // true while the group options panel is open: the TV page must then draw above the preview video
     var tvOptionsOpen by remember { mutableStateOf(false) }
     var showTvSearch by remember { mutableStateOf(false) }
@@ -329,8 +338,9 @@ fun HomeScreen(
                     nameSortedGroups = nameSortedGroups,
                     searchQuery = searchQuery,
                     onSelectGroup = { viewModel.selectTvGroup(it) },
+                    numbering = browseNumbering,
                     onPlayChannel = { ch ->
-                        viewModel.playChannelIfNeeded(ch)
+                        viewModel.playChannelFromSelection(ch)
                         tvBrowse = null
                     },
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
@@ -375,7 +385,7 @@ fun HomeScreen(
                     spoofProfile = globalSpoof,
                     videoQuality = videoQuality,
                     currentProgram = currentProgram,
-                    channelsList = channels,
+                    channelsList = playingList,
                     onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
                     onNextChannel = { viewModel.playNextChannel() },
                     onPreviousChannel = { viewModel.playPreviousChannel() },
