@@ -118,7 +118,7 @@ fun TvGuidePanel(
                 itemsIndexed(channels, key = { _, c -> c.id }) { i, ch ->
                     GuideRow(
                         channel = ch,
-                        number = ch.channelNumber.takeIf { it > 0 } ?: (i + 1),
+                        number = i + 1,
                         selected = i == selectedRow,
                         playing = ch.id == playingId,
                         slots = slotsFor(ch),
