@@ -836,6 +836,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Removes one channel from the recent / history strip. */
+    fun removeFromHistory(channel: ChannelEntity) {
+        viewModelScope.launch { repository.removeHistory(channel.id) }
+    }
+
     fun clearHistory() {
         viewModelScope.launch {
             repository.clearHistory()
