@@ -245,6 +245,8 @@ fun TvBrowseScreen(
     favoriteOnlyGroups: Set<String>,
     nameSortedGroups: Set<String>,
     searchQuery: String,
+    /** channel id -> number inside the selected group (falls back to the row position) */
+    numbering: Map<Long, Int> = emptyMap(),
     onSelectGroup: (TvGroupSelection) -> Unit,
     onPlayChannel: (ChannelEntity) -> Unit,
     onToggleFavorite: (ChannelEntity) -> Unit,
@@ -580,6 +582,7 @@ fun TvBrowseScreen(
                     selectedIndex = safeRow,
                     playingId = playingChannel?.id,
                     now = now,
+                    numbering = numbering,
                     showSchedule = false,                       // plain channel list, video stays visible on the right
                     highlightSelected = level == TvBrowseLevel.GUIDE,
                     slotNowFor = { ch ->
@@ -603,6 +606,7 @@ fun TvBrowseScreen(
                 windowEnd = windowEnd,
                 now = now,
                 searchQuery = searchQuery,
+                numbering = numbering,
                 programsOf = ::programsOf,
                 onPreviewBounds = onPreviewBounds
             )
@@ -664,6 +668,7 @@ private fun BrowseContent(
     windowEnd: Long,
     now: Long,
     searchQuery: String,
+    numbering: Map<Long, Int>,
     programsOf: (ChannelEntity) -> List<ProgramEntity>,
     onPreviewBounds: (Rect) -> Unit
 ) {
@@ -801,7 +806,7 @@ private fun BrowseContent(
                         BrowseRow(
                             k = k,
                             channel = ch,
-                            number = ch.channelNumber.takeIf { it > 0 } ?: (i + 1),
+                            number = numbering[ch.id] ?: (i + 1),
                             selected = i == selectedRow,
                             playing = ch.id == playingChannel?.id,
                             programs = programsOf(ch),
