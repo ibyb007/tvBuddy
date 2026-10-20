@@ -31,6 +31,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ClosedCaption
 import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.GraphicEq
@@ -144,6 +145,8 @@ fun TvPlayerOverlay(
     onNextChannel: () -> Unit,
     onPreviousChannel: () -> Unit,
     onSelectChannel: (ChannelEntity) -> Unit,
+    onRemoveRecent: (ChannelEntity) -> Unit = {},
+    onClearRecent: () -> Unit = {},
     onToggleFavorite: (ChannelEntity) -> Unit,
     onCycleAspect: () -> Unit,
     onOpenQualityPicker: () -> Unit = {},
@@ -173,6 +176,13 @@ fun TvPlayerOverlay(
     var playlistIndex by remember { mutableIntStateOf(0) }
     var audioIndex by remember { mutableIntStateOf(0) }          // 0 = Off, 1.. = audio tracks
     var okLongHandled by remember { mutableStateOf(false) }
+
+    // Recent strip: "Remove" popup on a card (long press OK) and ids already removed/cleared (hidden at once,
+    // before the database update arrives)
+    var removeOpen by remember { mutableStateOf(false) }
+    var hiddenIds by remember { mutableStateOf(setOf<Long>()) }
+    LaunchedEffect(recentChannels) { hiddenIds = emptySet() }
+    LaunchedEffect(panel) { if (panel != TvPanel.INFO) removeOpen = false }
 
     // Channel-change banner: shown on app launch and whenever the channel changes (until a panel is opened)
     var quickInfo by remember { mutableStateOf(false) }
@@ -231,7 +241,7 @@ fun TvPlayerOverlay(
     fun guideSlots(ch: ChannelEntity): List<EpgSlot> = slotsOf(ch, guideFrom, guideTo)
 
     // Recently played channels, most recent first (falls back to the full list)
-    val strip = recentChannels.ifEmpty { channelsList }.take(10)
+    val strip = recentChannels.filter { it.id !in hiddenIds }.take(10)
 
     fun currentIndex(): Int = channelsList.indexOfFirst { it.id == channel?.id }.coerceAtLeast(0)
 
@@ -261,7 +271,8 @@ fun TvPlayerOverlay(
 
     // With no channel playing, the channel list is the home screen: BACK leaves the app
     BackHandler(enabled = panel != TvPanel.NONE && !(channel == null && panel == TvPanel.CHANNELS)) {
-        panel = if (panel == TvPanel.PLAYLISTS) TvPanel.SETTINGS else TvPanel.NONE
+        if (removeOpen) removeOpen = false
+        else panel = if (panel == TvPanel.PLAYLISTS) TvPanel.SETTINGS else TvPanel.NONE
     }
 
     fun openInfo() {
@@ -319,8 +330,27 @@ fun TvPlayerOverlay(
                 if (errorMessage != null && channel != null) onSelectChannel(channel) else openInfo()
             }
             TvPanel.INFO -> {
-                if (stripIndex == 0) {
+                if (removeOpen) {
+                    // remove the focused card; focus goes to the card on its left, else the one on its right
+                    removeOpen = false
+                    val ch = strip.getOrNull(stripIndex - 1)
+                    if (ch != null) {
+                        hiddenIds = hiddenIds + ch.id
+                        onRemoveRecent(ch)
+                        val remaining = strip.size - 1
+                        stripIndex = when {
+                            stripIndex > 1 -> stripIndex - 1
+                            remaining > 0 -> 1
+                            else -> 0                       // nothing left: back on the TV guide tile
+                        }
+                    }
+                } else if (stripIndex == 0) {
                     openGuide()
+                } else if (stripIndex == strip.size + 1) {
+                    // Clear tile: wipe the history, focus lands on the TV guide tile
+                    hiddenIds = hiddenIds + recentChannels.map { it.id }
+                    onClearRecent()
+                    stripIndex = 0
                 } else {
                     strip.getOrNull(stripIndex - 1)?.let { onSelectChannel(it); panel = TvPanel.NONE }
                 }
@@ -361,6 +391,10 @@ fun TvPlayerOverlay(
     }
 
     fun onLongOk() {
+        if (panel == TvPanel.INFO && stripIndex in 1..strip.size) {
+            removeOpen = true
+            return
+        }
         if (panel == TvPanel.NONE || panel == TvPanel.INFO) {
             menuIndex = 0
             panel = TvPanel.MENU
@@ -372,6 +406,7 @@ fun TvPlayerOverlay(
         val next = (currentIndex() + delta + channelsList.size) % channelsList.size
         onSelectChannel(channelsList[next])
         stripIndex = 0
+        removeOpen = false
     }
 
     fun onDirection(key: Key, isRepeat: Boolean): Boolean {
@@ -386,9 +421,12 @@ fun TvPlayerOverlay(
                     else -> return false
                 }
             }
-            TvPanel.INFO -> when (key) {
+            TvPanel.INFO -> if (removeOpen) {
+                removeOpen = false                      // any direction closes the Remove popup
+            } else when (key) {
                 Key.DirectionLeft -> stripIndex = (stripIndex - 1).coerceAtLeast(0)
-                Key.DirectionRight -> stripIndex = (stripIndex + 1).coerceAtMost(strip.size)   // 0 = TV guide tile
+                // 0 = TV guide tile, 1..n = cards, n+1 = Clear tile
+                Key.DirectionRight -> stripIndex = (stripIndex + 1).coerceAtMost(if (strip.isEmpty()) 0 else strip.size + 1)
                 Key.DirectionUp -> if (!isRepeat) zap(-1)
                 Key.DirectionDown -> if (!isRepeat) { menuIndex = 0; panel = TvPanel.MENU }
                 else -> return false
@@ -573,7 +611,8 @@ fun TvPlayerOverlay(
                 strip = strip,
                 channelsList = channelsList,
                 stripIndex = stripIndex,
-                slotFor = ::slotNow
+                slotFor = ::slotNow,
+                removeOpen = removeOpen
             )
         }
 
@@ -755,7 +794,8 @@ private fun InfoBanner(
     stripIndex: Int,
     slotFor: (ChannelEntity) -> EpgSlot,
     /** channel-change banner: header only (no progress bar, no recent-channel strip) */
-    compact: Boolean = false
+    compact: Boolean = false,
+    removeOpen: Boolean = false
 ) {
     val k = rememberUiScale()
     Column(
@@ -925,6 +965,7 @@ private fun InfoBanner(
             itemsIndexed(strip) { index, ch ->
                 val selected = stripIndex == index + 1
                 val chSlot = slotFor(ch)
+                Box {
                 Column(
                     modifier = Modifier
                         .width(132.dp)
@@ -957,6 +998,51 @@ private fun InfoBanner(
                     Spacer(Modifier.height(4.dp))
                     // progress of the current slot (hour-long when there is no EPG)
                     MiniProgress(chSlot.progress(now), k = 1f, width = 116f)
+                }
+                if (selected && removeOpen) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(6.dp)
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(TvSelected)
+                            .padding(horizontal = 12.dp, vertical = 12.dp)
+                    ) {
+                        Text("Remove", color = Color.Black, fontSize = 15.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
+                }
+            }
+            // Last tile: clear the whole recent list
+            if (strip.isNotEmpty()) item {
+                val selected = stripIndex == strip.size + 1
+                Column(
+                    modifier = Modifier
+                        .width(132.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(if (selected) StripCardSelected else StripCard)
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(Modifier.height(48.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Delete,
+                            contentDescription = "Clear",
+                            tint = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Clear",
+                        color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                        fontSize = 12.sp,
+                        lineHeight = 14.sp,
+                        maxLines = 1
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Box(Modifier.fillMaxWidth().height(2.dp))
                 }
             }
         }
