@@ -174,6 +174,16 @@ fun TvPlayerOverlay(
     var audioIndex by remember { mutableIntStateOf(0) }          // 0 = Off, 1.. = audio tracks
     var okLongHandled by remember { mutableStateOf(false) }
 
+    // Channel-change banner: shown on app launch and whenever the channel changes (until a panel is opened)
+    var quickInfo by remember { mutableStateOf(false) }
+    LaunchedEffect(channel?.id) {
+        if (channel != null) {
+            quickInfo = true
+            delay(5000)
+            quickInfo = false
+        }
+    }
+
     // Remember the previously played channel for the RIGHT key
     var trackedChannel by remember { mutableStateOf<ChannelEntity?>(null) }
     var previousChannel by remember { mutableStateOf<ChannelEntity?>(null) }
@@ -520,7 +530,7 @@ fun TvPlayerOverlay(
 
         // Clock (top-right) + playlist label (top-left) while a panel other than the list is open
         AnimatedVisibility(
-            visible = panel == TvPanel.INFO || panel == TvPanel.MENU,
+            visible = panel == TvPanel.INFO || panel == TvPanel.MENU || (quickInfo && panel == TvPanel.NONE),
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter)
@@ -530,7 +540,10 @@ fun TvPlayerOverlay(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    channel?.groupTitle ?: "",
+                    listOfNotNull(
+                        playlists.firstOrNull { it.id == channel?.playlistId }?.name,
+                        channel?.groupTitle
+                    ).filter { it.isNotBlank() }.joinToString("  •  "),
                     color = Color.White,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Medium
@@ -561,6 +574,27 @@ fun TvPlayerOverlay(
                 channelsList = channelsList,
                 stripIndex = stripIndex,
                 slotFor = ::slotNow
+            )
+        }
+
+        // ---------- Channel-change banner (info header only: no progress bar / strip) ----------
+        AnimatedVisibility(
+            visible = quickInfo && panel == TvPanel.NONE && errorMessage == null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter)
+        ) {
+            InfoBanner(
+                channel = channel,
+                slot = channel?.let(::slotNow),
+                nextSlot = channel?.let(::slotNext),
+                now = now,
+                streamInfo = streamInfo,
+                strip = emptyList(),
+                channelsList = channelsList,
+                stripIndex = 0,
+                slotFor = ::slotNow,
+                compact = true
             )
         }
 
@@ -719,7 +753,9 @@ private fun InfoBanner(
     strip: List<ChannelEntity>,
     channelsList: List<ChannelEntity>,
     stripIndex: Int,
-    slotFor: (ChannelEntity) -> EpgSlot
+    slotFor: (ChannelEntity) -> EpgSlot,
+    /** channel-change banner: header only (no progress bar, no recent-channel strip) */
+    compact: Boolean = false
 ) {
     val k = rememberUiScale()
     Column(
@@ -776,7 +812,7 @@ private fun InfoBanner(
                         )
                         Spacer(Modifier.width(24.dp))
                         Text(
-                            "${channel.channelNumber.takeIf { it > 0 } ?: (channelsList.indexOfFirst { it.id == channel.id } + 1)}  ${channel.name}",
+                            "${channelsList.indexOfFirst { it.id == channel.id } + 1}  ${channel.name}",
                             color = Color.White,
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -821,6 +857,7 @@ private fun InfoBanner(
                     }
                 }
             }
+            if (compact) return@Column
             Spacer(Modifier.height(8.dp))
             // Full-width programme progress with a knob (hour-long slot when there is no EPG)
             val p = slot.progress(now).coerceIn(0f, 1f)
@@ -961,7 +998,9 @@ internal fun ChannelListPanel(
     slotNowFor: (ChannelEntity) -> EpgSlot,
     scheduleFor: (ChannelEntity) -> List<EpgSlot>,
     showSchedule: Boolean = true,
-    highlightSelected: Boolean = true
+    highlightSelected: Boolean = true,
+    /** channel id -> number inside its group; rows fall back to their 1-based position */
+    numbering: Map<Long, Int> = emptyMap()
 ) {
     val k = rememberUiScale()
     // opens already positioned on the selected row (no scroll animation when the panel appears)
@@ -1029,7 +1068,7 @@ internal fun ChannelListPanel(
                         }
                         Spacer(Modifier.width((24 * k).dp))
                         Column(modifier = Modifier.weight(1f)) {
-                            val num = ch.channelNumber.takeIf { it > 0 } ?: (i + 1)
+                            val num = numbering[ch.id] ?: (i + 1)
                             Text(
                                 "$num  ${ch.name}",
                                 color = fg,
@@ -1102,7 +1141,7 @@ internal fun ChannelListPanel(
                     Spacer(Modifier.width((16 * k).dp))
                     Column {
                         Text(
-                            "${selected.channelNumber.takeIf { it > 0 } ?: (selectedIndex + 1)}  ${selected.name}",
+                            "${numbering[selected.id] ?: (selectedIndex + 1)}  ${selected.name}",
                             color = Color.White,
                             fontSize = (32 * k).sp,
                             fontWeight = FontWeight.Medium,
