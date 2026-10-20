@@ -189,6 +189,8 @@ fun HomeScreen(
     // true while the group options panel is open: the TV page must then draw above the preview video
     var tvOptionsOpen by remember { mutableStateOf(false) }
     var showTvSearch by remember { mutableStateOf(false) }
+    // Movies / Shows page opened from the TV rail (MOVIE or SHOW), null = closed
+    var vodType by remember { mutableStateOf<String?>(null) }
 
     // Search input toggle
     var isSearchActive by remember { mutableStateOf(false) }
@@ -353,6 +355,9 @@ fun HomeScreen(
                     onClearSearch = { viewModel.setSearchQuery("") },
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     onExit = exitTv,
+                    hasMovies = playlists.any { it.isActive && it.movieCount > 0 },
+                    hasShows = playlists.any { it.isActive && it.showCount > 0 },
+                    onOpenVod = { vodType = it },
                     onPreviewBounds = { previewBounds.value = it },
                     overlayMode = tvBrowseOverlay,
                     onDismiss = { tvBrowse = null },
@@ -360,6 +365,25 @@ fun HomeScreen(
                     // normal TV page sits under the video (which only shows in its preview slot);
                     // the overlay page must sit ABOVE the full-screen video
                     modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay || tvOptionsOpen) 2f else 0f)
+                )
+            }
+
+            // Movies / Shows page: above the TV page and the preview video
+            vodType?.let { type ->
+                com.example.ui.components.TvVodScreen(
+                    contentType = type,
+                    itemsFlow = remember(type) { viewModel.vodChannels(type) },
+                    groups = allChannelGroups,
+                    playlists = playlists,
+                    onPlay = { item ->
+                        viewModel.playVod(item)
+                        vodType = null
+                        tvBrowse = null
+                    },
+                    onToggleMyList = { viewModel.toggleVodFavorite(it) },
+                    onHideGroup = { id, title -> viewModel.setGroupVisibility(id, title, false, type) },
+                    onBack = { vodType = null },
+                    modifier = Modifier.fillMaxSize().zIndex(4f)
                 )
             }
 
