@@ -902,6 +902,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    // ---- Movies / Shows (VOD) ----
+    /** All movies or all shows of every playlist; collected only while the Movies / Shows page is open. */
+    fun vodChannels(contentType: String): kotlinx.coroutines.flow.Flow<List<ChannelEntity>> = repository.vodChannels(contentType)
+
+    fun toggleVodFavorite(channel: ChannelEntity) {
+        viewModelScope.launch { repository.toggleFavorite(channel.id, channel.isFavorite) }
+    }
+
+    /** Opens a movie in the player (Stalker movies first get their real link from the portal). */
+    fun playVod(channel: ChannelEntity) {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            repository.resolvePlayable(channel).fold(
+                onSuccess = { playChannel(it) },
+                onFailure = {
+                    android.widget.Toast.makeText(app, it.localizedMessage ?: "Can't play this", android.widget.Toast.LENGTH_LONG).show()
+                }
+            )
+        }
+    }
+
     /** Removes one channel from the recent / history strip. */
     fun removeFromHistory(channel: ChannelEntity) {
         viewModelScope.launch { repository.removeHistory(channel.id) }
