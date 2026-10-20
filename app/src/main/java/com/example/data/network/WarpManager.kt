@@ -61,13 +61,22 @@ object WarpManager {
     /** Call once, before any HTTP client is built. Restores the last on/off choice. */
     fun init(context: Context) {
         synchronized(lock) {
-            if (initialised) return
+            if (initialised) {
+                // The process outlived the previous Activity (exit -> relaunch): shutdown() stopped the tunnel
+                // but kept "enabled", so bring it back up instead of showing "Enabled, not running".
+                val st = _state.value
+                if (st.enabled && (st.phase == Phase.OFF || st.phase == Phase.ERROR)) {
+                    _state.value = State(enabled = true, phase = Phase.STARTING)
+                    startAsync()
+                }
+                return
+            }
             initialised = true
             appContext = context.applicationContext
         }
         installProxySelector()
         val enabled = prefs().getBoolean(KEY_ENABLED, false)
-        _state.value = State(enabled = enabled)
+        _state.value = State(enabled = enabled, phase = if (enabled) Phase.STARTING else Phase.OFF)
         if (enabled) startAsync()
     }
 
