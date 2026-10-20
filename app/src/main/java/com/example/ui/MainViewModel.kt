@@ -9,6 +9,7 @@ import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
+import com.example.data.model.ContentType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.model.toSpoofProfile
@@ -64,7 +65,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playbackHistory = repository.playbackHistory.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val allEpgSources = repository.allEpgSources.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val allPlaylistEpgCrossRefs = repository.allPlaylistEpgCrossRefs.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    /** Groups of every content type (TV, movies, shows): what "Manage groups" lists. */
     val allChannelGroups = repository.allChannelGroups.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    /** Live TV groups only: movie / show groups must never hide or reorder live channels. */
+    private val liveGroups = repository.liveChannelGroups.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
     /** Recently played channels, most recent first (unique). */
     val recentChannels: StateFlow<List<ChannelEntity>> = combine(repository.playbackHistory, rawChannels) { history, channels ->
@@ -169,7 +173,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Make sure every playlist has its group rows (older playlists were imported before groups were tracked),
         // so "Manage groups" always lists all groups of a playlist.
         viewModelScope.launch {
-            combine(repository.allPlaylists, repository.allChannels, repository.allChannelGroups) { pls, chs, groups ->
+            combine(repository.allPlaylists, repository.allChannels, repository.liveChannelGroups) { pls, chs, groups ->
                 Triple(pls, chs, groups)
             }.flowOn(kotlinx.coroutines.Dispatchers.Default).collect { (pls, chs, groups) ->
                 if (chs.isEmpty()) return@collect
@@ -201,7 +205,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val categories: StateFlow<List<String>> = combine(
         rawChannels,
         allPlaylists,
-        allChannelGroups
+        liveGroups
     ) { channels, playlists, groups ->
         val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
         val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
@@ -223,7 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val tvGroupSections: StateFlow<List<TvGroupSection>> = combine(
         rawChannels,
         allPlaylists,
-        allChannelGroups
+        liveGroups
     ) { channels, playlists, groups ->
         val titlesByPlaylist = channels.groupBy { it.playlistId }
             .mapValues { (_, list) -> list.map { it.groupTitle }.filter { it.isNotBlank() }.distinct() }
@@ -306,7 +310,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val selectionChannels: StateFlow<List<ChannelEntity>> = combine(
         rawChannels,
         allPlaylists,
-        allChannelGroups,
+        liveGroups,
         filterState
     ) { channels, playlists, groups, fs ->
         if (fs.tvMode) {
@@ -340,7 +344,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val playingList: StateFlow<List<ChannelEntity>> = combine(
         rawChannels,
         allPlaylists,
-        allChannelGroups,
+        liveGroups,
         combine(_playContext, groupViewPrefs, playerManager.currentChannel) { c, v, cur -> Triple(c, v, cur) }
     ) { channels, playlists, groups, (ctx, viewPrefs, cur) ->
         val inContext = applySelection(channels, playlists, groups, ctx, viewPrefs.first, viewPrefs.second)
@@ -561,7 +565,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun contextContains(channel: ChannelEntity): Boolean =
         applySelection(
-            rawChannels.value, allPlaylists.value, allChannelGroups.value,
+            rawChannels.value, allPlaylists.value, liveGroups.value,
             _playContext.value, _favOnlyGroups.value, _nameSortedGroups.value
         ).any { it.id == channel.id }
 
@@ -631,8 +635,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---- Group Actions ----
-    fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean) {
-        viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible) }
+    fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean, contentType: String = ContentType.TV) {
+        viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible, contentType) }
     }
 
     // ---- Audio boost (Settings > Audio boost, TV long-OK menu) ----
@@ -704,16 +708,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>) {
-        viewModelScope.launch { repository.setGroupsVisibility(playlistId, changes) }
+    fun setGroupsVisibility(playlistId: Long, changes: Map<String, Boolean>, contentType: String = ContentType.TV) {
+        viewModelScope.launch { repository.setGroupsVisibility(playlistId, changes, contentType) }
     }
 
-    fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean) {
-        viewModelScope.launch { repository.setAllGroupsVisibility(playlistId, isVisible) }
+    fun setAllGroupsVisibility(playlistId: Long, isVisible: Boolean, contentType: String = ContentType.TV) {
+        viewModelScope.launch { repository.setAllGroupsVisibility(playlistId, isVisible, contentType) }
     }
 
-    fun reorderGroups(playlistId: Long, orderedTitles: List<String>) {
-        viewModelScope.launch { repository.reorderGroups(playlistId, orderedTitles) }
+    fun reorderGroups(playlistId: Long, orderedTitles: List<String>, contentType: String = ContentType.TV) {
+        viewModelScope.launch { repository.reorderGroups(playlistId, orderedTitles, contentType) }
     }
 
     // ---- EPG Source Actions ----
@@ -823,50 +827,77 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---- Playlist Import Actions ----
-    fun addM3uPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+    private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
+    val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
+
+    private fun runImport(failPrefix: String, block: suspend () -> Result<TvBuddyRepository.ImportResult>) {
+        if (_importState.value is ImportUiState.Processing) return
+        _importState.value = ImportUiState.Processing
         viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addM3uPlaylist(name, source, isRawContent, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count -> _uiMessage.value = UiMessage(text = "Imported $count channels successfully!") },
-                onFailure = { err -> _uiMessage.value = UiMessage(text = "Failed to load M3U: ${err.localizedMessage}", isError = true) }
+            block().fold(
+                onSuccess = { _importState.value = ImportUiState.Done(it.playlistId, it.name, it.counts) },
+                onFailure = { _importState.value = ImportUiState.Failed("$failPrefix: ${it.localizedMessage ?: "unknown error"}") }
             )
         }
     }
 
-    fun addXtreamPlaylist(name: String, serverUrl: String, user: String, pass: String, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+    fun addM3uPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) =
+        runImport("Failed to load M3U") { repository.addM3uPlaylist(name, source, isRawContent, preset) }
+
+    fun addXtreamPlaylist(
+        name: String, serverUrl: String, user: String, pass: String,
+        preset: SpoofPreset = SpoofPreset.TIVIMATE,
+        includeTv: Boolean = true, includeVod: Boolean = false
+    ) = runImport("Xtream connection error") {
+        repository.addXtreamPlaylist(name, serverUrl, user, pass, preset, includeTv, includeVod)
+    }
+
+    fun addStalkerPlaylist(
+        name: String, portalUrl: String, mac: String,
+        preset: SpoofPreset = SpoofPreset.TIVIMATE,
+        username: String = "", password: String = "",
+        deviceId: String = "", deviceId2: String = "", serial: String = "",
+        includeTv: Boolean = true, includeVod: Boolean = false
+    ) = runImport("Stalker portal error") {
+        repository.addStalkerPlaylist(name, portalUrl, mac, preset, username, password, deviceId, deviceId2, serial, includeTv, includeVod)
+    }
+
+    fun addJsonPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) =
+        runImport("JSON parsing error") { repository.addJsonPlaylist(name, source, isRawContent, preset) }
+
+    /** "Done" on the processed screen: keeps the playlist (under the name typed there). */
+    fun finishImport(playlistId: Long, name: String) {
         viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addXtreamPlaylist(name, serverUrl, user, pass, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count -> _uiMessage.value = UiMessage(text = "Connected! Loaded $count Xtream channels.") },
-                onFailure = { err -> _uiMessage.value = UiMessage(text = "Xtream connection error: ${err.localizedMessage}", isError = true) }
-            )
+            val pl = repository.getPlaylist(playlistId)
+            if (pl != null && name.isNotBlank() && name.trim() != pl.name) {
+                repository.updatePlaylist(pl.copy(name = name.trim()))
+            }
+            _importState.value = ImportUiState.Idle
         }
     }
 
-    fun addStalkerPlaylist(name: String, portalUrl: String, mac: String, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+    /** "Back" on the processed screen: the playlist that was just added is discarded again. */
+    fun discardImport(playlistId: Long) {
         viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addStalkerPlaylist(name, portalUrl, mac, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count -> _uiMessage.value = UiMessage(text = "Stalker portal linked! Loaded $count channels.") },
-                onFailure = { err -> _uiMessage.value = UiMessage(text = "Stalker handshake error: ${err.localizedMessage}", isError = true) }
-            )
+            repository.getPlaylist(playlistId)?.let { repository.deletePlaylist(it) }
+            _importState.value = ImportUiState.Idle
         }
     }
 
-    fun addJsonPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) {
+    fun resetImportState() {
+        if (_importState.value !is ImportUiState.Processing) _importState.value = ImportUiState.Idle
+    }
+
+    /** "Apply changes" in the portal parameters: saves them and processes the playlist again with them. */
+    fun applyPortalParams(updated: PlaylistEntity) {
+        val key = UpdateKeys.playlist(updated.id)
+        if (isUpdateRunning(key)) return
+        setUpdateState(key, UpdateRowState(running = true))
         viewModelScope.launch {
-            _isLoading.value = true
-            val result = repository.addJsonPlaylist(name, source, isRawContent, preset)
-            _isLoading.value = false
-            result.fold(
-                onSuccess = { count -> _uiMessage.value = UiMessage(text = "JSON playlist parsed: $count channels added.") },
-                onFailure = { err -> _uiMessage.value = UiMessage(text = "JSON parsing error: ${err.localizedMessage}", isError = true) }
+            repository.updatePlaylist(updated)
+            repository.refreshPlaylist(updated.id).fold(
+                onSuccess = { setUpdateState(key, UpdateRowState(message = "Changes applied, playlist is updated")) },
+                onFailure = { setUpdateState(key, UpdateRowState(message = "Update failed: ${it.localizedMessage ?: "unknown error"}", isError = true)) }
             )
         }
     }
