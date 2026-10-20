@@ -344,11 +344,12 @@ class StalkerClient(
         macAddress: String,
         cmd: String,
         token: String,
-        userAgent: String
+        userAgent: String,
+        kind: String = "itv"
     ): String = withContext(Dispatchers.IO) {
         val loadPhp = getLoadPhpUrl(portalUrl)
         val mac = macAddress.trim().uppercase()
-        val url = "$loadPhp?type=itv&action=create_link&type=itv&cmd=${enc(cmd)}&mac=$mac"
+        val url = "$loadPhp?type=$kind&action=create_link&cmd=${enc(cmd)}&mac=$mac"
         val root = getJson(url, userAgent, mac, token)
         val cmdLink = root?.optJSONObject("js")?.optString("cmd").orEmpty()
         if (cmdLink.isNotBlank()) cleanCmd(cmdLink) else cmd
