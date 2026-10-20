@@ -36,6 +36,9 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET channelCount = :count WHERE id = :playlistId")
     suspend fun updateChannelCount(playlistId: Long, count: Int)
 
+    @Query("UPDATE playlists SET channelCount = :tv, movieCount = :movies, showCount = :shows, expirationDate = COALESCE(:expiration, expirationDate), lastUpdated = :now WHERE id = :playlistId")
+    suspend fun updateContentCounts(playlistId: Long, tv: Int, movies: Int, shows: Int, expiration: String?, now: Long)
+
     @Query("UPDATE playlists SET sortOrder = :sortOrder WHERE id = :playlistId")
     suspend fun updatePlaylistSortOrder(playlistId: Long, sortOrder: Int)
 
