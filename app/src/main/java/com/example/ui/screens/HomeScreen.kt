@@ -121,6 +121,8 @@ fun HomeScreen(
     val playlistsSorting by viewModel.playlistsSorting.collectAsStateWithLifecycle()
     val updateStates by viewModel.updateStates.collectAsStateWithLifecycle()
     val playbackLogEnabled by viewModel.playbackLogEnabled.collectAsStateWithLifecycle()
+    val audioBoostProfile by viewModel.audioBoostProfile.collectAsStateWithLifecycle()
+    val warpState by viewModel.warpState.collectAsStateWithLifecycle()
     val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
     var spoofPlaylistId by remember { mutableStateOf<Long?>(null) }
     val tvSelection by viewModel.tvSelection.collectAsStateWithLifecycle()
@@ -382,6 +384,8 @@ fun HomeScreen(
                     onCycleAspect = { viewModel.cycleAspect() },
                     onOpenQualityPicker = { showQualityDialog = true },
                     onOpenEpgGuide = { showEpgGuideDialog = true },
+                    audioBoostProfile = audioBoostProfile,
+                    onCycleAudioBoost = { viewModel.cycleAudioBoost() },
                     onOpenAudioTracks = { showAudioDialog = true },
                     audioTracks = audioTracks,
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
@@ -845,6 +849,10 @@ fun HomeScreen(
             onTogglePlaybackLog = { viewModel.setPlaybackLogging(it) },
             onExportPlaybackLog = { viewModel.exportPlaybackLog() },
             onOpenSpoofEngine = { showSpoofDialog = true },
+            audioBoostProfile = audioBoostProfile,
+            onSelectAudioBoost = { viewModel.setAudioBoostProfile(it) },
+            warpState = warpState,
+            onToggleWarp = { viewModel.setWarpEnabled(it) },
             onEditPlaylistSpoof = { spoofPlaylistId = it.id },
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
             onTriggerClearEpg = { viewModel.triggerClearEpg() }
