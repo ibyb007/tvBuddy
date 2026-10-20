@@ -145,6 +145,7 @@ fun TvPlayerOverlay(
     onNextChannel: () -> Unit,
     onPreviousChannel: () -> Unit,
     onSelectChannel: (ChannelEntity) -> Unit,
+    onRecallPrevious: () -> Unit = {},
     onRemoveRecent: (ChannelEntity) -> Unit = {},
     onClearRecent: () -> Unit = {},
     onToggleFavorite: (ChannelEntity) -> Unit,
@@ -194,15 +195,6 @@ fun TvPlayerOverlay(
         }
     }
 
-    // Remember the previously played channel for the RIGHT key
-    var trackedChannel by remember { mutableStateOf<ChannelEntity?>(null) }
-    var previousChannel by remember { mutableStateOf<ChannelEntity?>(null) }
-    LaunchedEffect(channel?.id) {
-        if (channel != null && trackedChannel?.id != channel.id) {
-            previousChannel = trackedChannel
-            trackedChannel = channel
-        }
-    }
 
     var guideRow by remember { mutableIntStateOf(0) }
     var guideCursorMs by remember { mutableLongStateOf(0L) }   // a point in time inside the focused cell
@@ -417,7 +409,7 @@ fun TvPlayerOverlay(
                     Key.DirectionUp -> zap(-1)
                     Key.DirectionDown -> zap(+1)
                     Key.DirectionLeft -> openChannelList()
-                    Key.DirectionRight -> previousChannel?.let(onSelectChannel)
+                    Key.DirectionRight -> onRecallPrevious()
                     else -> return false
                 }
             }
