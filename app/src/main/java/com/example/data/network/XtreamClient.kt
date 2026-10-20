@@ -1,12 +1,15 @@
 package com.example.data.network
 
+import android.util.JsonReader
 import com.example.data.local.entity.ChannelEntity
+import com.example.data.model.ContentType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InputStreamReader
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 data class XtreamAuthResult(
@@ -20,9 +23,16 @@ data class XtreamAuthResult(
 class XtreamClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
         .build()
 ) {
+
+    private fun enc(v: String) = URLEncoder.encode(v, "UTF-8")
+
+    private fun api(cleanUrl: String, username: String, password: String, action: String? = null): String {
+        val base = "$cleanUrl/player_api.php?username=${enc(username)}&password=${enc(password)}"
+        return if (action == null) base else "$base&action=$action"
+    }
 
     suspend fun authenticate(
         serverUrl: String,
@@ -31,10 +41,8 @@ class XtreamClient(
         userAgent: String
     ): XtreamAuthResult = withContext(Dispatchers.IO) {
         val cleanUrl = cleanServerUrl(serverUrl)
-        val url = "$cleanUrl/player_api.php?username=$username&password=$password"
-
         val request = Request.Builder()
-            .url(url)
+            .url(api(cleanUrl, username, password))
             .header("User-Agent", userAgent)
             .build()
 
@@ -70,85 +78,125 @@ class XtreamClient(
         }
     }
 
+    /**
+     * Live channels and / or VOD (movies and shows) of an Xtream Codes account.
+     * Movies and shows are returned as [ContentType.MOVIE] / [ContentType.SHOW] entries; a show is one entry
+     * per series (its episodes are not expanded here).
+     */
     suspend fun fetchChannels(
         serverUrl: String,
         username: String,
         password: String,
         playlistId: Long,
-        userAgent: String
+        userAgent: String,
+        includeTv: Boolean = true,
+        includeVod: Boolean = false
     ): List<ChannelEntity> = withContext(Dispatchers.IO) {
         val cleanUrl = cleanServerUrl(serverUrl)
+        val out = ArrayList<ChannelEntity>()
 
-        // 1. Fetch categories
-        val categoriesMap = mutableMapOf<String, String>()
-        try {
-            val catUrl = "$cleanUrl/player_api.php?username=$username&password=$password&action=get_live_categories"
-            val catRequest = Request.Builder()
-                .url(catUrl)
-                .header("User-Agent", userAgent)
-                .build()
-
-            okHttpClient.newCall(catRequest).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
-                    val array = JSONArray(body)
-                    for (i in 0 until array.length()) {
-                        val obj = array.optJSONObject(i) ?: continue
-                        val id = obj.optString("category_id")
-                        val name = obj.optString("category_name")
-                        if (id.isNotBlank() && name.isNotBlank()) {
-                            categoriesMap[id] = name
-                        }
-                    }
-                }
+        if (includeTv) {
+            val cats = fetchCategories(cleanUrl, username, password, "get_live_categories", userAgent)
+            streamArray(api(cleanUrl, username, password, "get_live_streams"), userAgent) { item ->
+                val streamId = item["stream_id"].orEmpty()
+                if (streamId.isBlank()) return@streamArray
+                out.add(
+                    ChannelEntity(
+                        playlistId = playlistId,
+                        streamId = streamId,
+                        name = item["name"]?.ifBlank { null } ?: "Channel $streamId",
+                        streamUrl = "$cleanUrl/live/$username/$password/$streamId.m3u8",
+                        logoUrl = item["stream_icon"]?.ifBlank { null },
+                        groupTitle = cats[item["category_id"].orEmpty()] ?: "Live TV",
+                        channelNumber = item["num"]?.toIntOrNull() ?: (out.size + 1),
+                        contentType = ContentType.TV,
+                        httpUserAgent = userAgent
+                    )
+                )
             }
-        } catch (_: Exception) {}
+        }
 
-        // 2. Fetch live streams
-        val channels = mutableListOf<ChannelEntity>()
+        if (includeVod) {
+            val movieCats = fetchCategories(cleanUrl, username, password, "get_vod_categories", userAgent)
+            var movieNo = 0
+            streamArray(api(cleanUrl, username, password, "get_vod_streams"), userAgent) { item ->
+                val streamId = item["stream_id"].orEmpty()
+                if (streamId.isBlank()) return@streamArray
+                val ext = item["container_extension"]?.ifBlank { null } ?: "mp4"
+                movieNo++
+                out.add(
+                    ChannelEntity(
+                        playlistId = playlistId,
+                        streamId = streamId,
+                        name = item["name"]?.ifBlank { null } ?: "Movie $streamId",
+                        streamUrl = "$cleanUrl/movie/$username/$password/$streamId.$ext",
+                        logoUrl = item["stream_icon"]?.ifBlank { null },
+                        groupTitle = movieCats[item["category_id"].orEmpty()] ?: "Movies",
+                        channelNumber = movieNo,
+                        contentType = ContentType.MOVIE,
+                        httpUserAgent = userAgent
+                    )
+                )
+            }
+
+            val showCats = fetchCategories(cleanUrl, username, password, "get_series_categories", userAgent)
+            var showNo = 0
+            streamArray(api(cleanUrl, username, password, "get_series"), userAgent) { item ->
+                val seriesId = item["series_id"].orEmpty()
+                if (seriesId.isBlank()) return@streamArray
+                showNo++
+                out.add(
+                    ChannelEntity(
+                        playlistId = playlistId,
+                        streamId = seriesId,
+                        name = item["name"]?.ifBlank { null } ?: "Show $seriesId",
+                        // a show is not directly playable: its episodes come from get_series_info
+                        streamUrl = "xtream-series://$seriesId",
+                        logoUrl = item["cover"]?.ifBlank { null },
+                        groupTitle = showCats[item["category_id"].orEmpty()] ?: "Shows",
+                        channelNumber = showNo,
+                        contentType = ContentType.SHOW,
+                        httpUserAgent = userAgent
+                    )
+                )
+            }
+        }
+        out
+    }
+
+    private fun fetchCategories(
+        cleanUrl: String,
+        username: String,
+        password: String,
+        action: String,
+        userAgent: String
+    ): Map<String, String> {
+        val map = HashMap<String, String>()
         try {
-            val streamsUrl = "$cleanUrl/player_api.php?username=$username&password=$password&action=get_live_streams"
-            val streamsRequest = Request.Builder()
-                .url(streamsUrl)
-                .header("User-Agent", userAgent)
-                .build()
+            streamArray(api(cleanUrl, username, password, action), userAgent) { obj ->
+                val id = obj["category_id"].orEmpty()
+                val name = obj["category_name"].orEmpty()
+                if (id.isNotBlank() && name.isNotBlank()) map[id] = name
+            }
+        } catch (_: Exception) {
+        }
+        return map
+    }
 
-            okHttpClient.newCall(streamsRequest).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
-                    val array = JSONArray(body)
-                    for (i in 0 until array.length()) {
-                        val item = array.optJSONObject(i) ?: continue
-                        val streamId = item.optString("stream_id")
-                        val name = item.optString("name", "Channel $streamId")
-                        val streamIcon = item.optString("stream_icon").ifBlank { null }
-                        val categoryId = item.optString("category_id")
-                        val groupTitle = categoriesMap[categoryId] ?: "Live TV"
-                        val num = item.optInt("num", i + 1)
-
-                        // Standard Xtream live stream URL format:
-                        val streamUrl = "$cleanUrl/live/$username/$password/$streamId.m3u8"
-
-                        channels.add(
-                            ChannelEntity(
-                                playlistId = playlistId,
-                                streamId = streamId,
-                                name = name,
-                                streamUrl = streamUrl,
-                                logoUrl = streamIcon,
-                                groupTitle = groupTitle,
-                                channelNumber = num,
-                                httpUserAgent = userAgent
-                            )
-                        )
-                    }
+    /** Streams the array behind [url] item by item. A failing request just yields no items. */
+    private fun streamArray(url: String, userAgent: String, onItem: (Map<String, String>) -> Unit) {
+        val request = Request.Builder().url(url).header("User-Agent", userAgent).build()
+        try {
+            okHttpClient.newCall(request).execute().use { resp ->
+                if (!resp.isSuccessful) return
+                val stream = resp.body?.byteStream() ?: return
+                JsonReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
+                    JsonStream.forEachObject(reader, onItem)
                 }
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
-
-        channels
     }
 
     private fun cleanServerUrl(url: String): String {
