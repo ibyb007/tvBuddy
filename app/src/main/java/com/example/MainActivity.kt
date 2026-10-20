@@ -17,6 +17,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import com.example.data.network.WarpManager
 import com.example.ui.LogoLoader
 import java.net.CookieHandler
 import java.net.CookieManager
@@ -65,9 +66,12 @@ class MainActivity : ComponentActivity() {
      * - Cookie handler: HLS providers (Akamai/Hotstar style) hand out auth cookies on the master playlist
      *   that the variant playlists / segments need; HttpURLConnection (used by ExoPlayer) only keeps
      *   them when a default CookieHandler exists.
+     * - WARP mode: installs the proxy selector (must happen before any HTTP client is built) and
+     *   restarts the tunnel if it was left enabled.
      * - Logo loader: see [LogoLoader].
      */
     private fun installNetworkDefaults() {
+        WarpManager.init(applicationContext)
         if (CookieHandler.getDefault() == null) {
             CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))
         }
@@ -124,6 +128,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (!isChangingConfigurations) viewModel.closePlayer()
+        if (isFinishing) WarpManager.shutdown()
     }
 
     private fun isRunningOnTv(): Boolean {
