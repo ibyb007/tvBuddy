@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -539,6 +540,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- Group Actions ----
     fun setGroupVisibility(playlistId: Long, groupTitle: String, isVisible: Boolean) {
         viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible) }
+    }
+
+    // ---- Audio boost (Settings > Audio boost, TV long-OK menu) ----
+    val audioBoostProfile: StateFlow<com.example.player.AudioBoostProfile> = playerManager.audioBoostProfile
+
+    fun setAudioBoostProfile(profile: com.example.player.AudioBoostProfile) {
+        playerManager.setAudioBoostProfile(profile)
+        showBoostToast(profile)
+    }
+
+    fun cycleAudioBoost() {
+        showBoostToast(playerManager.cycleAudioBoostProfile())
+    }
+
+    private fun showBoostToast(profile: com.example.player.AudioBoostProfile) {
+        // the settings drawer / action bar cover the message area, so use a toast
+        android.widget.Toast.makeText(
+            getApplication<Application>(), "Audio Boost: ${profile.title}", android.widget.Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    // ---- WARP mode (Settings > WARP mode) ----
+    val warpState: StateFlow<com.example.data.network.WarpManager.State> = com.example.data.network.WarpManager.state
+
+    fun setWarpEnabled(enabled: Boolean) {
+        com.example.data.network.WarpManager.setEnabled(enabled)
+        if (enabled) {
+            // reopen the playing channel once the tunnel is up so it streams through WARP
+            viewModelScope.launch {
+                val result = com.example.data.network.WarpManager.state
+                    .first { it.phase != com.example.data.network.WarpManager.Phase.STARTING }
+                if (result.phase == com.example.data.network.WarpManager.Phase.RUNNING) {
+                    restartCurrentChannel(null, _globalSpoof.value)
+                } else if (result.phase == com.example.data.network.WarpManager.Phase.ERROR) {
+                    _uiMessage.value = UiMessage(text = "WARP: ${result.message ?: "failed to start"}", isError = true)
+                }
+            }
+        } else {
+            viewModelScope.launch { restartCurrentChannel(null, _globalSpoof.value) }
+        }
     }
 
     // ---- Playback log (Settings > Playback log) ----
