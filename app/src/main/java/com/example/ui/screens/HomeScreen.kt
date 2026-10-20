@@ -404,6 +404,8 @@ fun HomeScreen(
                     allPrograms = allCurrentPrograms,
                     epgPrograms = epgWindowPrograms,
                     recentChannels = recentChannels,
+                    onRemoveRecent = { viewModel.removeFromHistory(it) },
+                    onClearRecent = { viewModel.clearHistory() },
                     playlists = playlists,
                     onAddPlaylist = { showAddDialog = true },
                     onClosePlayer = exitTv,
