@@ -115,6 +115,7 @@ sealed class TiviSettingsRoute {
     data object Epg : TiviSettingsRoute()
     data object EpgSources : TiviSettingsRoute()
     data object AddEpgSourceUrl : TiviSettingsRoute()
+    data object AudioBoost : TiviSettingsRoute()
 }
 
 /** State of an inline "Update ..." row: spinner while [running], then a result [message]. */
@@ -194,7 +195,7 @@ private val LocalDrawerFocus = compositionLocalOf<DrawerFocusMemory?> { null }
  */
 private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when (route) {
     is TiviSettingsRoute.Main -> listOf(route)
-    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost -> listOf(TiviSettingsRoute.Main, route)
     is TiviSettingsRoute.ReorderPlaylists, is TiviSettingsRoute.PlaylistDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, route)
     is TiviSettingsRoute.PlaylistEpgSources ->
@@ -258,6 +259,10 @@ fun PlaylistManagerDialog(
     onTogglePlaybackLog: (Boolean) -> Unit = {},
     onExportPlaybackLog: () -> Unit = {},
     onOpenSpoofEngine: () -> Unit = {},
+    audioBoostProfile: com.example.player.AudioBoostProfile = com.example.player.AudioBoostProfile.OFF,
+    onSelectAudioBoost: (com.example.player.AudioBoostProfile) -> Unit = {},
+    warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
+    onToggleWarp: (Boolean) -> Unit = {},
     onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {}
 ) {
     val navStack = remember { mutableStateListOf<TiviSettingsRoute>().apply { addAll(routeChain(initialRoute)) } }
@@ -378,6 +383,10 @@ fun PlaylistManagerDialog(
                                 onOpenPlaylists = { navigateTo(TiviSettingsRoute.Playlists) },
                                 onOpenSpoofEngine = onOpenSpoofEngine,
                                 onOpenEpg = { navigateTo(TiviSettingsRoute.Epg) },
+                                audioBoostProfile = audioBoostProfile,
+                                onOpenAudioBoost = { navigateTo(TiviSettingsRoute.AudioBoost) },
+                                warpState = warpState,
+                                onToggleWarp = onToggleWarp,
                                 logEnabled = playbackLogEnabled,
                                 logCount = playbackLogCount,
                                 onToggleLog = onTogglePlaybackLog,
@@ -568,6 +577,11 @@ fun PlaylistManagerDialog(
                                 onDeleteSource = onDeleteEpgSource
                             )
 
+                            is TiviSettingsRoute.AudioBoost -> AudioBoostSubMenu(
+                                selected = audioBoostProfile,
+                                onSelect = onSelectAudioBoost
+                            )
+
                             is TiviSettingsRoute.AddEpgSourceUrl -> Unit
                         }
                     }
@@ -633,6 +647,10 @@ private fun MainSettingsMenu(
     onOpenPlaylists: () -> Unit,
     onOpenSpoofEngine: () -> Unit,
     onOpenEpg: () -> Unit,
+    audioBoostProfile: com.example.player.AudioBoostProfile,
+    onOpenAudioBoost: () -> Unit,
+    warpState: com.example.data.network.WarpManager.State,
+    onToggleWarp: (Boolean) -> Unit,
     logEnabled: Boolean,
     logCount: Int,
     onToggleLog: (Boolean) -> Unit,
@@ -666,6 +684,28 @@ private fun MainSettingsMenu(
                 )
             }
             item {
+                TiviMenuRow(
+                    title = "Audio boost",
+                    subtitle = audioBoostProfile.title,
+                    onClick = onOpenAudioBoost
+                )
+            }
+            item {
+                val starting = warpState.phase == com.example.data.network.WarpManager.Phase.STARTING
+                TiviSwitchRow(
+                    title = "WARP mode",
+                    subtitle = when (warpState.phase) {
+                        com.example.data.network.WarpManager.Phase.STARTING -> "Connecting to Cloudflare WARP..."
+                        com.example.data.network.WarpManager.Phase.RUNNING -> "Connected. App traffic goes through Cloudflare WARP"
+                        com.example.data.network.WarpManager.Phase.ERROR -> "Failed: ${warpState.message ?: "could not start"}"
+                        com.example.data.network.WarpManager.Phase.OFF ->
+                            if (warpState.enabled) "Enabled, not running" else "Route app traffic through Cloudflare WARP"
+                    },
+                    checked = warpState.enabled,
+                    onCheckedChange = { if (!starting) onToggleWarp(it) }
+                )
+            }
+            item {
                 TiviSwitchRow(
                     title = "Playback log (logcat)",
                     subtitle = if (logEnabled) "Recording playback errors ($logCount entries). Turning off clears the log"
@@ -683,6 +723,41 @@ private fun MainSettingsMenu(
                         onClick = onExportLog
                     )
                 }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 1b. AUDIO BOOST SUBMENU ("Audio boost")
+// ============================================================================
+
+@Composable
+private fun AudioBoostSubMenu(
+    selected: com.example.player.AudioBoostProfile,
+    onSelect: (com.example.player.AudioBoostProfile) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Audio boost")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(com.example.player.AudioBoostProfile.entries.toList()) { profile ->
+                TiviMenuRow(
+                    title = profile.title,
+                    subtitle = profile.description,
+                    onClick = { onSelect(profile) },
+                    trailingContent = { isFocused ->
+                        if (profile == selected) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "Selected",
+                                tint = if (isFocused) TiviFocusText else TiviAccentBlue
+                            )
+                        }
+                    }
+                )
             }
         }
     }
