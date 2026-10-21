@@ -217,6 +217,10 @@ class XtreamClient(
         }
     }
 
+    /**
+     * Category id -> name. Retried: a panel that is busy drops the odd request, and a dropped one used to leave
+     * every channel in a single "Live TV" group.
+     */
     private fun fetchCategories(
         cleanUrl: String,
         username: String,
@@ -224,31 +228,34 @@ class XtreamClient(
         action: String,
         userAgent: String
     ): Map<String, String> {
-        val map = HashMap<String, String>()
-        try {
-            streamArray(api(cleanUrl, username, password, action), userAgent) { obj ->
+        for (attempt in 0 until 3) {
+            val map = HashMap<String, String>()
+            val ok = streamArray(api(cleanUrl, username, password, action), userAgent) { obj ->
                 val id = obj["category_id"].orEmpty()
                 val name = obj["category_name"].orEmpty()
                 if (id.isNotBlank() && name.isNotBlank()) map[id] = name
             }
-        } catch (_: Exception) {
+            if (ok) return map
+            if (attempt < 2) try { Thread.sleep(400L * (attempt + 1)) } catch (_: InterruptedException) { break }
         }
-        return map
+        return emptyMap()
     }
 
     /** Streams the array behind [url] item by item. A failing request just yields no items. */
-    private fun streamArray(url: String, userAgent: String, onItem: (Map<String, String>) -> Unit) {
+    private fun streamArray(url: String, userAgent: String, onItem: (Map<String, String>) -> Unit): Boolean {
         val request = Request.Builder().url(url).header("User-Agent", userAgent).build()
-        try {
+        return try {
             okHttpClient.newCall(request).execute().use { resp ->
-                if (!resp.isSuccessful) return
-                val stream = resp.body?.byteStream() ?: return
+                if (!resp.isSuccessful) return@use false
+                val stream = resp.body?.byteStream() ?: return@use false
                 JsonReader(InputStreamReader(stream, Charsets.UTF_8)).use { reader ->
                     JsonStream.forEachObject(reader, onItem)
                 }
+                true
             }
         } catch (e: Exception) {
             e.printStackTrace()
+            false
         }
     }
 
