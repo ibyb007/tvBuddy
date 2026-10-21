@@ -133,7 +133,7 @@ private val OptionsBg = Color(0xFF1F2327)
 private val OptionsHeaderBg = Color(0xFF2A2E33)
 
 // ---- geometry on the 1080p design grid (scaled with rememberUiScale()) ----
-private const val RAIL_COLLAPSED_PX = 112f
+internal const val RAIL_COLLAPSED_PX = 112f
 private const val RAIL_EXPANDED_PX = 440f
 private const val GROUPS_PX = 500f
 private const val CONTENT_PAD_PX = 32f
@@ -970,12 +970,12 @@ private fun BrowseRow(
 // Rail
 // ---------------------------------------------------------------------------------------------
 
-private enum class RailId { SEARCH, TV, MOVIES, SHOWS, FAVORITES, SETTINGS }
+internal enum class RailId { SEARCH, TV, MOVIES, SHOWS, FAVORITES, SETTINGS }
 
-private class RailEntry(val id: RailId, val label: String, val icon: ImageVector)
+internal class RailEntry(val id: RailId, val label: String, val icon: ImageVector)
 
 /** Search, TV, Movies and Shows (only when there is VOD), Favorites; Settings is pinned to the bottom. */
-private fun buildRailEntries(hasMovies: Boolean, hasShows: Boolean): List<RailEntry> = buildList {
+internal fun buildRailEntries(hasMovies: Boolean, hasShows: Boolean): List<RailEntry> = buildList {
     add(RailEntry(RailId.SEARCH, "Search", Icons.Default.Search))
     add(RailEntry(RailId.TV, "TV", Icons.Default.Tv))
     if (hasMovies) add(RailEntry(RailId.MOVIES, "Movies", Icons.Default.Movie))
@@ -985,14 +985,16 @@ private fun buildRailEntries(hasMovies: Boolean, hasShows: Boolean): List<RailEn
 }
 
 @Composable
-private fun RailPanel(
+internal fun RailPanel(
     width: androidx.compose.ui.unit.Dp,
     k: Float,
     expanded: Boolean,
     focused: Boolean,
     selectedIndex: Int,
     entries: List<RailEntry>,
-    bgAlpha: Float = 1f
+    bgAlpha: Float = 1f,
+    /** The page the rail belongs to (its icon stays lit): TV on the TV page, Movies / Shows on the VOD page. */
+    currentId: RailId = RailId.TV
 ) {
     Box(
         modifier = Modifier
@@ -1046,14 +1048,14 @@ private fun RailPanel(
             ) {
                 entries.forEachIndexed { i, entry ->
                     if (entry.id != RailId.SETTINGS) {
-                        RailItem(k, entry, expanded, focused, i == selectedIndex, entry.id == RailId.TV)
+                        RailItem(k, entry, expanded, focused, i == selectedIndex, entry.id == currentId)
                     }
                 }
             }
 
             // Settings (bottom)
             Box(modifier = Modifier.align(Alignment.BottomStart).padding(bottom = (32 * k).dp)) {
-                RailItem(k, entries.last(), expanded, focused, selectedIndex == entries.lastIndex, false)
+                RailItem(k, entries.last(), expanded, focused, selectedIndex == entries.lastIndex, entries.last().id == currentId)
             }
         }
     }
