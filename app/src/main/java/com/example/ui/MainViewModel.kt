@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -201,28 +202,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playChannel(target)
     }
 
-    // Filtered categories respecting active playlists and group visibility (with fallback if groups table hasn't synced yet)
-    val categories: StateFlow<List<String>> = combine(
-        rawChannels,
-        allPlaylists,
-        liveGroups
-    ) { channels, playlists, groups ->
-        val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
-        val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
-
-        val filteredGroups = channels
-            .filter { ch ->
-                (activePlaylistIds == null || ch.playlistId in activePlaylistIds) &&
-                    "${ch.playlistId}_${ch.groupTitle}" !in hiddenGroupKeys
-            }
-            .map { it.groupTitle }
-            .distinct()
-            .filter { it.isNotBlank() }
-            .sorted()
-
-        listOf("All", "★ Favorites") + filteredGroups
-    }.stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", "★ Favorites"))
-
     /** Groups of each active playlist for the TV groups panel (hidden groups left out). */
     val tvGroupSections: StateFlow<List<TvGroupSection>> = combine(
         rawChannels,
@@ -249,6 +228,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }.flowOn(kotlinx.coroutines.Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+
+    /**
+     * Phone mode: the group chips. The same live TV groups the TV page shows (portal / Xtream / M3U order, hidden
+     * groups and inactive playlists left out), so Stalker portals and Xtream accounts get their groups there too.
+     */
+    val categories: StateFlow<List<String>> = tvGroupSections
+        .map { sections -> listOf("All", "★ Favorites") + sections.flatMap { it.groups }.distinct() }
+        .stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", "★ Favorites"))
 
     private data class FilterState(
         val category: String,
@@ -914,6 +901,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- Movies / Shows (VOD) ----
     /** All movies or all shows of every playlist; collected only while the Movies / Shows page is open. */
     fun vodChannels(contentType: String): kotlinx.coroutines.flow.Flow<List<ChannelEntity>> = repository.vodChannels(contentType)
+
+    // Movies / shows come from the portal when a group is opened (see TvBuddyRepository.loadVodGroup)
+    private val vodLoadCount = java.util.concurrent.atomic.AtomicInteger(0)
+    private val _vodLoading = MutableStateFlow(false)
+    /** True while a group (or the "All" list) is being downloaded. */
+    val vodLoading: StateFlow<Boolean> = _vodLoading.asStateFlow()
+    private var vodGroupJob: kotlinx.coroutines.Job? = null
+    private var vodAllJob: kotlinx.coroutines.Job? = null
+
+    private fun trackVodLoading(block: suspend () -> Unit): kotlinx.coroutines.Job = viewModelScope.launch {
+        _vodLoading.value = vodLoadCount.incrementAndGet() > 0
+        try { block() } finally { _vodLoading.value = vodLoadCount.decrementAndGet() > 0 }
+    }
+
+    /** A movie / show group got the focus: fetch what is missing of it (the previous group's download is dropped). */
+    fun openVodGroup(playlistId: Long, type: String, title: String) {
+        vodGroupJob?.cancel()
+        vodGroupJob = trackVodLoading { repository.loadVodGroup(playlistId, type, title) }
+    }
+
+    /** "All movies" / "All shows" is being scrolled towards its end: fetch the next pages. */
+    fun loadMoreVodAll(type: String) {
+        if (vodAllJob?.isActive == true) return
+        vodAllJob = trackVodLoading { repository.loadMoreVodAll(type) }
+    }
 
     /** TV button of the movie player: straight back to the last live channel. */
     fun watchLastTv() {
