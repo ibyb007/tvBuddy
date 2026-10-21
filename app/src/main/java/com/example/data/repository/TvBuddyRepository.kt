@@ -19,6 +19,7 @@ import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.model.parseHeadersJson
 import com.example.data.model.toSpoofProfile
+import com.example.data.network.StalkerAuthResult
 import com.example.data.network.StalkerClient
 import com.example.data.network.StalkerParams
 import com.example.data.network.XtreamClient
@@ -27,6 +28,7 @@ import com.example.data.parser.M3uParser
 import com.example.data.parser.XmltvParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -139,10 +141,19 @@ class TvBuddyRepository(
      * their visibility and manual order; new groups follow "Show newly added groups".
      */
     suspend fun syncGroupsForPlaylist(playlistId: Long, channels: List<ChannelEntity>, showNewlyAdded: Boolean) = withContext(Dispatchers.IO) {
+        syncGroupTitles(
+            playlistId,
+            channels.groupBy { it.contentType }.mapValues { (_, list) -> list.map { it.groupTitle } },
+            showNewlyAdded
+        )
+    }
+
+    /** Same as [syncGroupsForPlaylist] from group titles per content type, in the order they should appear. */
+    suspend fun syncGroupTitles(playlistId: Long, titlesByType: Map<String, List<String>>, showNewlyAdded: Boolean) = withContext(Dispatchers.IO) {
         val existing = channelGroupDao.getGroupsByPlaylistOnce(playlistId).associateBy { it.contentType to it.groupTitle }
         val rows = ArrayList<ChannelGroupEntity>()
-        channels.groupBy { it.contentType }.forEach { (type, list) ->
-            list.map { it.groupTitle }.distinct().filter { it.isNotBlank() }.forEachIndexed { index, title ->
+        titlesByType.forEach { (type, titles) ->
+            titles.filter { it.isNotBlank() }.distinct().forEachIndexed { index, title ->
                 val old = existing[type to title]
                 rows += old?.copy(originalOrder = index) ?: ChannelGroupEntity(
                     playlistId = playlistId,
@@ -425,9 +436,10 @@ class TvBuddyRepository(
      * Downloads the playlist again and replaces its channels. Channels that still exist keep their
      * id (and therefore favorites / resume position); vanished ones are removed, new ones added.
      */
-    suspend fun refreshPlaylist(playlistId: Long): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun refreshPlaylist(playlistId: Long, onProgress: (String) -> Unit = {}): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val pl = playlistDao.getPlaylistById(playlistId) ?: throw Exception("Playlist not found")
+            if (pl.type == PlaylistType.STALKER) return@withContext Result.success(refreshStalker(pl, onProgress))
             val spoof = pl.toSpoofProfile()
             val ua = spoof.getUserAgent()
             val headers = spoof.getEffectiveHeaders()
@@ -537,7 +549,8 @@ class TvBuddyRepository(
                 pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), channel.streamId,
                 isSeries = channel.contentType == ContentType.SHOW, userAgent = pl.toSpoofProfile().getUserAgent()
             )
-            PlaylistType.STALKER -> channel.metaJson?.let { json ->
+            // the list pages load rows without the details blob: read it for this one item
+            PlaylistType.STALKER -> (channel.metaJson ?: channelDao.getChannelById(channel.id)?.metaJson)?.let { json ->
                 try {
                     val j = JSONObject(json)
                     VodInfo(
@@ -568,7 +581,7 @@ class TvBuddyRepository(
         }
     }
 
-    fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getChannelsByType(contentType)
+    fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getVodListByType(contentType)
 
     /**
      * Turns a movie into something the player can open. Xtream movies are direct links already; Stalker movies
@@ -700,15 +713,18 @@ class TvBuddyRepository(
         deviceId2: String = "",
         serialNumber: String = "",
         includeTv: Boolean = true,
-        includeVod: Boolean = false
+        includeVod: Boolean = false,
+        onProgress: (String) -> Unit = {}
     ): Result<ImportResult> = withContext(Dispatchers.IO) {
+        var playlistId = -1L
         try {
             val spoof = SpoofProfile(spoofPreset)
             val params = StalkerParams(macAddress, username, password, deviceId, deviceId2, serialNumber)
+            onProgress("Connecting to the portal...")
             val auth = stalkerClient.login(portalUrl, params, spoof.getUserAgent())
             if (!auth.success) return@withContext Result.failure(Exception(auth.message))
 
-            val playlistId = playlistDao.insertPlaylist(
+            playlistId = playlistDao.insertPlaylist(
                 PlaylistEntity(
                     name = name,
                     type = PlaylistType.STALKER,
@@ -725,12 +741,189 @@ class TvBuddyRepository(
                 )
             )
 
-            val channels = stalkerClient.fetchContent(portalUrl, params, playlistId, spoof.getUserAgent(), includeTv, includeVod, auth)
-            val counts = storeImported(playlistId, channels, formatExpiration(auth.expiration))
+            val counts = importStalkerContent(playlistId, params, auth, spoof.getUserAgent(), includeTv, includeVod, onProgress)
+            if (counts.tv + counts.movies + counts.shows == 0) throw Exception("The portal returned no channels or movies")
+            playlistDao.updateContentCounts(playlistId, counts.tv, counts.movies, counts.shows, formatExpiration(auth.expiration), System.currentTimeMillis())
             Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
+            // don't leave an empty, half-added playlist behind
+            if (playlistId > 0) {
+                try { playlistDao.getPlaylistById(playlistId)?.let { deletePlaylist(it) } } catch (_: Exception) {}
+            }
             Result.failure(e)
         }
+    }
+
+    /**
+     * Downloads a Stalker portal into the database: live TV first (usable at once), then movies and shows,
+     * which are written in batches while they stream in. A portal with 100k movies is thousands of small
+     * requests, so nothing is collected in memory and a failure part-way keeps what already arrived.
+     */
+    private suspend fun importStalkerContent(
+        playlistId: Long,
+        params: StalkerParams,
+        auth: StalkerAuthResult,
+        userAgent: String,
+        includeTv: Boolean,
+        includeVod: Boolean,
+        onProgress: (String) -> Unit
+    ): ImportCounts {
+        var tv = 0
+        var movies = 0
+        var shows = 0
+        var incomplete = false
+        val expiration = formatExpiration(auth.expiration)
+
+        if (includeTv) {
+            onProgress("Loading live channels...")
+            val live = stalkerClient.fetchLiveChannels(auth, params, playlistId, userAgent)
+            if (live.isNotEmpty()) {
+                insertChannelsBulk(live)
+                syncGroupsForPlaylist(playlistId, live, true)
+            }
+            tv = live.size
+            // live TV can be used from here on, even while the (much bigger) movie / show catalogue still comes in
+            playlistDao.updateContentCounts(playlistId, tv, 0, 0, expiration, System.currentTimeMillis())
+        }
+
+        if (includeVod) {
+            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
+                val label = if (type == ContentType.MOVIE) "Movies" else "Shows"
+                onProgress("$label: starting...")
+                val titles = LinkedHashSet<String>()
+                var stored = 0
+                var lastShown = 0
+                var portalOrder: List<String> = emptyList()
+                try {
+                    val result = stalkerClient.streamVod(
+                        type, auth, params, playlistId, userAgent,
+                        onBatch = { batch ->
+                            insertChannelsBulk(batch)
+                            for (ch in batch) titles += ch.groupTitle
+                            stored += batch.size
+                        },
+                        onProgress = { n ->
+                            if (n - lastShown >= 250) {
+                                lastShown = n
+                                onProgress("$label: ${String.format(Locale.US, "%,d", n)}")
+                            }
+                        }
+                    )
+                    portalOrder = result.categoryTitles
+                    if (result.failedPages > 0) incomplete = true
+                } finally {
+                    // groups of whatever arrived, in the portal's own order (also when the download broke off)
+                    val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
+                    withContext(NonCancellable) { syncGroupTitles(playlistId, mapOf(type to ordered), true) }
+                }
+                if (type == ContentType.MOVIE) movies = stored else shows = stored
+            }
+        }
+        return ImportCounts(tv = tv, movies = movies, shows = shows, incomplete = incomplete)
+    }
+
+    /**
+     * Processes a Stalker playlist again (update, or VOD switched on / off in the portal settings). Same streaming
+     * download as adding it; channels that still exist keep their id (favorites, resume), vanished ones are removed,
+     * but only for a kind that was downloaded completely.
+     */
+    private suspend fun refreshStalker(pl: PlaylistEntity, onProgress: (String) -> Unit): Int {
+        if (!pl.includeTv && !pl.includeVod) throw Exception("Enable TV channels or VOD first")
+        val ua = pl.toSpoofProfile().getUserAgent()
+        val params = pl.toStalkerParams()
+        onProgress("Connecting to the portal...")
+        val auth = stalkerClient.login(pl.sourceUrl, params, ua)
+        if (!auth.success) throw Exception(auth.message)
+        val expiration = formatExpiration(auth.expiration)
+
+        val old = channelDao.getIdentities(pl.id)
+        val used = HashSet<Long>()
+        val byStreamId = old.filter { it.streamId.isNotBlank() }.groupBy { it.contentType to it.streamId }
+        val byUrl = old.groupBy { it.contentType to it.streamUrl }
+        fun reuse(batch: List<ChannelEntity>): List<ChannelEntity> = batch.map { ch ->
+            val match = ch.streamId.takeIf { it.isNotBlank() }
+                ?.let { id -> byStreamId[ch.contentType to id]?.firstOrNull { used.add(it.id) } }
+                ?: byUrl[ch.contentType to ch.streamUrl]?.firstOrNull { used.add(it.id) }
+            if (match != null) ch.copy(id = match.id, isFavorite = match.isFavorite) else ch
+        }
+
+        // content types whose old rows that were not seen again may be removed
+        val deletable = HashSet<String>()
+        var fetchedAnything = false
+        val titlesByType = LinkedHashMap<String, List<String>>()
+
+        if (pl.includeTv) {
+            onProgress("Loading live channels...")
+            val live = stalkerClient.fetchLiveChannels(auth, params, pl.id, ua)
+            if (live.isNotEmpty()) {
+                fetchedAnything = true
+                insertChannelsBulk(reuse(live))
+                titlesByType[ContentType.TV] = live.map { it.groupTitle }
+                deletable += ContentType.TV
+            }
+        } else {
+            deletable += ContentType.TV
+        }
+
+        if (pl.includeVod) {
+            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
+                val label = if (type == ContentType.MOVIE) "Movies" else "Shows"
+                onProgress("$label: starting...")
+                val titles = LinkedHashSet<String>()
+                var stored = 0
+                var lastShown = 0
+                var portalOrder: List<String> = emptyList()
+                var complete = false
+                try {
+                    val result = stalkerClient.streamVod(
+                        type, auth, params, pl.id, ua,
+                        onBatch = { batch ->
+                            insertChannelsBulk(reuse(batch))
+                            for (ch in batch) titles += ch.groupTitle
+                            stored += batch.size
+                        },
+                        onProgress = { n ->
+                            if (n - lastShown >= 250) {
+                                lastShown = n
+                                onProgress("$label: ${String.format(Locale.US, "%,d", n)}")
+                            }
+                        }
+                    )
+                    portalOrder = result.categoryTitles
+                    complete = result.failedPages == 0 && stored > 0
+                } finally {
+                    if (stored > 0) {
+                        // groups of whatever arrived, in the portal's own order (also when the download broke off)
+                        val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
+                        withContext(NonCancellable) { syncGroupTitles(pl.id, mapOf(type to ordered), pl.showNewlyAddedGroups) }
+                        fetchedAnything = true
+                        if (complete) deletable += type
+                    }
+                }
+            }
+        } else {
+            deletable += ContentType.MOVIE
+            deletable += ContentType.SHOW
+        }
+
+        if (!fetchedAnything) throw Exception("The provider returned no channels")
+
+        old.filter { it.id !in used && it.contentType in deletable }
+            .map { it.id }
+            .chunked(500)
+            .forEach { channelDao.deleteChannelsByIds(it) }
+
+        syncGroupTitles(pl.id, titlesByType, pl.showNewlyAddedGroups)
+
+        val tv = channelDao.countByType(pl.id, ContentType.TV)
+        val movies = channelDao.countByType(pl.id, ContentType.MOVIE)
+        val shows = channelDao.countByType(pl.id, ContentType.SHOW)
+        // movies / shows switched off: their groups go with them
+        if (movies == 0) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.MOVIE)
+        if (shows == 0) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.SHOW)
+        if (tv == 0 && !pl.includeTv) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.TV)
+        playlistDao.updateContentCounts(pl.id, tv, movies, shows, expiration, System.currentTimeMillis())
+        return tv + movies + shows
     }
 
     suspend fun addJsonPlaylist(
