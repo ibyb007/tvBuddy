@@ -34,6 +34,14 @@ data class StalkerAuthResult(
     val expiration: String? = null
 )
 
+data class VodCategory(val id: String, val title: String)
+
+/** The portal's movie / show categories (in its own order) and its grand total of items. */
+data class VodCatalog(val categories: List<VodCategory>, val total: Int)
+
+/** One page of a category: its items, the category's total and the portal's page size. */
+data class VodPage(val items: List<ChannelEntity>, val totalItems: Int, val perPage: Int)
+
 /** What a streamed movie / show download came back with. */
 data class VodStreamResult(
     /** The portal's categories in its own order (some may have produced no items). */
@@ -190,6 +198,18 @@ class StalkerClient(
         } catch (_: Exception) {
             null
         }
+    }
+
+    /** [getJson] with a few retries: a portal that is busy drops the odd request, and a dropped one must not look like "empty". */
+    private fun getJsonRetry(
+        url: String, userAgent: String, mac: String, token: String?,
+        client: OkHttpClient = okHttpClient, attempts: Int = 3
+    ): JSONObject? {
+        for (i in 0 until attempts) {
+            getJson(url, userAgent, mac, token, client)?.let { return it }
+            if (i < attempts - 1) try { Thread.sleep(400L * (i + 1)) } catch (_: InterruptedException) { return null }
+        }
+        return null
     }
 
     /** Handshake only (kept for callers that just need a token). */
@@ -356,7 +376,7 @@ class StalkerClient(
         val token = auth.token
 
         val genreMap = mutableMapOf<String, String>()
-        val genres = itemsOf(getJson("$loadPhp?type=itv&action=get_genres&mac=$mac", userAgent, mac, token))
+        val genres = itemsOf(getJsonRetry("$loadPhp?type=itv&action=get_genres&mac=$mac", userAgent, mac, token))
         for (i in 0 until genres.length()) {
             val g = genres.optJSONObject(i) ?: continue
             val id = g.optString("id")
@@ -366,7 +386,7 @@ class StalkerClient(
 
         val channels = mutableListOf<ChannelEntity>()
         try {
-            val items = itemsOf(getJson("$loadPhp?type=itv&action=get_all_channels&mac=$mac", userAgent, mac, token, bulkHttp))
+            val items = itemsOf(getJsonRetry("$loadPhp?type=itv&action=get_all_channels&mac=$mac", userAgent, mac, token, bulkHttp))
             for (i in 0 until items.length()) {
                 val ch = items.optJSONObject(i) ?: continue
                 val id = ch.optString("id", "${i + 1}")
@@ -545,6 +565,102 @@ class StalkerClient(
         }
         consumer.join()
         VodStreamResult(categories.values.toList(), failedPages.size, loaded.get())
+    }
+
+
+    // ---------------------------------------------------------------------------------------------
+    // Lazy movies / shows (the way IPTVnator does it): categories first, the items of a category only
+    // when somebody opens it.
+    // ---------------------------------------------------------------------------------------------
+
+    /** Categories of the portal's movies or shows, and how many items it says it has in total. */
+    suspend fun fetchVodCatalog(
+        contentType: String,
+        auth: StalkerAuthResult,
+        params: StalkerParams,
+        userAgent: String
+    ): VodCatalog? = withContext(Dispatchers.IO) {
+        val kind = if (contentType == ContentType.MOVIE) "vod" else "series"
+        val loadPhp = auth.portalUrl
+        val mac = params.normalizedMac
+        val root = getJsonRetry("$loadPhp?type=$kind&action=get_categories&mac=$mac", userAgent, mac, auth.token, bulkHttp)
+            ?: return@withContext null
+        val cats = ArrayList<VodCategory>()
+        val arr = itemsOf(root)
+        for (i in 0 until arr.length()) {
+            val c = arr.optJSONObject(i) ?: continue
+            val id = c.optString("id")
+            val title = c.optString("title")
+            if (id.isNotBlank() && id != "*" && title.isNotBlank()) cats += VodCategory(id, title)
+        }
+        if (cats.isEmpty()) cats += VodCategory("*", if (contentType == ContentType.MOVIE) "Movies" else "Shows")
+        // the "All" listing's first page carries the grand total
+        val first = getJsonRetry(
+            "$loadPhp?type=$kind&action=get_ordered_list&category=*&p=1&sortby=added&mac=$mac",
+            userAgent, mac, auth.token, bulkHttp, attempts = 2
+        )
+        val total = first?.optJSONObject("js")?.optInt("total_items", 0) ?: 0
+        VodCatalog(cats, total)
+    }
+
+    /**
+     * One page of a category ("*" = everything). Items of the "*" listing are put in the group of their own
+     * category ([groupOf] maps a category id to its title). Retried; null when the portal still says no.
+     */
+    suspend fun fetchVodPage(
+        contentType: String,
+        auth: StalkerAuthResult,
+        params: StalkerParams,
+        playlistId: Long,
+        userAgent: String,
+        categoryId: String,
+        catIndex: Int,
+        page: Int,
+        groupOf: (String) -> String?,
+        defaultGroup: String,
+        gate: AdaptiveGate
+    ): VodPage? {
+        val kind = if (contentType == ContentType.MOVIE) "vod" else "series"
+        val loadPhp = auth.portalUrl
+        val mac = params.normalizedMac
+        val url = "$loadPhp?type=$kind&action=get_ordered_list&category=${enc(categoryId)}&p=$page&sortby=added&mac=$mac"
+        var root: JSONObject? = null
+        for (attempt in 0 until 3) {
+            root = gate.run { getJson(url, userAgent, mac, auth.token, pageHttp) }
+            if (root != null) break
+            if (attempt < 2) delay(400L * (attempt + 1))
+        }
+        val js = root?.optJSONObject("js") ?: return null
+        val data = js.optJSONArray("data") ?: JSONArray()
+        val items = ArrayList<ChannelEntity>(data.length())
+        for (i in 0 until data.length()) {
+            val obj = data.optJSONObject(i) ?: continue
+            val id = obj.optString("id")
+            if (id.isBlank()) continue
+            val group = if (categoryId != "*") groupOf(categoryId) ?: defaultGroup
+            else groupOf(obj.optString("category_id")) ?: defaultGroup
+            items += ChannelEntity(
+                playlistId = playlistId,
+                streamId = id,
+                name = obj.optString("name").ifBlank { "${ContentType.label(contentType).removeSuffix("s")} $id" },
+                streamUrl = cleanCmd(obj.optString("cmd")),
+                logoUrl = absolute(
+                    loadPhp,
+                    listOf("screenshot_uri", "logo", "cover").map { k -> obj.optString(k) }.firstOrNull { v -> v.isNotBlank() }
+                ),
+                groupTitle = group,
+                // portal order inside a category; "All" pages come after everything numbered per category
+                channelNumber = if (categoryId != "*") catIndex * 500_000 + (page - 1) * 100 + i else 250_000_000 + (page - 1) * 100 + i,
+                contentType = contentType,
+                rating = VodInfo.cleanRating(
+                    listOf("rating_imdb", "rate_imdb", "rating_kinopoisk").map { k -> obj.optString(k) }.firstOrNull { v -> VodInfo.cleanRating(v).isNotBlank() }
+                ).ifBlank { null },
+                metaJson = metaOf(obj, loadPhp),
+                httpUserAgent = userAgent
+            )
+        }
+        val perPage = js.optInt("max_page_items", 0).takeIf { it > 0 } ?: data.length()
+        return VodPage(items, js.optInt("total_items", 0), perPage)
     }
 
     suspend fun resolveStreamLink(
