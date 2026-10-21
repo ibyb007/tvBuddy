@@ -289,8 +289,13 @@ fun HomeScreen(
                 isSearchActive = false
             }
             isTvMode -> {
-                // BACK from full-screen playback reveals the TV page; otherwise leave
-                if (currentChannel != null) tvBrowse = TvBrowseLevel.GUIDE else exitTv()
+                // BACK from full-screen playback reveals the TV page (a movie goes back to its Movies / Shows page); otherwise leave
+                val playing = currentChannelLive ?: currentChannel
+                if (playing != null && playing.contentType != com.example.data.model.ContentType.TV) {
+                    viewModel.closePlayer()
+                    vodType = playing.contentType
+                    tvBrowse = TvBrowseLevel.GUIDE
+                } else if (currentChannel != null) tvBrowse = TvBrowseLevel.GUIDE else exitTv()
             }
             currentChannel != null -> {
                 viewModel.closePlayer()
@@ -401,7 +406,34 @@ fun HomeScreen(
                 )
             }
 
-            if (browseLevel == null) {
+            val nowPlaying = currentChannelLive ?: currentChannel
+            if (browseLevel == null && nowPlaying != null && nowPlaying.contentType != com.example.data.model.ContentType.TV) {
+                // movie: seek bar, long-press seeking, TV / Audio boost / Video / Audio / Subtitles / Settings bar
+                com.example.ui.components.TvVodPlayerOverlay(
+                    channel = nowPlaying,
+                    isPlaying = isPlaying,
+                    isBuffering = isBuffering,
+                    errorMessage = playerError,
+                    streamInfo = streamInfo,
+                    videoQuality = videoQuality,
+                    audioBoostProfile = audioBoostProfile,
+                    audioTracks = audioTracks,
+                    subtitleTracks = subtitleTracks,
+                    positionMs = { viewModel.playerManager.positionMs() },
+                    durationMs = { viewModel.playerManager.durationMs() },
+                    onSeekTo = { viewModel.playerManager.seekToMs(it) },
+                    onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
+                    onRetry = { viewModel.playVod(nowPlaying) },
+                    onWatchTv = { viewModel.watchLastTv() },
+                    onCycleAudioBoost = { viewModel.cycleAudioBoost() },
+                    onOpenQualityPicker = { showQualityDialog = true },
+                    onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
+                    onDisableAudio = { viewModel.playerManager.disableAudio() },
+                    onOpenSubtitles = { showSubtitleDialog = true },
+                    onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
+                    modifier = Modifier.fillMaxSize().zIndex(2f)
+                )
+            } else if (browseLevel == null) {
                 TvPlayerOverlay(
                     channel = currentChannelLive ?: currentChannel,
                     isPlaying = isPlaying,
