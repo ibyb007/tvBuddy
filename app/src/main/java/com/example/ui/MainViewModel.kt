@@ -906,6 +906,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** All movies or all shows of every playlist; collected only while the Movies / Shows page is open. */
     fun vodChannels(contentType: String): kotlinx.coroutines.flow.Flow<List<ChannelEntity>> = repository.vodChannels(contentType)
 
+    suspend fun loadVodInfo(channel: ChannelEntity) = repository.loadVodInfo(channel)
+
+    fun refreshAccountInfo(playlistId: Long) {
+        viewModelScope.launch { repository.refreshExpiration(playlistId) }
+    }
+
     fun toggleVodFavorite(channel: ChannelEntity) {
         viewModelScope.launch { repository.toggleFavorite(channel.id, channel.isFavorite) }
     }
