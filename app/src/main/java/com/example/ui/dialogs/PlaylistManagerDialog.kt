@@ -251,6 +251,7 @@ fun PlaylistManagerDialog(
     onSetGroupsVisibility: ((Long, Map<String, Boolean>, String) -> Unit)? = null,
     onReorderGroups: (Long, List<String>, String) -> Unit = { _, _, _ -> },
     onApplyPortalParams: (PlaylistEntity) -> Unit = {},
+    onLoadAccountInfo: (Long) -> Unit = {},
     epgSources: List<EpgSourceEntity> = emptyList(),
     playlistEpgCrossRefs: List<PlaylistEpgCrossRef> = emptyList(),
     onAddEpgSource: (String) -> Unit = {},
@@ -606,6 +607,7 @@ fun PlaylistManagerDialog(
                             is TiviSettingsRoute.PortalParams -> {
                                 val playlist = playlists.find { it.id == route.playlistId }
                                 if (playlist != null) {
+                                    LaunchedEffect(playlist.id) { onLoadAccountInfo(playlist.id) }
                                     PortalParamsSubMenu(
                                         playlist = playlist,
                                         updateState = updateStates[UpdateKeys.playlist(playlist.id)],
