@@ -6,10 +6,14 @@ import com.example.data.model.VodInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -17,7 +21,10 @@ import org.json.JSONObject
 import java.net.URI
 import java.net.URLEncoder
 import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 data class StalkerAuthResult(
     val success: Boolean,
@@ -26,6 +33,15 @@ data class StalkerAuthResult(
     val portalUrl: String = "",
     /** Account expiry as the portal reports it (e.g. "2026-10-29"), when it tells. */
     val expiration: String? = null
+)
+
+/** What a streamed movie / show download came back with. */
+data class VodStreamResult(
+    /** The portal's categories in its own order (some may have produced no items). */
+    val categoryTitles: List<String>,
+    /** Pages that still failed after the retries: when > 0 the download is incomplete. */
+    val failedPages: Int,
+    val total: Int
 )
 
 /**
@@ -56,6 +72,17 @@ class StalkerClient(
         .build()
 ) {
 
+    /**
+     * Client for the big downloads (channel list, thousands of movie pages): a connection pool large enough to
+     * keep every parallel request on a kept-alive connection, and a longer read timeout for the big replies.
+     */
+    private val bulkHttp: OkHttpClient by lazy {
+        okHttpClient.newBuilder()
+            .connectionPool(ConnectionPool(64, 5, TimeUnit.MINUTES))
+            .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
+
     private fun getLoadPhpUrl(portalUrl: String): String {
         var clean = portalUrl.trim().removeSuffix("/")
         if (!clean.startsWith("http://") && !clean.startsWith("https://")) {
@@ -80,10 +107,16 @@ class StalkerClient(
         return this
     }
 
-    private fun getJson(url: String, userAgent: String, mac: String, token: String?): JSONObject? {
+    private fun getJson(
+        url: String,
+        userAgent: String,
+        mac: String,
+        token: String?,
+        client: OkHttpClient = okHttpClient
+    ): JSONObject? {
         val req = Request.Builder().url(url).stalkerHeaders(userAgent, mac, token).build()
         return try {
-            okHttpClient.newCall(req).execute().use { resp ->
+            client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) null else JSONObject(resp.body?.string().orEmpty())
             }
         } catch (_: Exception) {
@@ -172,7 +205,7 @@ class StalkerClient(
     ): List<ChannelEntity> =
         fetchContent(portalUrl, StalkerParams(macAddress), playlistId, userAgent, includeTv = true, includeVod = false)
 
-    /** Live TV and / or movies and shows (VOD) of a Stalker portal. */
+    /** Live TV and / or movies and shows (VOD) of a Stalker portal, as one list (used where the result is small enough). */
     suspend fun fetchContent(
         portalUrl: String,
         params: StalkerParams,
@@ -185,13 +218,22 @@ class StalkerClient(
         val auth = session ?: login(portalUrl, params, userAgent)
         if (!auth.success) return@withContext emptyList()
         val out = ArrayList<ChannelEntity>()
-        if (includeTv) out += fetchLive(auth, params, playlistId, userAgent)
+        if (includeTv) out += fetchLiveChannels(auth, params, playlistId, userAgent)
         if (includeVod) {
-            out += fetchVodKind("vod", ContentType.MOVIE, auth, params, playlistId, userAgent)
-            out += fetchVodKind("series", ContentType.SHOW, auth, params, playlistId, userAgent)
+            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
+                streamVod(type, auth, params, playlistId, userAgent, onBatch = { batch -> out.addAll(batch) })
+            }
         }
         out
     }
+
+    /** Live TV channels with their genre as group (one request for the genres, one for the whole channel list). */
+    suspend fun fetchLiveChannels(
+        auth: StalkerAuthResult,
+        params: StalkerParams,
+        playlistId: Long,
+        userAgent: String
+    ): List<ChannelEntity> = withContext(Dispatchers.IO) { fetchLive(auth, params, playlistId, userAgent) }
 
     private fun cleanCmd(cmd: String): String {
         var streamUrl = cmd.trim()
@@ -256,7 +298,7 @@ class StalkerClient(
 
         val channels = mutableListOf<ChannelEntity>()
         try {
-            val items = itemsOf(getJson("$loadPhp?type=itv&action=get_all_channels&mac=$mac", userAgent, mac, token))
+            val items = itemsOf(getJson("$loadPhp?type=itv&action=get_all_channels&mac=$mac", userAgent, mac, token, bulkHttp))
             for (i in 0 until items.length()) {
                 val ch = items.optJSONObject(i) ?: continue
                 val id = ch.optString("id", "${i + 1}")
@@ -281,23 +323,29 @@ class StalkerClient(
     }
 
     /**
-     * Movies ("vod") or shows ("series"): the portal lists them category by category in pages, so every
-     * category is read page by page (several pages in parallel, the portal is only hit a few requests at a time).
+     * Movies or shows. The portal lists them category by category in small pages (often 14 items), so a big
+     * catalogue is thousands of requests: they run [VOD_CONCURRENCY] at a time on kept-alive connections, and
+     * every page is handed to [onBatch] in batches as it arrives (one consumer, never concurrently) instead of
+     * being collected first. Pages that fail are retried, then once more slowly at the end.
      */
-    private suspend fun fetchVodKind(
-        kind: String,
+    suspend fun streamVod(
         contentType: String,
         auth: StalkerAuthResult,
         params: StalkerParams,
         playlistId: Long,
-        userAgent: String
-    ): List<ChannelEntity> = coroutineScope {
+        userAgent: String,
+        onBatch: suspend (List<ChannelEntity>) -> Unit,
+        onProgress: (Int) -> Unit = {}
+    ): VodStreamResult = coroutineScope {
+        val kind = if (contentType == ContentType.MOVIE) "vod" else "series"
         val loadPhp = auth.portalUrl
         val mac = params.normalizedMac
         val token = auth.token
 
         val categories = LinkedHashMap<String, String>()
-        val catItems = itemsOf(getJson("$loadPhp?type=$kind&action=get_categories&mac=$mac", userAgent, mac, token))
+        val catItems = withContext(Dispatchers.IO) {
+            itemsOf(getJson("$loadPhp?type=$kind&action=get_categories&mac=$mac", userAgent, mac, token, bulkHttp))
+        }
         for (i in 0 until catItems.length()) {
             val c = catItems.optJSONObject(i) ?: continue
             val id = c.optString("id")
@@ -305,66 +353,126 @@ class StalkerClient(
             if (id.isNotBlank() && id != "*" && title.isNotBlank()) categories[id] = title
         }
         if (categories.isEmpty()) categories["*"] = if (contentType == ContentType.MOVIE) "Movies" else "Shows"
+        val catList = categories.entries.toList()
 
-        val gate = Semaphore(6)
-        val byId = LinkedHashMap<String, ChannelEntity>()
+        val seen = ConcurrentHashMap.newKeySet<String>()
+        val loaded = AtomicInteger(0)
+        val failedPages = ConcurrentLinkedQueue<IntArray>()
+        val buffer = ArrayList<ChannelEntity>()
         val lock = Any()
-        var counter = 0
+        val out = Channel<List<ChannelEntity>>(6)
+        val consumer = launch { for (batch in out) onBatch(batch) }
 
         fun page(category: String, p: Int): JSONObject? {
             val url = "$loadPhp?type=$kind&action=get_ordered_list&category=${enc(category)}&p=$p&sortby=added&mac=$mac"
-            // one retry: portals drop the odd request under load
-            return getJson(url, userAgent, mac, token) ?: getJson(url, userAgent, mac, token)
+            // portals drop the odd request under load: a few quick retries before the page is counted as failed
+            for (attempt in 0 until 3) {
+                val root = getJson(url, userAgent, mac, token, bulkHttp)
+                if (root != null) return root
+                if (attempt < 2) try { Thread.sleep(300L * (attempt + 1)) } catch (_: InterruptedException) {}
+            }
+            return null
         }
 
-        fun absorb(root: JSONObject?, groupTitle: String) {
-            val js = root?.optJSONObject("js") ?: return
-            val data = js.optJSONArray("data") ?: return
-            synchronized(lock) {
-                for (i in 0 until data.length()) {
-                    val obj = data.optJSONObject(i) ?: continue
-                    val id = obj.optString("id")
-                    if (id.isBlank() || byId.containsKey(id)) continue
-                    counter++
-                    byId[id] = ChannelEntity(
-                        playlistId = playlistId,
-                        streamId = id,
-                        name = obj.optString("name").ifBlank { "${ContentType.label(contentType).removeSuffix("s")} $id" },
-                        streamUrl = cleanCmd(obj.optString("cmd")),
-                        logoUrl = absolute(
-                            loadPhp,
-                            listOf("screenshot_uri", "logo", "cover").map { k -> obj.optString(k) }.firstOrNull { v -> v.isNotBlank() }
-                        ),
-                        groupTitle = groupTitle,
-                        channelNumber = counter,
-                        contentType = contentType,
-                        rating = VodInfo.cleanRating(
-                            listOf("rating_imdb", "rate_imdb", "rating_kinopoisk").map { k -> obj.optString(k) }.firstOrNull { v -> VodInfo.cleanRating(v).isNotBlank() }
-                        ).ifBlank { null },
-                        metaJson = metaOf(obj, loadPhp),
-                        httpUserAgent = userAgent
-                    )
+        fun parse(root: JSONObject, groupTitle: String, catIndex: Int, p: Int): List<ChannelEntity> {
+            val data = root.optJSONObject("js")?.optJSONArray("data") ?: return emptyList()
+            val list = ArrayList<ChannelEntity>(data.length())
+            for (i in 0 until data.length()) {
+                val obj = data.optJSONObject(i) ?: continue
+                val id = obj.optString("id")
+                if (id.isBlank() || !seen.add(id)) continue
+                list += ChannelEntity(
+                    playlistId = playlistId,
+                    streamId = id,
+                    name = obj.optString("name").ifBlank { "${ContentType.label(contentType).removeSuffix("s")} $id" },
+                    streamUrl = cleanCmd(obj.optString("cmd")),
+                    logoUrl = absolute(
+                        loadPhp,
+                        listOf("screenshot_uri", "logo", "cover").map { k -> obj.optString(k) }.firstOrNull { v -> v.isNotBlank() }
+                    ),
+                    groupTitle = groupTitle,
+                    // portal order: category by category, page by page (stable however the parallel pages arrive)
+                    channelNumber = catIndex * 500_000 + (p - 1) * 100 + i,
+                    contentType = contentType,
+                    rating = VodInfo.cleanRating(
+                        listOf("rating_imdb", "rate_imdb", "rating_kinopoisk").map { k -> obj.optString(k) }.firstOrNull { v -> VodInfo.cleanRating(v).isNotBlank() }
+                    ).ifBlank { null },
+                    metaJson = metaOf(obj, loadPhp),
+                    httpUserAgent = userAgent
+                )
+            }
+            return list
+        }
+
+        suspend fun emit(items: List<ChannelEntity>) {
+            if (items.isEmpty()) return
+            val full: List<ChannelEntity>? = synchronized(lock) {
+                buffer.addAll(items)
+                if (buffer.size >= VOD_BATCH) {
+                    val copy = ArrayList(buffer)
+                    buffer.clear()
+                    copy
+                } else null
+            }
+            onProgress(loaded.addAndGet(items.size))
+            if (full != null) out.send(full)
+        }
+
+        suspend fun load(catIndex: Int, p: Int, gate: Semaphore): JSONObject? {
+            val entry = catList[catIndex]
+            val root = gate.withPermit { page(entry.key, p) }
+            if (root == null) {
+                failedPages.add(intArrayOf(catIndex, p))
+                return null
+            }
+            emit(parse(root, entry.value, catIndex, p))
+            return root
+        }
+
+        suspend fun runCategory(catIndex: Int, gate: Semaphore) {
+            val first = load(catIndex, 1, gate) ?: return
+            val js = first.optJSONObject("js")
+            val total = js?.optInt("total_items", 0) ?: 0
+            val perPage = (js?.optInt("max_page_items", 0) ?: 0).takeIf { it > 0 } ?: (js?.optJSONArray("data")?.length() ?: 0)
+            if (total > 0 && perPage > 0) {
+                val pages = minOf((total + perPage - 1) / perPage, 2000)
+                coroutineScope {
+                    for (p in 2..pages) launch(Dispatchers.IO) { load(catIndex, p, gate) }
                 }
             }
         }
 
-        categories.map { (catId, catTitle) ->
-            async(Dispatchers.IO) {
-                val first = gate.withPermit { page(catId, 1) }
-                absorb(first, catTitle)
-                val js = first?.optJSONObject("js")
-                val total = js?.optInt("total_items", 0) ?: 0
-                val perPage = (js?.optInt("max_page_items", 0) ?: 0).takeIf { it > 0 } ?: (js?.optJSONArray("data")?.length() ?: 0)
-                if (total > 0 && perPage > 0) {
-                    val pages = minOf((total + perPage - 1) / perPage, 2000)
-                    (2..pages).map { p ->
-                        async(Dispatchers.IO) { absorb(gate.withPermit { page(catId, p) }, catTitle) }
+        try {
+            val gate = Semaphore(VOD_CONCURRENCY)
+            coroutineScope {
+                catList.indices.map { i -> async(Dispatchers.IO) { runCategory(i, gate) } }.awaitAll()
+            }
+            // whatever failed: one more go, gently (a portal that throttled the fast pass usually answers now)
+            val retry = failedPages.toList()
+            failedPages.clear()
+            if (retry.isNotEmpty()) {
+                delay(1500)
+                val slow = Semaphore(4)
+                coroutineScope {
+                    retry.map { f ->
+                        async(Dispatchers.IO) {
+                            if (f[1] == 1) runCategory(f[0], slow) else { load(f[0], f[1], slow) }
+                            Unit
+                        }
                     }.awaitAll()
                 }
             }
-        }.awaitAll()
-
-        byId.values.toList()
+            val rest = synchronized(lock) {
+                val copy = ArrayList(buffer)
+                buffer.clear()
+                copy
+            }
+            if (rest.isNotEmpty()) out.send(rest)
+        } finally {
+            out.close()
+        }
+        consumer.join()
+        VodStreamResult(categories.values.toList(), failedPages.size, loaded.get())
     }
 
     suspend fun resolveStreamLink(
@@ -381,5 +489,12 @@ class StalkerClient(
         val root = getJson(url, userAgent, mac, token)
         val cmdLink = root?.optJSONObject("js")?.optString("cmd").orEmpty()
         if (cmdLink.isNotBlank()) cleanCmd(cmdLink) else cmd
+    }
+
+    private companion object {
+        /** Parallel page requests: the portal serves ~14 items per page, a big catalogue is thousands of pages. */
+        const val VOD_CONCURRENCY = 40
+        /** Items per database write while a catalogue streams in. */
+        const val VOD_BATCH = 5000
     }
 }
