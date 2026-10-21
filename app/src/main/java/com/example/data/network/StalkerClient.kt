@@ -2,6 +2,7 @@ package com.example.data.network
 
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.model.ContentType
+import com.example.data.model.VodInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -133,7 +134,7 @@ class StalkerClient(
 
             // STB profile: portals that bind a box to serial / device ids need it before they list anything
             val profileUrl = "$loadPhp?type=stb&action=get_profile&hd=1&num_banks=2&stb_type=MAG250&client_type=STB" +
-                "&image_version=218&video_out=hdmi&auth_second_step=1&not_valid_token=0&api_signature=262" +
+                "&image_version=218&video_out=hdmi&auth_second_step=1&not_valid_token=0&api_signature=262&JsHttpRequest=1-xml" +
                 "&sn=${enc(params.effectiveSerial)}&device_id=${enc(params.effectiveDeviceId)}" +
                 "&device_id2=${enc(params.effectiveDeviceId2)}&mac=$mac"
             val profile = getJson(profileUrl, userAgent, mac, token)
@@ -141,14 +142,23 @@ class StalkerClient(
             val newToken = profile?.optJSONObject("js")?.optString("token").orEmpty()
             if (newToken.isNotBlank()) token = newToken
 
-            // Expiry date (best effort)
-            var expiration: String? = null
-            val info = getJson("$loadPhp?type=account_info&action=get_main_info&mac=$mac", userAgent, mac, token)
-            val infoJs = info?.optJSONObject("js")
-            if (infoJs != null) {
-                expiration = listOf("end_date", "expire_billing_date", "expiry_date")
-                    .map { infoJs.optString(it) }
-                    .firstOrNull { it.isNotBlank() && it != "null" && it != "0" }
+            // Expiry date (best effort): portals keep it in the profile or in the account info, under different names
+            val expiryKeys = listOf("end_date", "expire_billing_date", "expiry_date", "expire_date", "phone")
+            fun expiryOf(js: JSONObject?): String? = js?.let { o ->
+                val dateLike = Regex("\\d{1,4}[-/.]\\d{1,2}[-/.]\\d{1,4}|\\d{1,2}\\s+[A-Za-z]{3,}\\s+\\d{2,4}|[A-Za-z]{3,}\\s+\\d{1,2},?\\s+\\d{4}")
+                expiryKeys.firstNotNullOfOrNull { key ->
+                    val v = o.optString(key).trim()
+                    // "phone" is only an expiry text on some portals, elsewhere a real phone number: demand a date shape
+                    v.takeIf {
+                        it.isNotBlank() && it != "null" && it != "0" && !it.startsWith("0000") &&
+                            (if (key == "phone") dateLike.containsMatchIn(it) else it.any(Char::isDigit))
+                    }
+                }
+            }
+            var expiration: String? = expiryOf(profile?.optJSONObject("js"))
+            if (expiration == null) {
+                val info = getJson("$loadPhp?type=account_info&action=get_main_info&JsHttpRequest=1-xml&mac=$mac", userAgent, mac, token)
+                expiration = expiryOf(info?.optJSONObject("js"))
             }
 
             StalkerAuthResult(success = true, token = token, portalUrl = loadPhp, expiration = expiration)
@@ -204,6 +214,20 @@ class StalkerClient(
         } catch (_: Exception) {
             null
         }
+    }
+
+    /** The details a Stalker list item carries (plot, cast, ...) packed small; plots are cut to keep the database lean. */
+    private fun metaOf(o: JSONObject, loadPhp: String): String? {
+        fun v(vararg keys: String) = keys.map { o.optString(it).trim() }.firstOrNull { it.isNotBlank() && it != "null" }.orEmpty()
+        val j = JSONObject()
+        v("description").takeIf { it.isNotBlank() }?.let { j.put("p", it.take(700)) }
+        v("actors").takeIf { it.isNotBlank() }?.let { j.put("c", it.take(200)) }
+        v("director").takeIf { it.isNotBlank() }?.let { j.put("d", it.take(100)) }
+        v("genres_str", "genre").takeIf { it.isNotBlank() }?.let { j.put("g", it.take(100)) }
+        v("year").takeIf { it.isNotBlank() }?.let { j.put("y", it.take(4)) }
+        v("time").toIntOrNull()?.let { VodInfo.formatMinutes(it) }?.takeIf { it.isNotBlank() }?.let { j.put("t", it) }
+        absolute(loadPhp, v("backdrop", "pic", "backdrop_path"))?.let { j.put("b", it) }
+        return if (j.length() == 0) null else j.toString()
     }
 
     private fun itemsOf(root: JSONObject?): JSONArray {
@@ -314,6 +338,10 @@ class StalkerClient(
                         groupTitle = groupTitle,
                         channelNumber = counter,
                         contentType = contentType,
+                        rating = VodInfo.cleanRating(
+                            listOf("rating_imdb", "rate_imdb", "rating_kinopoisk").map { k -> obj.optString(k) }.firstOrNull { v -> VodInfo.cleanRating(v).isNotBlank() }
+                        ).ifBlank { null },
+                        metaJson = metaOf(obj, loadPhp),
                         httpUserAgent = userAgent
                     )
                 }
