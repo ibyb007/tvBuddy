@@ -3,6 +3,7 @@ package com.example.data.network
 import android.util.JsonReader
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.model.ContentType
+import com.example.data.model.VodInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -134,6 +135,7 @@ class XtreamClient(
                         groupTitle = movieCats[item["category_id"].orEmpty()] ?: "Movies",
                         channelNumber = movieNo,
                         contentType = ContentType.MOVIE,
+                        rating = VodInfo.cleanRating(item["rating"]).ifBlank { null },
                         httpUserAgent = userAgent
                     )
                 )
@@ -156,12 +158,63 @@ class XtreamClient(
                         groupTitle = showCats[item["category_id"].orEmpty()] ?: "Shows",
                         channelNumber = showNo,
                         contentType = ContentType.SHOW,
+                        rating = VodInfo.cleanRating(item["rating"]).ifBlank { null },
                         httpUserAgent = userAgent
                     )
                 )
             }
         }
         out
+    }
+
+    /**
+     * The on-demand details call (get_vod_info / get_series_info): plot, cast, director, genre, release date,
+     * duration and the 16:9 backdrop. Returns null when the server has nothing for this id.
+     */
+    suspend fun fetchInfo(
+        serverUrl: String,
+        username: String,
+        password: String,
+        id: String,
+        isSeries: Boolean,
+        userAgent: String
+    ): VodInfo? = withContext(Dispatchers.IO) {
+        val cleanUrl = cleanServerUrl(serverUrl)
+        val url = if (isSeries) api(cleanUrl, username, password, "get_series_info") + "&series_id=${enc(id)}"
+        else api(cleanUrl, username, password, "get_vod_info") + "&vod_id=${enc(id)}"
+        try {
+            val req = Request.Builder().url(url).header("User-Agent", userAgent).build()
+            okHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext null
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val info = root.optJSONObject("info") ?: return@withContext null
+                // backdrop_path is normally an array of urls, some panels send a single string
+                val backdrop = info.optJSONArray("backdrop_path")?.optString(0).orEmpty()
+                    .ifBlank { info.optString("backdrop_path").takeIf { it.startsWith("http") }.orEmpty() }
+                val minutes = info.optInt("duration_secs", 0) / 60
+                val duration = when {
+                    minutes > 0 -> VodInfo.formatMinutes(minutes)
+                    info.optString("episode_run_time").toIntOrNull() != null -> VodInfo.formatMinutes(info.optString("episode_run_time").toInt())
+                    else -> info.optString("duration").takeIf { it != "null" && !it.startsWith("00:00") }.orEmpty()
+                }
+                val date = listOf("releasedate", "releaseDate", "release_date").map { info.optString(it) }
+                    .firstOrNull { it.isNotBlank() && it != "null" }.orEmpty()
+                fun s(vararg keys: String) = keys.map { info.optString(it) }.firstOrNull { it.isNotBlank() && it != "null" }.orEmpty()
+                VodInfo(
+                    plot = s("plot", "description"),
+                    cast = s("cast", "actors"),
+                    director = s("director"),
+                    genre = s("genre"),
+                    year = date.take(4).takeIf { it.length == 4 && it.all(Char::isDigit) }.orEmpty(),
+                    duration = duration,
+                    rating = VodInfo.cleanRating(s("rating")),
+                    backdropUrl = backdrop,
+                    trailer = s("youtube_trailer")
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun fetchCategories(
