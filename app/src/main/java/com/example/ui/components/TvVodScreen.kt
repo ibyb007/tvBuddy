@@ -10,6 +10,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -66,7 +70,10 @@ private val VodPanelBg = Color(0xFF181B1F)
 private val VodPillFocused = Color(0xFFE8EAED)
 private val VodPillApplied = Color(0xFF30343A)
 private val VodPosterBg = Color(0xFF23272D)
-private const val VOD_COLUMNS = 6
+/** Poster columns while the rail + groups are showing, and while they are slid out (more room, same poster size). */
+private const val VOD_COLUMNS_NARROW = 6
+private const val VOD_COLUMNS_WIDE = 8
+private const val VOD_PANEL_PX = 500f
 
 private enum class VodLevel { GROUPS, GRID }
 
@@ -151,6 +158,18 @@ fun TvVodScreen(
         }
     }
     val safeGrid = gridIndex.coerceIn(0, (gridItems.size - 1).coerceAtLeast(0))
+
+    // TiviMate behaviour: moving into the posters slides the nav rail + groups out to the left, moving back slides them in
+    val panelsOut = level == VodLevel.GRID
+    val columns = if (panelsOut) VOD_COLUMNS_WIDE else VOD_COLUMNS_NARROW
+    val railWidth by animateDpAsState(if (panelsOut) 0.dp else (RAIL_COLLAPSED_PX * k).dp, tween(260), label = "vodRail")
+    val groupsWidth by animateDpAsState(if (panelsOut) 0.dp else (VOD_PANEL_PX * k).dp, tween(260), label = "vodGroups")
+    val railEntries = remember(playlists, isMovies) {
+        buildRailEntries(
+            hasMovies = isMovies || playlists.any { it.isActive && it.movieCount > 0 },
+            hasShows = !isMovies || playlists.any { it.isActive && it.showCount > 0 }
+        )
+    }
     val detailItem = remember(detailId, items) { detailId?.let { id -> items.firstOrNull { it.id == id } } }
 
     // the grid restarts at its first poster whenever another group is focused
@@ -160,7 +179,7 @@ fun TvVodScreen(
         when {
             hideRow != null -> hideRow = null
             detailId != null -> detailId = null
-            level == VodLevel.GRID -> level = VodLevel.GROUPS
+            level == VodLevel.GRID -> { gridIndex = 0; level = VodLevel.GROUPS }
             else -> onBack()
         }
     }
@@ -193,12 +212,16 @@ fun TvVodScreen(
         if (safeGroup < first || safeGroup > last - 1) listState.scrollToItem((safeGroup - 3).coerceAtLeast(0))
     }
     LaunchedEffect(safeGrid, level) {
-        if (level != VodLevel.GRID) return@LaunchedEffect
+        if (level != VodLevel.GRID) {
+            // back at the groups: the posters start from their first one again
+            if (gridState.firstVisibleItemIndex != 0) gridState.scrollToItem(0)
+            return@LaunchedEffect
+        }
         val visible = gridState.layoutInfo.visibleItemsInfo
         val first = visible.firstOrNull()?.index ?: 0
         val last = visible.lastOrNull()?.index ?: 0
-        if (safeGrid < first || safeGrid > last - VOD_COLUMNS) {
-            gridState.scrollToItem((safeGrid - safeGrid % VOD_COLUMNS - VOD_COLUMNS).coerceAtLeast(0))
+        if (safeGrid < first || safeGrid > last - columns) {
+            gridState.scrollToItem((safeGrid - safeGrid % columns - columns).coerceAtLeast(0))
         }
     }
 
@@ -264,10 +287,10 @@ fun TvVodScreen(
                 else -> {}
             }
             VodLevel.GRID -> when (key) {
-                Key.DirectionLeft -> if (safeGrid % VOD_COLUMNS == 0) level = VodLevel.GROUPS else gridIndex = safeGrid - 1
+                Key.DirectionLeft -> if (safeGrid % columns == 0) { gridIndex = 0; level = VodLevel.GROUPS } else gridIndex = safeGrid - 1
                 Key.DirectionRight -> gridIndex = (safeGrid + 1).coerceAtMost(gridItems.lastIndex)
-                Key.DirectionUp -> if (safeGrid - VOD_COLUMNS >= 0) gridIndex = safeGrid - VOD_COLUMNS
-                Key.DirectionDown -> gridIndex = (safeGrid + VOD_COLUMNS).coerceAtMost(gridItems.lastIndex)
+                Key.DirectionUp -> if (safeGrid - columns >= 0) gridIndex = safeGrid - columns
+                Key.DirectionDown -> gridIndex = (safeGrid + columns).coerceAtMost(gridItems.lastIndex)
                 else -> {}
             }
         }
@@ -305,12 +328,30 @@ fun TvVodScreen(
             }
     ) {
         Row(modifier = Modifier.fillMaxSize()) {
-            // ---- groups list ----
+            // ---- nav rail (slides out with the groups) ----
+            RailPanel(
+                width = railWidth,
+                k = k,
+                expanded = false,
+                focused = false,
+                selectedIndex = 0,
+                entries = railEntries,
+                currentId = if (isMovies) RailId.MOVIES else RailId.SHOWS
+            )
+
+            // ---- groups list (slides out to the left while the posters are browsed) ----
+            Box(
+                modifier = Modifier
+                    .width(groupsWidth)
+                    .fillMaxHeight()
+                    .clipToBounds()
+                    .background(VodPanelBg)
+            ) {
             Column(
                 modifier = Modifier
-                    .width((500 * k).dp)
+                    .wrapContentWidth(Alignment.Start, unbounded = true)
+                    .width((VOD_PANEL_PX * k).dp)
                     .fillMaxHeight()
-                    .background(VodPanelBg)
             ) {
                 Text(
                     text = if (isMovies) "Movies" else "Shows",
@@ -353,6 +394,7 @@ fun TvVodScreen(
                         }
                     }
                 }
+            }
             }
 
             // ---- info + poster grid ----
@@ -412,7 +454,7 @@ fun TvVodScreen(
                         }
                     } else {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(VOD_COLUMNS),
+                            columns = GridCells.Fixed(columns),
                             state = gridState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(horizontal = (40 * k).dp, vertical = (6 * k).dp),
