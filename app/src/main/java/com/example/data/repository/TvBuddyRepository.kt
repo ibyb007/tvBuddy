@@ -19,6 +19,7 @@ import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.model.parseHeadersJson
 import com.example.data.model.toSpoofProfile
+import com.example.data.network.AdaptiveGate
 import com.example.data.network.StalkerAuthResult
 import com.example.data.network.StalkerClient
 import com.example.data.network.StalkerParams
@@ -29,6 +30,9 @@ import com.example.data.parser.XmltvParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -41,6 +45,8 @@ import java.io.BufferedInputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 
@@ -768,58 +774,79 @@ class TvBuddyRepository(
         includeVod: Boolean,
         onProgress: (String) -> Unit
     ): ImportCounts {
-        var tv = 0
-        var movies = 0
-        var shows = 0
-        var incomplete = false
         val expiration = formatExpiration(auth.expiration)
+        val incomplete = AtomicBoolean(false)
+        val progress = VodProgress(onProgress)
+        // live TV, movies and shows download side by side (one adaptive request gate shared by the two VOD kinds)
+        val gate = AdaptiveGate()
 
-        if (includeTv) {
-            onProgress("Loading live channels...")
-            val live = stalkerClient.fetchLiveChannels(auth, params, playlistId, userAgent)
-            if (live.isNotEmpty()) {
-                insertChannelsBulk(live)
-                syncGroupsForPlaylist(playlistId, live, true)
-            }
-            tv = live.size
-            // live TV can be used from here on, even while the (much bigger) movie / show catalogue still comes in
-            playlistDao.updateContentCounts(playlistId, tv, 0, 0, expiration, System.currentTimeMillis())
-        }
-
-        if (includeVod) {
-            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
-                val label = if (type == ContentType.MOVIE) "Movies" else "Shows"
-                onProgress("$label: starting...")
-                val titles = LinkedHashSet<String>()
-                var stored = 0
-                var lastShown = 0
-                var portalOrder: List<String> = emptyList()
-                try {
-                    val result = stalkerClient.streamVod(
-                        type, auth, params, playlistId, userAgent,
-                        onBatch = { batch ->
-                            insertChannelsBulk(batch)
-                            for (ch in batch) titles += ch.groupTitle
-                            stored += batch.size
-                        },
-                        onProgress = { n ->
-                            if (n - lastShown >= 250) {
-                                lastShown = n
-                                onProgress("$label: ${String.format(Locale.US, "%,d", n)}")
-                            }
-                        }
-                    )
-                    portalOrder = result.categoryTitles
-                    if (result.failedPages > 0) incomplete = true
-                } finally {
-                    // groups of whatever arrived, in the portal's own order (also when the download broke off)
-                    val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
-                    withContext(NonCancellable) { syncGroupTitles(playlistId, mapOf(type to ordered), true) }
+        return coroutineScope {
+            val tvJob = if (includeTv) async(Dispatchers.IO) {
+                val live = stalkerClient.fetchLiveChannels(auth, params, playlistId, userAgent)
+                if (live.isNotEmpty()) {
+                    insertChannelsBulk(live)
+                    syncGroupsForPlaylist(playlistId, live, true)
                 }
-                if (type == ContentType.MOVIE) movies = stored else shows = stored
-            }
+                // live TV can be used from here on, even while the (much bigger) movie / show catalogue still comes in
+                playlistDao.updateContentCounts(playlistId, live.size, 0, 0, expiration, System.currentTimeMillis())
+                live.size
+            } else null
+
+            val vodJobs = if (includeVod) listOf(ContentType.MOVIE, ContentType.SHOW).map { type ->
+                async(Dispatchers.IO) {
+                    val titles = LinkedHashSet<String>()
+                    var stored = 0
+                    var portalOrder: List<String> = emptyList()
+                    try {
+                        val result = stalkerClient.streamVod(
+                            type, auth, params, playlistId, userAgent,
+                            onBatch = { batch ->
+                                insertChannelsBulk(batch)
+                                for (ch in batch) titles += ch.groupTitle
+                                stored += batch.size
+                            },
+                            onProgress = { n -> progress.update(type, n) },
+                            gate = gate
+                        )
+                        portalOrder = result.categoryTitles
+                        if (result.failedPages > 0) incomplete.set(true)
+                    } finally {
+                        // groups of whatever arrived, in the portal's own order (also when the download broke off)
+                        val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
+                        withContext(NonCancellable) { syncGroupTitles(playlistId, mapOf(type to ordered), true) }
+                    }
+                    stored
+                }
+            } else emptyList()
+
+            val tv = tvJob?.await() ?: 0
+            val vod = vodJobs.awaitAll()
+            ImportCounts(
+                tv = tv,
+                movies = if (includeVod) vod[0] else 0,
+                shows = if (includeVod) vod[1] else 0,
+                incomplete = incomplete.get()
+            )
         }
-        return ImportCounts(tv = tv, movies = movies, shows = shows, incomplete = incomplete)
+    }
+
+    /** One progress line for movies and shows that download at the same time. */
+    private class VodProgress(private val sink: (String) -> Unit) {
+        private val movies = AtomicInteger()
+        private val shows = AtomicInteger()
+        private var shown = 0
+
+        fun update(type: String, n: Int) {
+            if (type == ContentType.MOVIE) movies.set(n) else shows.set(n)
+            val total = movies.get() + shows.get()
+            val line = synchronized(this) {
+                if (total - shown < 250) null else {
+                    shown = total
+                    "Movies: ${String.format(Locale.US, "%,d", movies.get())}  Shows: ${String.format(Locale.US, "%,d", shows.get())}"
+                }
+            }
+            if (line != null) sink(line)
+        }
     }
 
     /**
@@ -837,7 +864,8 @@ class TvBuddyRepository(
         val expiration = formatExpiration(auth.expiration)
 
         val old = channelDao.getIdentities(pl.id)
-        val used = HashSet<Long>()
+        // movies, shows and TV are matched from different threads at once
+        val used: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet<Long>())
         val byStreamId = old.filter { it.streamId.isNotBlank() }.groupBy { it.contentType to it.streamId }
         val byUrl = old.groupBy { it.contentType to it.streamUrl }
         fun reuse(batch: List<ChannelEntity>): List<ChannelEntity> = batch.map { ch ->
@@ -848,72 +876,73 @@ class TvBuddyRepository(
         }
 
         // content types whose old rows that were not seen again may be removed
-        val deletable = HashSet<String>()
-        var fetchedAnything = false
-        val titlesByType = LinkedHashMap<String, List<String>>()
+        val deletable: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet<String>())
+        val fetchedAnything = AtomicBoolean(false)
+        val titlesByType = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
+        val progress = VodProgress(onProgress)
+        val gate = AdaptiveGate()
 
-        if (pl.includeTv) {
-            onProgress("Loading live channels...")
-            val live = stalkerClient.fetchLiveChannels(auth, params, pl.id, ua)
-            if (live.isNotEmpty()) {
-                fetchedAnything = true
-                insertChannelsBulk(reuse(live))
-                titlesByType[ContentType.TV] = live.map { it.groupTitle }
-                deletable += ContentType.TV
-            }
-        } else {
-            deletable += ContentType.TV
-        }
-
-        if (pl.includeVod) {
-            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
-                val label = if (type == ContentType.MOVIE) "Movies" else "Shows"
-                onProgress("$label: starting...")
-                val titles = LinkedHashSet<String>()
-                var stored = 0
-                var lastShown = 0
-                var portalOrder: List<String> = emptyList()
-                var complete = false
-                try {
-                    val result = stalkerClient.streamVod(
-                        type, auth, params, pl.id, ua,
-                        onBatch = { batch ->
-                            insertChannelsBulk(reuse(batch))
-                            for (ch in batch) titles += ch.groupTitle
-                            stored += batch.size
-                        },
-                        onProgress = { n ->
-                            if (n - lastShown >= 250) {
-                                lastShown = n
-                                onProgress("$label: ${String.format(Locale.US, "%,d", n)}")
-                            }
-                        }
-                    )
-                    portalOrder = result.categoryTitles
-                    complete = result.failedPages == 0 && stored > 0
-                } finally {
-                    if (stored > 0) {
-                        // groups of whatever arrived, in the portal's own order (also when the download broke off)
-                        val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
-                        withContext(NonCancellable) { syncGroupTitles(pl.id, mapOf(type to ordered), pl.showNewlyAddedGroups) }
-                        fetchedAnything = true
-                        if (complete) deletable += type
+        coroutineScope {
+            if (pl.includeTv) {
+                launch(Dispatchers.IO) {
+                    onProgress("Loading live channels...")
+                    val live = stalkerClient.fetchLiveChannels(auth, params, pl.id, ua)
+                    if (live.isNotEmpty()) {
+                        fetchedAnything.set(true)
+                        insertChannelsBulk(reuse(live))
+                        titlesByType[ContentType.TV] = live.map { it.groupTitle }
+                        deletable += ContentType.TV
                     }
                 }
+            } else {
+                deletable += ContentType.TV
             }
-        } else {
-            deletable += ContentType.MOVIE
-            deletable += ContentType.SHOW
+
+            if (pl.includeVod) {
+                for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
+                    launch(Dispatchers.IO) {
+                        val titles = LinkedHashSet<String>()
+                        var stored = 0
+                        var portalOrder: List<String> = emptyList()
+                        var complete = false
+                        try {
+                            val result = stalkerClient.streamVod(
+                                type, auth, params, pl.id, ua,
+                                onBatch = { batch ->
+                                    insertChannelsBulk(reuse(batch))
+                                    for (ch in batch) titles += ch.groupTitle
+                                    stored += batch.size
+                                },
+                                onProgress = { n -> progress.update(type, n) },
+                                gate = gate
+                            )
+                            portalOrder = result.categoryTitles
+                            complete = result.failedPages == 0 && stored > 0
+                        } finally {
+                            if (stored > 0) {
+                                // groups of whatever arrived, in the portal's own order (also when the download broke off)
+                                val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
+                                withContext(NonCancellable) { syncGroupTitles(pl.id, mapOf(type to ordered), pl.showNewlyAddedGroups) }
+                                fetchedAnything.set(true)
+                                if (complete) deletable += type
+                            }
+                        }
+                    }
+                }
+            } else {
+                deletable += ContentType.MOVIE
+                deletable += ContentType.SHOW
+            }
         }
 
-        if (!fetchedAnything) throw Exception("The provider returned no channels")
+        if (!fetchedAnything.get()) throw Exception("The provider returned no channels")
 
         old.filter { it.id !in used && it.contentType in deletable }
             .map { it.id }
             .chunked(500)
             .forEach { channelDao.deleteChannelsByIds(it) }
 
-        syncGroupTitles(pl.id, titlesByType, pl.showNewlyAddedGroups)
+        syncGroupTitles(pl.id, titlesByType.toMap(), pl.showNewlyAddedGroups)
 
         val tv = channelDao.countByType(pl.id, ContentType.TV)
         val movies = channelDao.countByType(pl.id, ContentType.MOVIE)
