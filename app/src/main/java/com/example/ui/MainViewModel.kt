@@ -560,6 +560,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastTvChannel: ChannelEntity? = null
 
     fun playChannel(channel: ChannelEntity) {
+        stopVodProgress()   // save where the previous movie was left, before the player moves on
         // movies must not overwrite "previous channel" or the channel resumed at the next launch
         if (channel.contentType == ContentType.TV) {
             currentChannel.value?.let { cur ->
@@ -575,6 +576,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             allPlaylists.value.firstOrNull { it.id == channel.playlistId }?.toSpoofProfile() ?: _globalSpoof.value
         )
         viewModelScope.launch { repository.recordHistory(channel) }
+        startVodProgress(channel)
     }
 
     /** Plays [channel] unless it is already playing/buffering/retrying; a dead or stale stream is restarted. */
@@ -902,6 +904,86 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** All movies or all shows of every playlist; collected only while the Movies / Shows page is open. */
     fun vodChannels(contentType: String): kotlinx.coroutines.flow.Flow<List<ChannelEntity>> = repository.vodChannels(contentType)
 
+    /** The "History" group of the Movies / Shows page. */
+    fun vodHistory(contentType: String): kotlinx.coroutines.flow.Flow<List<ChannelEntity>> = repository.vodHistory(contentType)
+
+    // ---- resume points of movies (stored per item, cleared when it is (nearly) finished) ----
+    private fun posKey(id: Long) = "vod_pos_$id"
+
+    /** Where the movie was left (0 = never started / finished). */
+    fun vodResumeMs(channel: ChannelEntity): Long = prefs.getLong(posKey(channel.id), 0L)
+
+    private var vodProgressJob: kotlinx.coroutines.Job? = null
+    private var vodProgressChannel: ChannelEntity? = null
+
+    private fun saveVodProgress(channel: ChannelEntity) {
+        val pos = playerManager.positionMs()
+        val dur = playerManager.durationMs()
+        if (dur <= 0L) return
+        if (dur - pos < 60_000L || pos > dur * 0.95) prefs.edit().remove(posKey(channel.id)).apply()
+        else if (pos > 10_000L) prefs.edit().putLong(posKey(channel.id), pos).apply()
+    }
+
+    /** Saves the resume point of the movie that is playing now and stops tracking it. */
+    private fun stopVodProgress() {
+        vodProgressJob?.cancel()
+        vodProgressJob = null
+        vodProgressChannel?.let { saveVodProgress(it) }
+        vodProgressChannel = null
+    }
+
+    private fun startVodProgress(channel: ChannelEntity) {
+        if (channel.contentType == ContentType.TV) return
+        vodProgressChannel = channel
+        vodProgressJob = viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(5_000)
+                saveVodProgress(channel)
+            }
+        }
+    }
+
+    /** Opens the movie's YouTube trailer (the provider sends an id or a full link). */
+    fun openTrailer(trailer: String) {
+        val app = getApplication<Application>()
+        val t = trailer.trim()
+        if (t.isBlank()) return
+        val url = if (t.startsWith("http", ignoreCase = true)) t else "https://www.youtube.com/watch?v=$t"
+        try {
+            app.startActivity(
+                android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        } catch (_: Exception) {
+            android.widget.Toast.makeText(app, "No app can open the trailer", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** Hands the movie's stream to another player app. */
+    fun openInExternalPlayer(channel: ChannelEntity) {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            repository.resolvePlayable(channel).fold(
+                onSuccess = { playable ->
+                    try {
+                        app.startActivity(
+                            android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                .setDataAndType(android.net.Uri.parse(playable.streamUrl), "video/*")
+                                .putExtra("title", playable.name)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        repository.recordHistory(playable)
+                    } catch (_: Exception) {
+                        android.widget.Toast.makeText(app, "No external player installed", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                },
+                onFailure = {
+                    android.widget.Toast.makeText(app, it.localizedMessage ?: "Can't play this", android.widget.Toast.LENGTH_LONG).show()
+                }
+            )
+        }
+    }
+
     // Movies / shows come from the portal when a group is opened (see TvBuddyRepository.loadVodGroup)
     private val vodLoadCount = java.util.concurrent.atomic.AtomicInteger(0)
     private val _vodLoading = MutableStateFlow(false)
@@ -951,11 +1033,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Opens a movie in the player (Stalker movies first get their real link from the portal). */
-    fun playVod(channel: ChannelEntity) {
+    fun playVod(channel: ChannelEntity, startMs: Long = 0L) {
         val app = getApplication<Application>()
         viewModelScope.launch {
             repository.resolvePlayable(channel).fold(
-                onSuccess = { playChannel(it) },
+                onSuccess = {
+                    playChannel(it)
+                    if (startMs <= 0L) prefs.edit().remove(posKey(channel.id)).apply()
+                    else launch {
+                        // jump to the resume point as soon as the stream knows its length
+                        var waited = 0
+                        while (playerManager.durationMs() <= 0L && waited < 40) { kotlinx.coroutines.delay(500); waited++ }
+                        kotlinx.coroutines.delay(300)
+                        playerManager.seekToMs(startMs)
+                    }
+                },
                 onFailure = {
                     android.widget.Toast.makeText(app, it.localizedMessage ?: "Can't play this", android.widget.Toast.LENGTH_LONG).show()
                 }
@@ -965,6 +1057,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Removes one channel from the recent / history strip. */
     fun removeFromHistory(channel: ChannelEntity) {
+        prefs.edit().remove(posKey(channel.id)).apply()
         viewModelScope.launch { repository.removeHistory(channel.id) }
     }
 
@@ -986,7 +1079,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun getScheduleForChannel(epgChannelId: String) = repository.getScheduleForChannel(epgChannelId)
 
-    fun closePlayer() { playerManager.closePlayer() }
+    fun closePlayer() {
+        stopVodProgress()
+        playerManager.closePlayer()
+    }
     fun pausePlayer() { playerManager.pause() }
 
     // Activity lifecycle (see MainActivity)
