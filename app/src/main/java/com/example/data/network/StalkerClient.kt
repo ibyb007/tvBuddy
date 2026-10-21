@@ -11,7 +11,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
@@ -65,6 +64,67 @@ data class StalkerParams(
         MessageDigest.getInstance(algorithm).digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
 }
 
+/**
+ * Concurrency limiter that finds the portal's sweet spot by itself. A fixed "40 at once" is too much for portals that
+ * queue / throttle / answer 5xx under load (every page then crawls or fails and is retried), and too little for the
+ * ones that happily serve 60. It starts modestly, grows quickly while the answers stay fast and clean, and backs off
+ * as soon as pages fail or get much slower than the best the portal has shown.
+ */
+class AdaptiveGate(private val min: Int = 4, start: Int = 12, private val max: Int = 64) {
+    private val sem = Semaphore(max, acquiredPermits = max - start)
+    private val lock = Any()
+    private var limit = start
+    private var debt = 0
+    private var n = 0
+    private var fails = 0
+    private var latencySum = 0L
+    private var best = Long.MAX_VALUE
+
+    /** Runs the blocking [block] (a null result counts as a failed request) inside the current limit. */
+    suspend fun <T> run(block: () -> T?): T? {
+        sem.acquire()
+        val t0 = System.nanoTime()
+        var result: T? = null
+        try {
+            result = block()
+        } finally {
+            record(result != null, (System.nanoTime() - t0) / 1_000_000)
+            giveBack()
+        }
+        return result
+    }
+
+    private fun giveBack() {
+        synchronized(lock) { if (debt > 0) { debt--; return } }
+        sem.release()
+    }
+
+    private fun record(ok: Boolean, ms: Long): Unit = synchronized(lock) {
+        n++
+        if (!ok) fails++
+        latencySum += ms
+        if (n < maxOf(12, limit)) return@synchronized
+        val avg = latencySum / n
+        if (fails == 0) best = minOf(best, avg)
+        val target = when {
+            fails * 100 > n * 15 || (best != Long.MAX_VALUE && avg > best * 3) -> maxOf(min, limit * 3 / 4)
+            fails == 0 && avg <= best * 16 / 10 -> minOf(max, limit + maxOf(4, limit / 2))
+            else -> limit
+        }
+        if (target > limit) {
+            var inc = target - limit
+            val repay = minOf(debt, inc)
+            debt -= repay
+            inc -= repay
+            repeat(inc) { sem.release() }
+        } else if (target < limit) {
+            debt += limit - target
+        }
+        limit = target
+        n = 0; fails = 0; latencySum = 0
+    }
+}
+
 class StalkerClient(
     private val okHttpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -78,8 +138,16 @@ class StalkerClient(
      */
     private val bulkHttp: OkHttpClient by lazy {
         okHttpClient.newBuilder()
-            .connectionPool(ConnectionPool(64, 5, TimeUnit.MINUTES))
+            .connectionPool(ConnectionPool(128, 5, TimeUnit.MINUTES))
             .readTimeout(60, TimeUnit.SECONDS)
+            .build()
+    }
+
+    /** Movie / show pages are small: a request stuck for 25 s is dead, better to retry it than to hold a slot. */
+    private val pageHttp: OkHttpClient by lazy {
+        bulkHttp.newBuilder()
+            .readTimeout(25, TimeUnit.SECONDS)
+            .callTimeout(40, TimeUnit.SECONDS)
             .build()
     }
 
@@ -324,7 +392,7 @@ class StalkerClient(
 
     /**
      * Movies or shows. The portal lists them category by category in small pages (often 14 items), so a big
-     * catalogue is thousands of requests: they run [VOD_CONCURRENCY] at a time on kept-alive connections, and
+     * catalogue is thousands of requests: they run in parallel (as many as the portal tolerates, see [AdaptiveGate]) on kept-alive connections, and
      * every page is handed to [onBatch] in batches as it arrives (one consumer, never concurrently) instead of
      * being collected first. Pages that fail are retried, then once more slowly at the end.
      */
@@ -335,7 +403,9 @@ class StalkerClient(
         playlistId: Long,
         userAgent: String,
         onBatch: suspend (List<ChannelEntity>) -> Unit,
-        onProgress: (Int) -> Unit = {}
+        onProgress: (Int) -> Unit = {},
+        /** Share one gate between movies and shows when they download at the same time. */
+        gate: AdaptiveGate = AdaptiveGate()
     ): VodStreamResult = coroutineScope {
         val kind = if (contentType == ContentType.MOVIE) "vod" else "series"
         val loadPhp = auth.portalUrl
@@ -360,16 +430,18 @@ class StalkerClient(
         val failedPages = ConcurrentLinkedQueue<IntArray>()
         val buffer = ArrayList<ChannelEntity>()
         val lock = Any()
+        // first flush early so posters show up within seconds, then bigger and bigger writes
+        var flushAt = 400
         val out = Channel<List<ChannelEntity>>(6)
         val consumer = launch { for (batch in out) onBatch(batch) }
 
-        fun page(category: String, p: Int): JSONObject? {
+        suspend fun page(category: String, p: Int, g: AdaptiveGate): JSONObject? {
             val url = "$loadPhp?type=$kind&action=get_ordered_list&category=${enc(category)}&p=$p&sortby=added&mac=$mac"
-            // portals drop the odd request under load: a few quick retries before the page is counted as failed
+            // portals drop the odd request under load: a few retries (outside the gate, so they don't hog a slot)
             for (attempt in 0 until 3) {
-                val root = getJson(url, userAgent, mac, token, bulkHttp)
+                val root = g.run { getJson(url, userAgent, mac, token, pageHttp) }
                 if (root != null) return root
-                if (attempt < 2) try { Thread.sleep(300L * (attempt + 1)) } catch (_: InterruptedException) {}
+                if (attempt < 2) delay(400L * (attempt + 1))
             }
             return null
         }
@@ -408,9 +480,10 @@ class StalkerClient(
             if (items.isEmpty()) return
             val full: List<ChannelEntity>? = synchronized(lock) {
                 buffer.addAll(items)
-                if (buffer.size >= VOD_BATCH) {
+                if (buffer.size >= flushAt) {
                     val copy = ArrayList(buffer)
                     buffer.clear()
+                    flushAt = minOf(flushAt * 2, VOD_BATCH)
                     copy
                 } else null
             }
@@ -418,9 +491,9 @@ class StalkerClient(
             if (full != null) out.send(full)
         }
 
-        suspend fun load(catIndex: Int, p: Int, gate: Semaphore): JSONObject? {
+        suspend fun load(catIndex: Int, p: Int, gate: AdaptiveGate): JSONObject? {
             val entry = catList[catIndex]
-            val root = gate.withPermit { page(entry.key, p) }
+            val root = page(entry.key, p, gate)
             if (root == null) {
                 failedPages.add(intArrayOf(catIndex, p))
                 return null
@@ -429,7 +502,7 @@ class StalkerClient(
             return root
         }
 
-        suspend fun runCategory(catIndex: Int, gate: Semaphore) {
+        suspend fun runCategory(catIndex: Int, gate: AdaptiveGate) {
             val first = load(catIndex, 1, gate) ?: return
             val js = first.optJSONObject("js")
             val total = js?.optInt("total_items", 0) ?: 0
@@ -443,7 +516,6 @@ class StalkerClient(
         }
 
         try {
-            val gate = Semaphore(VOD_CONCURRENCY)
             coroutineScope {
                 catList.indices.map { i -> async(Dispatchers.IO) { runCategory(i, gate) } }.awaitAll()
             }
@@ -452,7 +524,7 @@ class StalkerClient(
             failedPages.clear()
             if (retry.isNotEmpty()) {
                 delay(1500)
-                val slow = Semaphore(4)
+                val slow = AdaptiveGate(min = 2, start = 4, max = 6)
                 coroutineScope {
                     retry.map { f ->
                         async(Dispatchers.IO) {
@@ -492,9 +564,7 @@ class StalkerClient(
     }
 
     private companion object {
-        /** Parallel page requests: the portal serves ~14 items per page, a big catalogue is thousands of pages. */
-        const val VOD_CONCURRENCY = 40
-        /** Items per database write while a catalogue streams in. */
-        const val VOD_BATCH = 5000
+        /** Largest number of items per database write while a catalogue streams in (writes ramp up to it). */
+        const val VOD_BATCH = 3000
     }
 }
