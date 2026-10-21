@@ -17,6 +17,12 @@ object ContentType {
 }
 
 /** What one import / refresh of a playlist produced, per content type. */
-data class ImportCounts(val tv: Int = 0, val movies: Int = 0, val shows: Int = 0) {
+data class ImportCounts(
+    val tv: Int = 0,
+    val movies: Int = 0,
+    val shows: Int = 0,
+    /** Some pages of the movie / show catalogue could not be loaded (the portal kept refusing them). */
+    val incomplete: Boolean = false
+) {
     val hasVod: Boolean get() = movies > 0 || shows > 0
 }
