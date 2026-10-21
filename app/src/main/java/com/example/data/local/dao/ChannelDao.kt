@@ -17,8 +17,14 @@ data class ChannelIdentity(
     val isFavorite: Boolean
 )
 
+/** Id and group of a stored live channel (to keep its group when a refresh could not read the portal's genres). */
+data class ChannelGroupRef(val streamId: String, val groupTitle: String)
+
 @Dao
 interface ChannelDao {
+    @Query("SELECT streamId, groupTitle FROM channels WHERE playlistId = :playlistId AND contentType = 'TV' AND streamId != ''")
+    suspend fun getTvGroupsByStreamId(playlistId: Long): List<ChannelGroupRef>
+
     @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY channelNumber ASC, id ASC")
     fun getChannelsByPlaylist(playlistId: Long): Flow<List<ChannelEntity>>
 
@@ -48,6 +54,14 @@ interface ChannelDao {
 
     @Query("SELECT id, contentType, streamId, streamUrl, isFavorite FROM channels WHERE playlistId = :playlistId")
     suspend fun getIdentities(playlistId: Long): List<ChannelIdentity>
+
+    /** Which of these ids are stored already (movies / shows arrive page by page and from two directions). */
+    @Query("SELECT streamId FROM channels WHERE playlistId = :playlistId AND contentType = :contentType AND streamId IN (:ids)")
+    suspend fun existingStreamIds(playlistId: Long, contentType: String, ids: List<String>): List<String>
+
+    /** Forgets the downloaded movies / shows of a playlist but keeps the ones in My list. */
+    @Query("DELETE FROM channels WHERE playlistId = :playlistId AND contentType = :contentType AND isFavorite = 0")
+    suspend fun deleteNonFavoritesByType(playlistId: Long, contentType: String)
 
     @Query("DELETE FROM channels WHERE playlistId = :playlistId AND contentType = :contentType")
     suspend fun deleteChannelsByPlaylistAndType(playlistId: Long, contentType: String)
