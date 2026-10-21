@@ -469,72 +469,16 @@ internal fun TvVodScreen(
                 }
             }
     ) {
-        // rail + groups + posters sit in one row that is only translated: panels in = 0, panels out = -(their width)
-        Row(
-            modifier = Modifier
-                .fillMaxSize()
-                .offset { IntOffset(-((railWidth.value + (VOD_PANEL_PX * k).dp) * slide.value).roundToPx(), 0) }
-        ) {
-            // ---- nav rail (expands with LEFT from the groups) ----
-            VodRail(railWidth, k, level, railIndex, railEntries, currentRailId)
-
-            // ---- groups list ----
+        // content first (drawn below), the rail + groups panels above it
+            // ---- info + poster grid ----
+            // ONE fixed full-width layout, only translated: panels in = pushed right by their width, panels out = at 0.
+            // (Box + explicit offsets: a Row would squeeze / re-centre a child wider than the room left next to the panels.)
             Box(
                 modifier = Modifier
-                    .width((VOD_PANEL_PX * k).dp)
+                    .offset { IntOffset(((railWidth.value + (VOD_PANEL_PX * k).dp) * (1f - slide.value)).roundToPx(), 0) }
+                    .requiredWidth(screenWidthDp.dp)
                     .fillMaxHeight()
-                    .background(VodPanelBg)
             ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-            ) {
-                Text(
-                    text = if (isMovies) "Movies" else "Shows",
-                    color = Color.White,
-                    fontSize = (40 * k).sp,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(start = (40 * k).dp, top = (36 * k).dp, bottom = (12 * k).dp)
-                )
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = (24 * k).dp)
-                ) {
-                    itemsIndexed(rows, key = { _, r -> "${r.kind}_${r.playlistId}_${r.title}" }) { i, row ->
-                        val isFocus = level == VodLevel.GROUPS && i == safeGroup
-                        val isApplied = !isFocus && i == safeGroup
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(start = (32 * k).dp, end = (24 * k).dp, top = (2 * k).dp, bottom = (2 * k).dp)
-                                .height((74 * k).dp)
-                                .clip(RoundedCornerShape((14 * k).dp))
-                                .background(
-                                    when {
-                                        isFocus -> VodPillFocused
-                                        isApplied -> VodPillApplied
-                                        else -> Color.Transparent
-                                    }
-                                )
-                                .padding(horizontal = (24 * k).dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                row.title,
-                                color = if (isFocus) Color.Black else Color.White,
-                                fontSize = (30 * k).sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
-                    }
-                }
-            }
-            }
-
-            // ---- info + poster grid ----
-            Box(modifier = Modifier.requiredWidth(screenWidthDp.dp).fillMaxHeight()) {
                 val backdrop = info?.backdropUrl.orEmpty().ifBlank { infoItem?.logoUrl.orEmpty() }
                 if (backdrop.isNotBlank()) {
                     AsyncImage(
@@ -604,6 +548,69 @@ internal fun TvVodScreen(
                         }
                     }
                 }
+            }
+
+        Row(
+            modifier = Modifier
+                .fillMaxHeight()
+                .offset { IntOffset(-((railWidth.value + (VOD_PANEL_PX * k).dp) * slide.value).roundToPx(), 0) }
+        ) {
+            // ---- nav rail (expands with LEFT from the groups) ----
+            VodRail(railWidth, k, level, railIndex, railEntries, currentRailId)
+
+            // ---- groups list ----
+            Box(
+                modifier = Modifier
+                    .width((VOD_PANEL_PX * k).dp)
+                    .fillMaxHeight()
+                    .background(VodPanelBg)
+            ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+            ) {
+                Text(
+                    text = if (isMovies) "Movies" else "Shows",
+                    color = Color.White,
+                    fontSize = (40 * k).sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = (40 * k).dp, top = (36 * k).dp, bottom = (12 * k).dp)
+                )
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = (24 * k).dp)
+                ) {
+                    itemsIndexed(rows, key = { _, r -> "${r.kind}_${r.playlistId}_${r.title}" }) { i, row ->
+                        val isFocus = level == VodLevel.GROUPS && i == safeGroup
+                        val isApplied = !isFocus && i == safeGroup
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = (32 * k).dp, end = (24 * k).dp, top = (2 * k).dp, bottom = (2 * k).dp)
+                                .height((74 * k).dp)
+                                .clip(RoundedCornerShape((14 * k).dp))
+                                .background(
+                                    when {
+                                        isFocus -> VodPillFocused
+                                        isApplied -> VodPillApplied
+                                        else -> Color.Transparent
+                                    }
+                                )
+                                .padding(horizontal = (24 * k).dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                row.title,
+                                color = if (isFocus) Color.Black else Color.White,
+                                fontSize = (30 * k).sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
             }
         }
 
