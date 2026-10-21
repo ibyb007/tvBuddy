@@ -55,6 +55,10 @@ import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ChannelGroupEntity
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.model.ContentType
+import com.example.data.model.VodInfo
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.focus.onFocusChanged
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 
 private val VodBg = Color(0xFF111418)
@@ -88,6 +92,8 @@ fun TvVodScreen(
     onToggleMyList: (ChannelEntity) -> Unit,
     onHideGroup: (playlistId: Long, groupTitle: String) -> Unit,
     onBack: () -> Unit,
+    /** Plot, cast, backdrop ... of a movie / show (null when the provider has none). */
+    loadInfo: suspend (ChannelEntity) -> VodInfo? = { null },
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
@@ -160,7 +166,24 @@ fun TvVodScreen(
     }
 
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) { try { focusRequester.requestFocus() } catch (_: Exception) {} }
+    var hasFocus by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        // grab the key focus and keep it (another screen underneath must not take it back)
+        while (true) {
+            if (!hasFocus) try { focusRequester.requestFocus() } catch (_: Exception) {}
+            delay(500)
+        }
+    }
+
+    // details of the focused poster, asked from the server a moment after the focus settles
+    val infoItem = gridItems.getOrNull(safeGrid)
+    var info by remember { mutableStateOf<VodInfo?>(null) }
+    LaunchedEffect(infoItem?.id) {
+        info = null
+        val item = infoItem ?: return@LaunchedEffect
+        delay(300)
+        info = loadInfo(item)
+    }
 
     val listState = rememberLazyListState()
     val gridState = rememberLazyGridState()
@@ -255,6 +278,7 @@ fun TvVodScreen(
         modifier = modifier
             .background(VodBg)
             .focusRequester(focusRequester)
+            .onFocusChanged { hasFocus = it.isFocused }
             .focusable()
             .onPreviewKeyEvent { e ->
                 val key = e.key
@@ -331,48 +355,73 @@ fun TvVodScreen(
                 }
             }
 
-            // ---- poster grid ----
-            Column(modifier = Modifier.weight(1f).fillMaxHeight()) {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(start = (40 * k).dp, end = (40 * k).dp, top = (40 * k).dp, bottom = (16 * k).dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = selectedRow?.title.orEmpty(),
-                        color = Color.White,
-                        fontSize = (30 * k).sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
+            // ---- info + poster grid ----
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                val backdrop = info?.backdropUrl.orEmpty().ifBlank { infoItem?.logoUrl.orEmpty() }
+                if (backdrop.isNotBlank()) {
+                    AsyncImage(
+                        model = backdrop,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopEnd,
+                        modifier = Modifier.fillMaxSize()
                     )
-                    if (gridItems.isNotEmpty()) {
-                        Text(
-                            text = "${if (level == VodLevel.GRID) safeGrid + 1 else 1} / ${gridItems.size}",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = (26 * k).sp
-                        )
-                    }
                 }
-                if (gridItems.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Text(
-                            text = if (selectedRow?.kind == VodRowKind.MY_LIST) "Nothing in My list yet. Long-press OK on a poster to add it."
-                            else if (items.isEmpty()) "Loading..." else "Nothing here",
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = (28 * k).sp
-                        )
-                    }
-                } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Fixed(VOD_COLUMNS),
-                        state = gridState,
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(horizontal = (40 * k).dp, vertical = (12 * k).dp),
-                        horizontalArrangement = Arrangement.spacedBy((18 * k).dp),
-                        verticalArrangement = Arrangement.spacedBy((18 * k).dp)
+                // dark fades (left and bottom) keep the text readable over the picture
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.horizontalGradient(0f to VodBg.copy(alpha = 0.96f), 0.6f to VodBg.copy(alpha = 0.78f), 1f to VodBg.copy(alpha = 0.35f))
+                    )
+                )
+                Box(
+                    Modifier.fillMaxSize().background(
+                        Brush.verticalGradient(0.35f to Color.Transparent, 0.62f to VodBg.copy(alpha = 0.92f), 1f to VodBg)
+                    )
+                )
+                Column(modifier = Modifier.fillMaxSize()) {
+                    InfoBlock(k, infoItem, info, modifier = Modifier.fillMaxWidth().height((430 * k).dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(start = (40 * k).dp, end = (40 * k).dp, bottom = (10 * k).dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        itemsIndexed(gridItems, key = { _, poster -> poster.id }) { i, item ->
-                            PosterCell(k, item, focused = level == VodLevel.GRID && i == safeGrid)
+                        Text(
+                            text = selectedRow?.title.orEmpty(),
+                            color = Color.White,
+                            fontSize = (30 * k).sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (gridItems.isNotEmpty()) {
+                            Text(
+                                text = "${if (level == VodLevel.GRID) safeGrid + 1 else 1} / ${gridItems.size}",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = (26 * k).sp
+                            )
+                        }
+                    }
+                    if (gridItems.isEmpty()) {
+                        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text(
+                                text = if (selectedRow?.kind == VodRowKind.MY_LIST) "Nothing in My list yet. Long-press OK on a poster to add it."
+                                else if (items.isEmpty()) "Loading..." else "Nothing here",
+                                color = Color.White.copy(alpha = 0.6f),
+                                fontSize = (28 * k).sp
+                            )
+                        }
+                    } else {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(VOD_COLUMNS),
+                            state = gridState,
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(horizontal = (40 * k).dp, vertical = (6 * k).dp),
+                            horizontalArrangement = Arrangement.spacedBy((18 * k).dp),
+                            verticalArrangement = Arrangement.spacedBy((18 * k).dp)
+                        ) {
+                            itemsIndexed(gridItems, key = { _, poster -> poster.id }) { i, item ->
+                                PosterCell(k, item, focused = level == VodLevel.GRID && i == safeGrid)
+                            }
                         }
                     }
                 }
@@ -418,6 +467,48 @@ fun TvVodScreen(
     }
 }
 
+/** Title, rating, year / duration / genre, cast, director and plot of the focused poster. */
+@Composable
+private fun InfoBlock(k: Float, item: ChannelEntity?, info: VodInfo?, modifier: Modifier) {
+    Column(modifier = modifier.padding(start = (40 * k).dp, end = (40 * k).dp, top = (36 * k).dp)) {
+        if (item == null) return@Column
+        Text(item.name, color = Color.White, fontSize = (46 * k).sp, fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height((12 * k).dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            val rating = info?.rating?.takeIf { it.isNotBlank() } ?: item.rating
+            if (!rating.isNullOrBlank()) {
+                Text(
+                    rating, color = Color.White, fontSize = (26 * k).sp,
+                    modifier = Modifier.clip(RoundedCornerShape((4 * k).dp)).background(Color(0xFF5F6368)).padding(horizontal = (10 * k).dp, vertical = (2 * k).dp)
+                )
+                Spacer(Modifier.width((20 * k).dp))
+            }
+            Text(info?.metaLine.orEmpty(), color = Color.White.copy(alpha = 0.8f), fontSize = (28 * k).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        if (info != null) {
+            Spacer(Modifier.height((16 * k).dp))
+            if (info.cast.isNotBlank()) LabelledLine(k, "Cast:", info.cast)
+            if (info.director.isNotBlank()) LabelledLine(k, "Director:", info.director)
+            if (info.plot.isNotBlank()) {
+                Spacer(Modifier.height((12 * k).dp))
+                Text(
+                    info.plot, color = Color.White.copy(alpha = 0.85f), fontSize = (27 * k).sp,
+                    maxLines = 5, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.fillMaxWidth(0.62f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LabelledLine(k: Float, label: String, value: String) {
+    Row(modifier = Modifier.fillMaxWidth(0.62f)) {
+        Text(label, color = Color.White.copy(alpha = 0.55f), fontSize = (27 * k).sp, modifier = Modifier.width((150 * k).dp))
+        Text(value, color = Color.White.copy(alpha = 0.85f), fontSize = (27 * k).sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
 @Composable
 private fun DialogButton(k: Float, text: String, focused: Boolean) {
     Box(
@@ -456,6 +547,20 @@ private fun PosterCell(k: Float, item: ChannelEntity, focused: Boolean) {
                     contentDescription = item.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
+                )
+            }
+            if (!item.rating.isNullOrBlank()) {
+                Text(
+                    item.rating,
+                    color = Color.White,
+                    fontSize = (20 * k).sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding((8 * k).dp)
+                        .clip(RoundedCornerShape((4 * k).dp))
+                        .background(Color(0xFF1E88E5))
+                        .padding(horizontal = (8 * k).dp, vertical = (2 * k).dp)
                 )
             }
             if (item.isFavorite) {
