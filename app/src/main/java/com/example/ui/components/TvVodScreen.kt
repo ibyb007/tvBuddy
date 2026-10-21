@@ -16,6 +16,20 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntOffset
 import coil.request.ImageRequest
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.BookmarkRemove
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay
+import androidx.compose.material.icons.filled.Web
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -99,7 +113,9 @@ private const val RAIL_EXPANDED_VOD_PX = 440f
 /** RAIL = expanded nav rail (Movies / Shows highlighted), GROUPS = groups list, GRID = posters. */
 private enum class VodLevel { RAIL, GROUPS, GRID }
 
-private enum class VodRowKind { MY_LIST, ALL, GROUP }
+private enum class VodRowKind { MY_LIST, HISTORY, ALL, GROUP }
+
+private enum class DetailAction { PLAY, RESUME, FROM_START, EXTERNAL, TRAILER, MY_LIST, REMOVE_HISTORY }
 
 private data class VodRow(val kind: VodRowKind, val title: String, val playlistId: Long = -1L)
 
@@ -117,9 +133,19 @@ internal fun TvVodScreen(
     itemsFlow: Flow<List<ChannelEntity>>,
     groups: List<ChannelGroupEntity>,
     playlists: List<PlaylistEntity>,
-    onPlay: (ChannelEntity) -> Unit,
+    /** Plays the movie, starting at the given position (0 = from the beginning). */
+    onPlay: (ChannelEntity, Long) -> Unit,
     onToggleMyList: (ChannelEntity) -> Unit,
     onHideGroup: (playlistId: Long, groupTitle: String) -> Unit,
+    /** Movies / shows that were watched (newest first): the "History" group. */
+    historyFlow: Flow<List<ChannelEntity>> = kotlinx.coroutines.flow.flowOf(emptyList()),
+    /** Where a movie was left (0 = not started / finished). */
+    resumeOf: (ChannelEntity) -> Long = { 0L },
+    onRemoveHistory: (ChannelEntity) -> Unit = {},
+    onOpenTrailer: (String) -> Unit = {},
+    onOpenExternal: (ChannelEntity) -> Unit = {},
+    /** Opens straight on this item's details (coming back from its playback). */
+    initialDetailId: Long? = null,
     onBack: () -> Unit,
     /** Plot, cast, backdrop ... of a movie / show (null when the provider has none). */
     loadInfo: suspend (ChannelEntity) -> VodInfo? = { null },
@@ -142,6 +168,7 @@ internal fun TvVodScreen(
     val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val isMovies = contentType == ContentType.MOVIE
     val items by itemsFlow.collectAsState(initial = emptyList())
+    val historyItems by historyFlow.collectAsState(initial = emptyList())
 
     // ---- what is shown: active playlists, visible groups only ----
     val activeIds = remember(playlists) { playlists.filter { it.isActive }.map { it.id }.toSet() }
@@ -160,6 +187,7 @@ internal fun TvVodScreen(
     val rows = remember(typeGroups, playlists, isMovies) {
         buildList {
             add(VodRow(VodRowKind.MY_LIST, "My list"))
+            add(VodRow(VodRowKind.HISTORY, "History"))
             add(VodRow(VodRowKind.ALL, if (isMovies) "All movies" else "All shows"))
             for (pl in playlists.filter { it.isActive }) {
                 val own = typeGroups.filter { it.playlistId == pl.id && it.isVisible }
@@ -183,21 +211,22 @@ internal fun TvVodScreen(
     var level by remember { mutableStateOf(VodLevel.GROUPS) }
     var railIndex by remember { mutableIntStateOf(railEntries.indexOfFirst { it.id == currentRailId }.coerceAtLeast(0)) }
     var lastBackAt by remember { mutableLongStateOf(0L) }
-    var groupFocus by remember { mutableIntStateOf(1) }       // start on "All movies" / "All shows"
+    var groupFocus by remember { mutableIntStateOf(2) }       // start on "All movies" / "All shows"
     var gridIndex by remember { mutableIntStateOf(0) }
     var hideRow by remember { mutableStateOf<VodRow?>(null) }
     var hideChoice by remember { mutableIntStateOf(1) }       // 0 Cancel, 1 Hide group
-    var detailId by remember { mutableStateOf<Long?>(null) }
+    var detailId by remember { mutableStateOf(initialDetailId) }
     var detailChoice by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
 
     val safeGroup = groupFocus.coerceIn(0, (rows.size - 1).coerceAtLeast(0))
     val selectedRow = rows.getOrNull(safeGroup)
-    val gridItems = remember(selectedRow, visibleItems, byGroup) {
+    val gridItems = remember(selectedRow, visibleItems, byGroup, historyItems) {
         val sr = selectedRow
         when {
             sr == null -> visibleItems
             sr.kind == VodRowKind.MY_LIST -> visibleItems.filter { it.isFavorite }
+            sr.kind == VodRowKind.HISTORY -> historyItems.filter { it.playlistId in activeIds }
             sr.kind == VodRowKind.GROUP -> byGroup[sr.playlistId to sr.title].orEmpty()
             else -> visibleItems
         }
@@ -211,7 +240,9 @@ internal fun TvVodScreen(
         if (level == VodLevel.RAIL) (RAIL_EXPANDED_VOD_PX * k).dp else (RAIL_COLLAPSED_PX * k).dp,
         tween(220), label = "vodRail"
     )
-    val detailItem = remember(detailId, items) { detailId?.let { id -> items.firstOrNull { it.id == id } } }
+    val detailItem = remember(detailId, items, historyItems) {
+        detailId?.let { id -> items.firstOrNull { it.id == id } ?: historyItems.firstOrNull { it.id == id } }
+    }
 
     // the grid restarts at its first poster whenever another group is focused
     val openGroup by rememberUpdatedState(onOpenGroup)
@@ -224,7 +255,7 @@ internal fun TvVodScreen(
         when (row.kind) {
             VodRowKind.GROUP -> openGroup(row.playlistId, row.title)
             VodRowKind.ALL -> needMoreAll()
-            VodRowKind.MY_LIST -> {}
+            VodRowKind.MY_LIST, VodRowKind.HISTORY -> {}
         }
     }
     // scrolling "All movies" towards its end asks for more
@@ -262,7 +293,7 @@ internal fun TvVodScreen(
     }
 
     // details of the focused poster, asked from the server a moment after the focus settles
-    val infoItem = gridItems.getOrNull(safeGrid)
+    val infoItem = detailItem ?: gridItems.getOrNull(safeGrid)
     var info by remember { mutableStateOf<VodInfo?>(null) }
     LaunchedEffect(infoItem?.id) {
         info = null
@@ -298,6 +329,23 @@ internal fun TvVodScreen(
         if (top < viewStart || top + cell.size.height > viewEnd) gridState.animateScrollBy((top - viewStart).toFloat(), tween(220, easing = FastOutSlowInEasing))
     }
 
+    // buttons of the details page (TiviMate): Play / Resume + Play from beginning, external player, trailer, My list, Remove from History
+    val resumeMs = detailItem?.let { resumeOf(it) } ?: 0L
+    val inHistory = detailItem?.let { d -> historyItems.any { it.id == d.id } } ?: false
+    val trailerId = info?.trailer.orEmpty()
+    val detailActions = remember(detailItem?.id, isMovies, resumeMs > 0, inHistory, trailerId.isNotBlank()) {
+        buildList {
+            if (isMovies) {
+                if (resumeMs > 0) { add(DetailAction.RESUME); add(DetailAction.FROM_START) } else add(DetailAction.PLAY)
+                add(DetailAction.EXTERNAL)
+            }
+            if (trailerId.isNotBlank()) add(DetailAction.TRAILER)
+            add(DetailAction.MY_LIST)
+            if (inHistory) add(DetailAction.REMOVE_HISTORY)
+        }
+    }
+    val safeChoice = detailChoice.coerceIn(0, detailActions.lastIndex)
+
     fun openDetails(item: ChannelEntity) {
         detailId = item.id
         detailChoice = 0
@@ -312,9 +360,15 @@ internal fun TvVodScreen(
         }
         val detail = detailItem
         if (detail != null) {
-            val playable = isMovies
-            val choice = if (playable) detailChoice else 1
-            if (choice == 0) onPlay(detail) else onToggleMyList(detail)
+            when (detailActions.getOrNull(safeChoice)) {
+                DetailAction.PLAY, DetailAction.FROM_START -> onPlay(detail, 0L)
+                DetailAction.RESUME -> onPlay(detail, resumeMs)
+                DetailAction.EXTERNAL -> onOpenExternal(detail)
+                DetailAction.TRAILER -> onOpenTrailer(trailerId)
+                DetailAction.MY_LIST -> onToggleMyList(detail)
+                DetailAction.REMOVE_HISTORY -> onRemoveHistory(detail)
+                null -> {}
+            }
             return
         }
         when (level) {
@@ -349,10 +403,9 @@ internal fun TvVodScreen(
             return true
         }
         if (detailItem != null) {
-            val max = if (isMovies) 1 else 0
             when (key) {
-                Key.DirectionLeft -> detailChoice = (detailChoice - 1).coerceAtLeast(0)
-                Key.DirectionRight -> detailChoice = (detailChoice + 1).coerceAtMost(max)
+                Key.DirectionLeft -> detailChoice = (safeChoice - 1).coerceAtLeast(0)
+                Key.DirectionRight -> detailChoice = (safeChoice + 1).coerceAtMost(detailActions.lastIndex)
                 else -> {}
             }
             return true
@@ -530,6 +583,7 @@ internal fun TvVodScreen(
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 text = if (selectedRow?.kind == VodRowKind.MY_LIST) "Nothing in My list yet. Long-press OK on a poster to add it."
+                                else if (selectedRow?.kind == VodRowKind.HISTORY) "Nothing watched yet"
                                 else if (loading || items.isEmpty()) "Loading..." else "Nothing here",
                                 color = Color.White.copy(alpha = 0.6f),
                                 fontSize = (28 * k).sp
@@ -555,7 +609,7 @@ internal fun TvVodScreen(
 
         // ---- details ----
         detailItem?.let { item ->
-            VodDetails(k, item, isMovies, detailChoice, Modifier.fillMaxSize())
+            VodDetails(k, item, info, detailActions, safeChoice, Modifier.fillMaxSize())
         }
 
         // ---- hide group? ----
@@ -738,44 +792,86 @@ private fun PosterCell(k: Float, item: ChannelEntity, focused: Boolean) {
     }
 }
 
+/** Details page of a poster: the same backdrop, title and synopsis as the browse page, and the action buttons below. */
 @Composable
-private fun VodDetails(k: Float, item: ChannelEntity, isMovies: Boolean, choice: Int, modifier: Modifier) {
+private fun VodDetails(k: Float, item: ChannelEntity, info: VodInfo?, actions: List<DetailAction>, choice: Int, modifier: Modifier) {
     Box(modifier = modifier.background(VodBg)) {
-        Row(modifier = Modifier.fillMaxSize().padding((64 * k).dp), horizontalArrangement = Arrangement.spacedBy((48 * k).dp)) {
-            Box(
-                modifier = Modifier
-                    .width((420 * k).dp)
-                    .aspectRatio(2f / 3f)
-                    .clip(RoundedCornerShape((12 * k).dp))
-                    .background(VodPosterBg)
-            ) {
-                if (!item.logoUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = item.logoUrl,
-                        contentDescription = item.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
+        val backdrop = info?.backdropUrl.orEmpty().ifBlank { item.logoUrl.orEmpty() }
+        if (backdrop.isNotBlank()) {
+            AsyncImage(
+                model = backdrop,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alignment = Alignment.TopEnd,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(0f to VodBg.copy(alpha = 0.96f), 0.6f to VodBg.copy(alpha = 0.78f), 1f to VodBg.copy(alpha = 0.35f))
+            )
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0.45f to Color.Transparent, 0.75f to VodBg.copy(alpha = 0.92f), 1f to VodBg)
+            )
+        )
+        InfoBlock(k, item, info, modifier = Modifier.fillMaxWidth().height((620 * k).dp).padding(start = (16 * k).dp))
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = (48 * k).dp, end = (24 * k).dp, bottom = (192 * k).dp)
+                .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy((24 * k).dp)
+        ) {
+            actions.forEachIndexed { i, action ->
+                val (label, icon) = when (action) {
+                    DetailAction.PLAY -> "Play" to Icons.Default.PlayArrow
+                    DetailAction.RESUME -> "Resume" to Icons.Default.PlayArrow
+                    DetailAction.FROM_START -> "Play from beginning" to Icons.Default.Replay
+                    DetailAction.EXTERNAL -> "Open in external player" to Icons.Default.Web
+                    DetailAction.TRAILER -> "Trailer" to Icons.Default.Movie
+                    DetailAction.MY_LIST ->
+                        (if (item.isFavorite) "Remove from My list" else "Add to My list") to
+                            (if (item.isFavorite) Icons.Default.BookmarkRemove else Icons.Default.BookmarkAdd)
+                    DetailAction.REMOVE_HISTORY -> "Remove from History" to Icons.Default.Delete
                 }
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(item.name, color = Color.White, fontSize = (48 * k).sp, fontWeight = FontWeight.Medium, maxLines = 3, overflow = TextOverflow.Ellipsis)
-                Spacer(Modifier.height((12 * k).dp))
-                Text(item.groupTitle, color = Color.White.copy(alpha = 0.7f), fontSize = (28 * k).sp)
-                Spacer(Modifier.height((40 * k).dp))
-                Row(horizontalArrangement = Arrangement.spacedBy((16 * k).dp)) {
-                    if (isMovies) DialogButton(k, "Play", choice == 0)
-                    DialogButton(k, if (item.isFavorite) "Remove from My list" else "Add to My list", choice == 1 || !isMovies)
-                }
-                if (!isMovies) {
-                    Spacer(Modifier.height((24 * k).dp))
-                    Text(
-                        "Episodes of shows can't be played yet.",
-                        color = Color.White.copy(alpha = 0.6f),
-                        fontSize = (24 * k).sp
-                    )
-                }
+                ActionButton(k, label, icon, i == choice)
             }
         }
+        if (actions.none { it == DetailAction.PLAY || it == DetailAction.RESUME }) {
+            Text(
+                "Episodes of shows can't be played yet.",
+                color = Color.White.copy(alpha = 0.6f),
+                fontSize = (24 * k).sp,
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = (56 * k).dp, bottom = (130 * k).dp)
+            )
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun ActionButton(k: Float, text: String, icon: ImageVector, focused: Boolean) {
+    val bring = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    LaunchedEffect(focused) { if (focused) bring.bringIntoView() }   // keeps the focused button on screen in the scrolling row
+    Row(
+        modifier = Modifier
+            .bringIntoViewRequester(bring)
+            .height((72 * k).dp)
+            .clip(RoundedCornerShape((10 * k).dp))
+            .background(if (focused) VodPillFocused else Color(0xFF2B2F36))
+            .padding(horizontal = (28 * k).dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = if (focused) Color.Black else Color.White, modifier = Modifier.size((36 * k).dp))
+        Spacer(Modifier.width((16 * k).dp))
+        Text(
+            text,
+            color = if (focused) Color.Black else Color.White,
+            fontSize = (30 * k).sp,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
