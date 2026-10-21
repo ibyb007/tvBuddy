@@ -505,7 +505,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (isUpdateRunning(key)) return
         setUpdateState(key, UpdateRowState(running = true))
         viewModelScope.launch {
-            repository.refreshPlaylist(playlistId).fold(
+            repository.refreshPlaylist(playlistId) { msg -> setUpdateState(key, UpdateRowState(running = true, message = msg)) }.fold(
                 onSuccess = { setUpdateState(key, UpdateRowState(message = "The playlist is successfully updated")) },
                 onFailure = { setUpdateState(key, UpdateRowState(message = "Update failed: ${it.localizedMessage ?: "unknown error"}", isError = true)) }
             )
@@ -525,7 +525,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var ok = 0
             val failures = mutableListOf<String>()
             for (pl in list) {
-                repository.refreshPlaylist(pl.id).fold(
+                repository.refreshPlaylist(pl.id) { msg -> setUpdateState(key, UpdateRowState(running = true, message = "${pl.name}: $msg")) }.fold(
                     onSuccess = { ok++ },
                     onFailure = { failures += "${pl.name}: ${it.localizedMessage ?: "error"}" }
                 )
@@ -837,11 +837,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
 
-    private fun runImport(failPrefix: String, block: suspend () -> Result<TvBuddyRepository.ImportResult>) {
+    private fun runImport(failPrefix: String, block: suspend (onProgress: (String) -> Unit) -> Result<TvBuddyRepository.ImportResult>) {
         if (_importState.value is ImportUiState.Processing) return
-        _importState.value = ImportUiState.Processing
+        _importState.value = ImportUiState.Processing()
         viewModelScope.launch {
-            block().fold(
+            block { msg ->
+                if (_importState.value is ImportUiState.Processing) _importState.value = ImportUiState.Processing(msg)
+            }.fold(
                 onSuccess = { _importState.value = ImportUiState.Done(it.playlistId, it.name, it.counts) },
                 onFailure = { _importState.value = ImportUiState.Failed("$failPrefix: ${it.localizedMessage ?: "unknown error"}") }
             )
@@ -865,8 +867,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         username: String = "", password: String = "",
         deviceId: String = "", deviceId2: String = "", serial: String = "",
         includeTv: Boolean = true, includeVod: Boolean = false
-    ) = runImport("Stalker portal error") {
-        repository.addStalkerPlaylist(name, portalUrl, mac, preset, username, password, deviceId, deviceId2, serial, includeTv, includeVod)
+    ) = runImport("Stalker portal error") { progress ->
+        repository.addStalkerPlaylist(name, portalUrl, mac, preset, username, password, deviceId, deviceId2, serial, includeTv, includeVod, progress)
     }
 
     fun addJsonPlaylist(name: String, source: String, isRawContent: Boolean = false, preset: SpoofPreset = SpoofPreset.TIVIMATE) =
@@ -902,7 +904,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         setUpdateState(key, UpdateRowState(running = true))
         viewModelScope.launch {
             repository.updatePlaylist(updated)
-            repository.refreshPlaylist(updated.id).fold(
+            repository.refreshPlaylist(updated.id) { msg -> setUpdateState(key, UpdateRowState(running = true, message = msg)) }.fold(
                 onSuccess = { setUpdateState(key, UpdateRowState(message = "Changes applied, playlist is updated")) },
                 onFailure = { setUpdateState(key, UpdateRowState(message = "Update failed: ${it.localizedMessage ?: "unknown error"}", isError = true)) }
             )
