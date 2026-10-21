@@ -63,6 +63,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -264,6 +265,8 @@ fun TvBrowseScreen(
     /** Movies / Shows entries appear in the rail only when an active playlist actually has that VOD. */
     hasMovies: Boolean = false,
     hasShows: Boolean = false,
+    /** True while the Movies / Shows page is open on top: this screen must not grab the key focus back. */
+    focusSuspended: Boolean = false,
     onOpenVod: (contentType: String) -> Unit = {},
     /** Reports where the preview window sits (root coordinates) so the shared video surface can follow it. */
     onPreviewBounds: (Rect) -> Unit = {},
@@ -363,14 +366,15 @@ fun TvBrowseScreen(
     // ---------------- focus plumbing ----------------
     val focusRequester = remember { FocusRequester() }
     var hasFocus by remember { mutableStateOf(false) }
-    LaunchedEffect(level, optionsRow) {
-        try { focusRequester.requestFocus() } catch (_: Exception) {}
+    val suspendedNow by rememberUpdatedState(focusSuspended)
+    LaunchedEffect(level, optionsRow, focusSuspended) {
+        if (!focusSuspended) try { focusRequester.requestFocus() } catch (_: Exception) {}
     }
     LaunchedEffect(Unit) {
         // take focus back after dialogs (search / settings) close
         while (true) {
             delay(1000)
-            if (!hasFocus) {
+            if (!hasFocus && !suspendedNow) {
                 try { focusRequester.requestFocus() } catch (_: Exception) {}
             }
         }
