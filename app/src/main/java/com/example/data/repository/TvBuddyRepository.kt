@@ -37,6 +37,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
+import com.example.data.network.VodCategory
+import com.example.data.network.VodPage
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -321,6 +324,9 @@ class TvBuddyRepository(
     }
 
     suspend fun deletePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
+        forgetVodState(playlist.id, ContentType.MOVIE)
+        forgetVodState(playlist.id, ContentType.SHOW)
+        stalkerSessions.remove(playlist.id)
         channelDao.deleteChannelsByPlaylist(playlist.id)
         channelGroupDao.deleteGroupsByPlaylist(playlist.id)
         epgSourceDao.clearAssignedSourcesForPlaylist(playlist.id)
@@ -498,7 +504,12 @@ class TvBuddyRepository(
             val merged = fresh.map { ch ->
                 val match = take(byUrl[ch.contentType to ch.streamUrl])
                     ?: ch.streamId.takeIf { it.isNotBlank() }?.let { take(byStreamId[ch.contentType to it]) }
-                if (match != null) ch.copy(id = match.id, isFavorite = match.isFavorite) else ch
+                if (match == null) ch else {
+                    // a panel that dropped the category request answers with everything in "Live TV": keep the group it had
+                    val keepGroup = ch.contentType == ContentType.TV && ch.groupTitle == "Live TV" &&
+                        match.groupTitle.isNotBlank() && match.groupTitle != "Live TV"
+                    ch.copy(id = match.id, isFavorite = match.isFavorite, groupTitle = if (keepGroup) match.groupTitle else ch.groupTitle)
+                }
             }
 
             insertChannelsBulk(merged)
@@ -585,6 +596,138 @@ class TvBuddyRepository(
             if (exp != null && exp != pl.expirationDate) playlistDao.updateExpiration(playlistId, exp)
         } catch (_: Exception) {
         }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Movies and shows of a Stalker portal, loaded lazily (IPTVnator style): the categories are known from the
+    // import, the items of a category are fetched when it is opened, "All movies" fills while it is scrolled.
+    // ---------------------------------------------------------------------------------------------
+
+    private class VodSource(val categories: List<VodCategory>) {
+        val idByTitle: Map<String, String> = categories.associate { it.title to it.id }
+        val titleById: Map<String, String> = categories.associate { it.id to it.title }
+        fun indexOf(id: String) = categories.indexOfFirst { it.id == id }.coerceAtLeast(0)
+    }
+
+    private val vodScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val vodInsertLock = kotlinx.coroutines.sync.Mutex()
+    private val vodSources = java.util.concurrent.ConcurrentHashMap<String, VodSource>()
+    /** Pages already downloaded per "playlist|type|category" and the number of pages the category has. */
+    private val vodPages = java.util.concurrent.ConcurrentHashMap<String, MutableSet<Int>>()
+    private val vodPageCount = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val vodTotals = java.util.concurrent.ConcurrentHashMap<Pair<Long, String>, Int>()
+    private val stalkerGates = java.util.concurrent.ConcurrentHashMap<Long, AdaptiveGate>()
+    private val stalkerSessions = java.util.concurrent.ConcurrentHashMap<Long, Pair<StalkerAuthResult, Long>>()
+
+    private fun forgetVodState(playlistId: Long, type: String) {
+        val prefix = "$playlistId|$type|"
+        vodSources.remove("$playlistId|$type")
+        vodPages.keys.removeAll { it.startsWith(prefix) }
+        vodPageCount.keys.removeAll { it.startsWith(prefix) }
+    }
+
+    /** Logged-in session of a portal, kept for a while so opening a group costs no handshake. */
+    private suspend fun stalkerSession(pl: PlaylistEntity, force: Boolean = false): StalkerAuthResult {
+        val cached = stalkerSessions[pl.id]
+        if (!force && cached != null && System.currentTimeMillis() - cached.second < 15 * 60_000L) return cached.first
+        val auth = stalkerClient.login(pl.sourceUrl, pl.toStalkerParams(), pl.toSpoofProfile().getUserAgent())
+        if (auth.success) stalkerSessions[pl.id] = auth to System.currentTimeMillis()
+        return auth
+    }
+
+    private suspend fun vodSource(pl: PlaylistEntity, type: String): VodSource? {
+        val key = "${pl.id}|$type"
+        vodSources[key]?.let { return it }
+        val auth = stalkerSession(pl)
+        if (!auth.success) return null
+        val catalog = stalkerClient.fetchVodCatalog(type, auth, pl.toStalkerParams(), pl.toSpoofProfile().getUserAgent()) ?: return null
+        return VodSource(catalog.categories).also { vodSources[key] = it }
+    }
+
+    /** Stores items that are not stored yet (the same movie arrives through its category and through "All"). */
+    private suspend fun storeVodItems(playlistId: Long, type: String, items: List<ChannelEntity>) {
+        if (items.isEmpty()) return
+        vodInsertLock.withLock {
+            val existing = HashSet<String>()
+            items.map { it.streamId }.distinct().chunked(500).forEach { existing += channelDao.existingStreamIds(playlistId, type, it) }
+            val fresh = items.filter { it.streamId !in existing }.distinctBy { it.streamId }
+            insertChannelsBulk(fresh)
+        }
+    }
+
+    /**
+     * Downloads what is missing of one movie / show group: its first page at once (posters show up in a moment),
+     * then the other pages in parallel waves. Safe to call again and again; cancelling it (another group got the
+     * focus) just leaves the rest for next time.
+     */
+    suspend fun loadVodGroup(playlistId: Long, type: String, groupTitle: String) = withContext(Dispatchers.IO) {
+        val pl = playlistDao.getPlaylistById(playlistId) ?: return@withContext
+        if (pl.type != PlaylistType.STALKER || !pl.includeVod) return@withContext
+        val src = vodSource(pl, type) ?: return@withContext
+        val catId = src.idByTitle[groupTitle] ?: return@withContext
+        loadStalkerPages(pl, type, src, catId, wave = Int.MAX_VALUE)
+        Unit
+    }
+
+    /**
+     * Downloads pages of [catId] ("*" = everything): all missing ones, or - with a small [wave] - just the next
+     * few. Returns true while there are more pages to come.
+     */
+    private suspend fun loadStalkerPages(pl: PlaylistEntity, type: String, src: VodSource, catId: String, wave: Int): Boolean {
+        val params = pl.toStalkerParams()
+        val ua = pl.toSpoofProfile().getUserAgent()
+        var auth = stalkerSession(pl)
+        if (!auth.success) return false
+        val gate = stalkerGates.getOrPut(pl.id) { AdaptiveGate() }
+        val key = "${pl.id}|$type|$catId"
+        val done = vodPages.getOrPut(key) { java.util.concurrent.ConcurrentHashMap.newKeySet() }
+        val catIndex = if (catId == "*") 0 else src.indexOf(catId)
+        val fallbackGroup = if (type == ContentType.MOVIE) "Movies" else "Shows"
+
+        suspend fun page(p: Int): VodPage? =
+            stalkerClient.fetchVodPage(type, auth, params, pl.id, ua, catId, catIndex, p, { src.titleById[it] }, fallbackGroup, gate)
+
+        var pages = vodPageCount[key]
+        if (1 !in done || pages == null) {
+            var first = page(1)
+            if (first == null) {            // session gone? log in again once
+                auth = stalkerSession(pl, force = true)
+                if (auth.success) first = page(1)
+            }
+            if (first == null) return false
+            storeVodItems(pl.id, type, first.items)
+            done += 1
+            pages = if (first.perPage > 0 && first.totalItems > 0) minOf((first.totalItems + first.perPage - 1) / first.perPage, 2000) else 1
+            vodPageCount[key] = pages
+        }
+        val totalPages = pages ?: 1
+        val missing = (2..totalPages).filter { it !in done }
+        var left = missing.size
+        var budget = wave
+        for (chunk in missing.chunked(24)) {
+            if (budget <= 0) break
+            val take = if (budget >= chunk.size) chunk else chunk.take(budget)
+            val results = coroutineScope { take.map { p -> async { p to page(p) } }.awaitAll() }
+            storeVodItems(pl.id, type, results.flatMap { it.second?.items.orEmpty() })
+            results.forEach { (p, r) -> if (r != null) { done += p; left-- } }
+            budget -= take.size
+        }
+        return left > 0
+    }
+
+    /**
+     * "All movies" / "All shows": downloads the next few pages of every active portal's complete listing, so the
+     * list grows while the user scrolls. Returns true while any portal has more.
+     */
+    suspend fun loadMoreVodAll(type: String): Boolean = withContext(Dispatchers.IO) {
+        var more = false
+        val list = playlistDao.getAllPlaylists().first().filter { it.isActive && it.type == PlaylistType.STALKER && it.includeVod }
+        for (pl in list) {
+            if ((type == ContentType.MOVIE && pl.movieCount <= 0) || (type == ContentType.SHOW && pl.showCount <= 0)) continue
+            val src = vodSource(pl, type) ?: continue
+            if (loadStalkerPages(pl, type, src, "*", wave = 24)) more = true
+        }
+        more
     }
 
     fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getVodListByType(contentType)
@@ -761,9 +904,9 @@ class TvBuddyRepository(
     }
 
     /**
-     * Downloads a Stalker portal into the database: live TV first (usable at once), then movies and shows,
-     * which are written in batches while they stream in. A portal with 100k movies is thousands of small
-     * requests, so nothing is collected in memory and a failure part-way keeps what already arrived.
+     * Adds a Stalker portal the IPTVnator way: live TV in full (one request), but of movies and shows only the
+     * CATEGORIES (a few requests) - the items of a category are fetched when it is opened (see [loadVodGroup]).
+     * A portal with 25,000 movies is therefore usable within seconds instead of after thousands of page requests.
      */
     private suspend fun importStalkerContent(
         playlistId: Long,
@@ -774,79 +917,33 @@ class TvBuddyRepository(
         includeVod: Boolean,
         onProgress: (String) -> Unit
     ): ImportCounts {
+        var tv = 0
+        var movies = 0
+        var shows = 0
         val expiration = formatExpiration(auth.expiration)
-        val incomplete = AtomicBoolean(false)
-        val progress = VodProgress(onProgress)
-        // live TV, movies and shows download side by side (one adaptive request gate shared by the two VOD kinds)
-        val gate = AdaptiveGate()
 
-        return coroutineScope {
-            val tvJob = if (includeTv) async(Dispatchers.IO) {
-                val live = stalkerClient.fetchLiveChannels(auth, params, playlistId, userAgent)
-                if (live.isNotEmpty()) {
-                    insertChannelsBulk(live)
-                    syncGroupsForPlaylist(playlistId, live, true)
-                }
-                // live TV can be used from here on, even while the (much bigger) movie / show catalogue still comes in
-                playlistDao.updateContentCounts(playlistId, live.size, 0, 0, expiration, System.currentTimeMillis())
-                live.size
-            } else null
-
-            val vodJobs = if (includeVod) listOf(ContentType.MOVIE, ContentType.SHOW).map { type ->
-                async(Dispatchers.IO) {
-                    val titles = LinkedHashSet<String>()
-                    var stored = 0
-                    var portalOrder: List<String> = emptyList()
-                    try {
-                        val result = stalkerClient.streamVod(
-                            type, auth, params, playlistId, userAgent,
-                            onBatch = { batch ->
-                                insertChannelsBulk(batch)
-                                for (ch in batch) titles += ch.groupTitle
-                                stored += batch.size
-                            },
-                            onProgress = { n -> progress.update(type, n) },
-                            gate = gate
-                        )
-                        portalOrder = result.categoryTitles
-                        if (result.failedPages > 0) incomplete.set(true)
-                    } finally {
-                        // groups of whatever arrived, in the portal's own order (also when the download broke off)
-                        val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
-                        withContext(NonCancellable) { syncGroupTitles(playlistId, mapOf(type to ordered), true) }
-                    }
-                    stored
-                }
-            } else emptyList()
-
-            val tv = tvJob?.await() ?: 0
-            val vod = vodJobs.awaitAll()
-            ImportCounts(
-                tv = tv,
-                movies = if (includeVod) vod[0] else 0,
-                shows = if (includeVod) vod[1] else 0,
-                incomplete = incomplete.get()
-            )
-        }
-    }
-
-    /** One progress line for movies and shows that download at the same time. */
-    private class VodProgress(private val sink: (String) -> Unit) {
-        private val movies = AtomicInteger()
-        private val shows = AtomicInteger()
-        private var shown = 0
-
-        fun update(type: String, n: Int) {
-            if (type == ContentType.MOVIE) movies.set(n) else shows.set(n)
-            val total = movies.get() + shows.get()
-            val line = synchronized(this) {
-                if (total - shown < 250) null else {
-                    shown = total
-                    "Movies: ${String.format(Locale.US, "%,d", movies.get())}  Shows: ${String.format(Locale.US, "%,d", shows.get())}"
-                }
+        // live TV first and on its own: groups come from a second request that must not compete with anything else
+        if (includeTv) {
+            onProgress("Loading live channels...")
+            val live = stalkerClient.fetchLiveChannels(auth, params, playlistId, userAgent)
+            if (live.isNotEmpty()) {
+                insertChannelsBulk(live)
+                syncGroupsForPlaylist(playlistId, live, true)
             }
-            if (line != null) sink(line)
+            tv = live.size
+            playlistDao.updateContentCounts(playlistId, tv, 0, 0, expiration, System.currentTimeMillis())
         }
+
+        if (includeVod) {
+            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
+                onProgress(if (type == ContentType.MOVIE) "Loading movie categories..." else "Loading show categories...")
+                val catalog = stalkerClient.fetchVodCatalog(type, auth, params, userAgent) ?: continue
+                syncGroupTitles(playlistId, mapOf(type to catalog.categories.map { it.title }), true)
+                val count = catalog.total.takeIf { it > 0 } ?: catalog.categories.size
+                if (type == ContentType.MOVIE) movies = count else shows = count
+            }
+        }
+        return ImportCounts(tv = tv, movies = movies, shows = shows, incomplete = false)
     }
 
     /**
@@ -861,11 +958,11 @@ class TvBuddyRepository(
         onProgress("Connecting to the portal...")
         val auth = stalkerClient.login(pl.sourceUrl, params, ua)
         if (!auth.success) throw Exception(auth.message)
+        stalkerSessions[pl.id] = auth to System.currentTimeMillis()
         val expiration = formatExpiration(auth.expiration)
 
         val old = channelDao.getIdentities(pl.id)
-        // movies, shows and TV are matched from different threads at once
-        val used: MutableSet<Long> = java.util.Collections.synchronizedSet(HashSet<Long>())
+        val used = HashSet<Long>()
         val byStreamId = old.filter { it.streamId.isNotBlank() }.groupBy { it.contentType to it.streamId }
         val byUrl = old.groupBy { it.contentType to it.streamUrl }
         fun reuse(batch: List<ChannelEntity>): List<ChannelEntity> = batch.map { ch ->
@@ -876,80 +973,63 @@ class TvBuddyRepository(
         }
 
         // content types whose old rows that were not seen again may be removed
-        val deletable: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet<String>())
-        val fetchedAnything = AtomicBoolean(false)
-        val titlesByType = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
-        val progress = VodProgress(onProgress)
-        val gate = AdaptiveGate()
+        val deletable = HashSet<String>()
+        var fetchedAnything = false
+        val titlesByType = LinkedHashMap<String, List<String>>()
+        val oldTvGroups = if (pl.includeTv) channelDao.getTvGroupsByStreamId(pl.id).associate { it.streamId to it.groupTitle } else emptyMap()
 
-        coroutineScope {
-            if (pl.includeTv) {
-                launch(Dispatchers.IO) {
-                    onProgress("Loading live channels...")
-                    val live = stalkerClient.fetchLiveChannels(auth, params, pl.id, ua)
-                    if (live.isNotEmpty()) {
-                        fetchedAnything.set(true)
-                        insertChannelsBulk(reuse(live))
-                        titlesByType[ContentType.TV] = live.map { it.groupTitle }
-                        deletable += ContentType.TV
-                    }
-                }
-            } else {
+        if (pl.includeTv) {
+            onProgress("Loading live channels...")
+            val fetched = stalkerClient.fetchLiveChannels(auth, params, pl.id, ua)
+            // a portal that dropped the genre request answers with everything in "Live TV": keep the groups it had
+            val live = fetched.map { ch ->
+                val before = oldTvGroups[ch.streamId]
+                if (before != null && ch.groupTitle == "Live TV" && before != "Live TV") ch.copy(groupTitle = before) else ch
+            }
+            if (live.isNotEmpty()) {
+                fetchedAnything = true
+                insertChannelsBulk(reuse(live))
+                titlesByType[ContentType.TV] = live.map { it.groupTitle }
                 deletable += ContentType.TV
             }
-
-            if (pl.includeVod) {
-                for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
-                    launch(Dispatchers.IO) {
-                        val titles = LinkedHashSet<String>()
-                        var stored = 0
-                        var portalOrder: List<String> = emptyList()
-                        var complete = false
-                        try {
-                            val result = stalkerClient.streamVod(
-                                type, auth, params, pl.id, ua,
-                                onBatch = { batch ->
-                                    insertChannelsBulk(reuse(batch))
-                                    for (ch in batch) titles += ch.groupTitle
-                                    stored += batch.size
-                                },
-                                onProgress = { n -> progress.update(type, n) },
-                                gate = gate
-                            )
-                            portalOrder = result.categoryTitles
-                            complete = result.failedPages == 0 && stored > 0
-                        } finally {
-                            if (stored > 0) {
-                                // groups of whatever arrived, in the portal's own order (also when the download broke off)
-                                val ordered = portalOrder.filter { it in titles } + titles.filter { it !in portalOrder }
-                                withContext(NonCancellable) { syncGroupTitles(pl.id, mapOf(type to ordered), pl.showNewlyAddedGroups) }
-                                fetchedAnything.set(true)
-                                if (complete) deletable += type
-                            }
-                        }
-                    }
-                }
-            } else {
-                deletable += ContentType.MOVIE
-                deletable += ContentType.SHOW
-            }
+        } else {
+            deletable += ContentType.TV
         }
 
-        if (!fetchedAnything.get()) throw Exception("The provider returned no channels")
+        if (pl.includeVod) {
+            for (type in listOf(ContentType.MOVIE, ContentType.SHOW)) {
+                onProgress(if (type == ContentType.MOVIE) "Loading movie categories..." else "Loading show categories...")
+                val catalog = stalkerClient.fetchVodCatalog(type, auth, params, ua) ?: continue
+                fetchedAnything = true
+                // what was downloaded before is stale now (it comes back category by category when opened); My list stays
+                channelDao.deleteNonFavoritesByType(pl.id, type)
+                forgetVodState(pl.id, type)
+                syncGroupTitles(pl.id, mapOf(type to catalog.categories.map { it.title }), pl.showNewlyAddedGroups)
+                vodTotals[pl.id to type] = catalog.total.takeIf { it > 0 } ?: catalog.categories.size
+            }
+        } else {
+            deletable += ContentType.MOVIE
+            deletable += ContentType.SHOW
+        }
+
+        if (!fetchedAnything) throw Exception("The provider returned no channels")
 
         old.filter { it.id !in used && it.contentType in deletable }
             .map { it.id }
             .chunked(500)
             .forEach { channelDao.deleteChannelsByIds(it) }
 
-        syncGroupTitles(pl.id, titlesByType.toMap(), pl.showNewlyAddedGroups)
+        syncGroupTitles(pl.id, titlesByType, pl.showNewlyAddedGroups)
 
         val tv = channelDao.countByType(pl.id, ContentType.TV)
-        val movies = channelDao.countByType(pl.id, ContentType.MOVIE)
-        val shows = channelDao.countByType(pl.id, ContentType.SHOW)
-        // movies / shows switched off: their groups go with them
-        if (movies == 0) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.MOVIE)
-        if (shows == 0) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.SHOW)
+        // movies / shows are not downloaded up front: their numbers are the portal's totals
+        val movies = if (pl.includeVod) vodTotals[pl.id to ContentType.MOVIE] ?: pl.movieCount else 0
+        val shows = if (pl.includeVod) vodTotals[pl.id to ContentType.SHOW] ?: pl.showCount else 0
+        // movies / shows switched off: their groups go with them (live TV groups are never touched here)
+        if (!pl.includeVod) {
+            channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.MOVIE)
+            channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.SHOW)
+        }
         if (tv == 0 && !pl.includeTv) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.TV)
         playlistDao.updateContentCounts(pl.id, tv, movies, shows, expiration, System.currentTimeMillis())
         return tv + movies + shows
