@@ -1,6 +1,21 @@
 package com.example.ui.components
 
+import android.os.SystemClock
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.ui.platform.LocalDensity
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.requiredWidth
+import androidx.compose.runtime.State
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.IntOffset
+import coil.request.ImageRequest
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.focusable
@@ -71,12 +86,18 @@ private val VodPanelBg = Color(0xFF181B1F)
 private val VodPillFocused = Color(0xFFE8EAED)
 private val VodPillApplied = Color(0xFF30343A)
 private val VodPosterBg = Color(0xFF23272D)
-/** Poster columns while the rail + groups are showing, and while they are slid out (more room, same poster size). */
-private const val VOD_COLUMNS_NARROW = 6
-private const val VOD_COLUMNS_WIDE = 8
+/**
+ * The poster grid has ONE fixed layout (full screen width, always this many columns). The rail + groups
+ * panels never resize it: they slide in over its left part and push it to the right (the part that
+ * leaves the screen is simply cut off), exactly like TiviMate. So posters keep their size and the
+ * images are never re-laid-out / re-requested while the panels move.
+ */
+private const val VOD_COLUMNS = 8
 private const val VOD_PANEL_PX = 500f
+private const val RAIL_EXPANDED_VOD_PX = 440f
 
-private enum class VodLevel { GROUPS, GRID }
+/** RAIL = expanded nav rail (Movies / Shows highlighted), GROUPS = groups list, GRID = posters. */
+private enum class VodLevel { RAIL, GROUPS, GRID }
 
 private enum class VodRowKind { MY_LIST, ALL, GROUP }
 
@@ -86,12 +107,12 @@ private data class VodRow(val kind: VodRowKind, val title: String, val playlistI
  * The Movies / Shows page (opened from the nav rail when a playlist has VOD): a groups list on the left
  * (My list, All movies, then the groups) and a poster grid on the right that follows the focused group.
  *
- *  - LEFT / RIGHT hand focus between the list and the grid, OK on a poster opens its details
+ *  - LEFT / RIGHT hand focus between the expanded rail, the list and the grid, OK on a poster opens its details
  *  - long-press OK on a group asks to hide it (it can be shown again in the playlist settings)
- *  - BACK steps grid -> list -> back to the rail
+ *  - BACK steps grid -> list -> expanded rail (still on this Movies / Shows page) -> "press back again to exit"
  */
 @Composable
-fun TvVodScreen(
+internal fun TvVodScreen(
     contentType: String,
     itemsFlow: Flow<List<ChannelEntity>>,
     groups: List<ChannelGroupEntity>,
@@ -108,9 +129,17 @@ fun TvVodScreen(
     onNeedMoreAll: () -> Unit = {},
     /** True while the app is downloading a group / the "All" list. */
     loading: Boolean = false,
+    /** A rail entry other than the current page was chosen (TV, Search, Favorites, Settings or the other VOD page). */
+    onRailSelect: (RailId) -> Unit = {},
+    /** Leave the app (second BACK on the expanded rail). */
+    onExit: () -> Unit = {},
+    /** True while a dialog (search / settings) is open above: this page must not grab the key focus back. */
+    focusSuspended: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
+    val context = LocalContext.current
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
     val isMovies = contentType == ContentType.MOVIE
     val items by itemsFlow.collectAsState(initial = emptyList())
 
@@ -144,7 +173,16 @@ fun TvVodScreen(
         }
     }
 
+    val currentRailId = if (isMovies) RailId.MOVIES else RailId.SHOWS
+    val railEntries = remember(playlists, isMovies) {
+        buildRailEntries(
+            hasMovies = isMovies || playlists.any { it.isActive && it.movieCount > 0 },
+            hasShows = !isMovies || playlists.any { it.isActive && it.showCount > 0 }
+        )
+    }
     var level by remember { mutableStateOf(VodLevel.GROUPS) }
+    var railIndex by remember { mutableIntStateOf(railEntries.indexOfFirst { it.id == currentRailId }.coerceAtLeast(0)) }
+    var lastBackAt by remember { mutableLongStateOf(0L) }
     var groupFocus by remember { mutableIntStateOf(1) }       // start on "All movies" / "All shows"
     var gridIndex by remember { mutableIntStateOf(0) }
     var hideRow by remember { mutableStateOf<VodRow?>(null) }
@@ -166,17 +204,13 @@ fun TvVodScreen(
     }
     val safeGrid = gridIndex.coerceIn(0, (gridItems.size - 1).coerceAtLeast(0))
 
-    // TiviMate behaviour: moving into the posters slides the nav rail + groups out to the left, moving back slides them in
-    val panelsOut = level == VodLevel.GRID
-    val columns = if (panelsOut) VOD_COLUMNS_WIDE else VOD_COLUMNS_NARROW
-    val railWidth by animateDpAsState(if (panelsOut) 0.dp else (RAIL_COLLAPSED_PX * k).dp, tween(260), label = "vodRail")
-    val groupsWidth by animateDpAsState(if (panelsOut) 0.dp else (VOD_PANEL_PX * k).dp, tween(260), label = "vodGroups")
-    val railEntries = remember(playlists, isMovies) {
-        buildRailEntries(
-            hasMovies = isMovies || playlists.any { it.isActive && it.movieCount > 0 },
-            hasShows = !isMovies || playlists.any { it.isActive && it.showCount > 0 }
-        )
-    }
+    // TiviMate behaviour: moving into the posters slides the nav rail + groups out to the left, moving back slides them in.
+    // Only offsets are animated (read in the layout phase), the poster grid itself never changes size.
+    val slide = animateFloatAsState(if (level == VodLevel.GRID) 1f else 0f, tween(300, easing = FastOutSlowInEasing), label = "vodSlide")
+    val railWidth = animateDpAsState(
+        if (level == VodLevel.RAIL) (RAIL_EXPANDED_VOD_PX * k).dp else (RAIL_COLLAPSED_PX * k).dp,
+        tween(220), label = "vodRail"
+    )
     val detailItem = remember(detailId, items) { detailId?.let { id -> items.firstOrNull { it.id == id } } }
 
     // the grid restarts at its first poster whenever another group is focused
@@ -203,16 +237,26 @@ fun TvVodScreen(
             hideRow != null -> hideRow = null
             detailId != null -> detailId = null
             level == VodLevel.GRID -> { gridIndex = 0; level = VodLevel.GROUPS }
-            else -> onBack()
+            // groups -> the expanded rail, still on this Movies / Shows page (not the live TV page)
+            level == VodLevel.GROUPS -> level = VodLevel.RAIL
+            else -> {
+                val t = SystemClock.elapsedRealtime()
+                if (t - lastBackAt < 2000L) onExit()
+                else {
+                    lastBackAt = t
+                    Toast.makeText(context, "Press Back again to exit", Toast.LENGTH_SHORT).show()
+                }
+            }
         }
     }
 
     val focusRequester = remember { FocusRequester() }
     var hasFocus by remember { mutableStateOf(false) }
+    val suspendedNow by rememberUpdatedState(focusSuspended)
     LaunchedEffect(Unit) {
         // grab the key focus and keep it (another screen underneath must not take it back)
         while (true) {
-            if (!hasFocus) try { focusRequester.requestFocus() } catch (_: Exception) {}
+            if (!hasFocus && !suspendedNow) try { focusRequester.requestFocus() } catch (_: Exception) {}
             delay(500)
         }
     }
@@ -234,18 +278,24 @@ fun TvVodScreen(
         val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: first
         if (safeGroup < first || safeGroup > last - 1) listState.scrollToItem((safeGroup - 3).coerceAtLeast(0))
     }
-    LaunchedEffect(safeGrid, level) {
+    LaunchedEffect(safeGrid, level, gridItems.size) {
         if (level != VodLevel.GRID) {
             // back at the groups: the posters start from their first one again
-            if (gridState.firstVisibleItemIndex != 0) gridState.scrollToItem(0)
+            if (gridState.firstVisibleItemIndex != 0 || gridState.firstVisibleItemScrollOffset != 0) gridState.scrollToItem(0)
             return@LaunchedEffect
         }
-        val visible = gridState.layoutInfo.visibleItemsInfo
-        val first = visible.firstOrNull()?.index ?: 0
-        val last = visible.lastOrNull()?.index ?: 0
-        if (safeGrid < first || safeGrid > last - columns) {
-            gridState.scrollToItem((safeGrid - safeGrid % columns - columns).coerceAtLeast(0))
+        val info = gridState.layoutInfo
+        val cell = info.visibleItemsInfo.firstOrNull { it.index == safeGrid }
+        if (cell == null) {
+            // far jump: place the row directly instead of flying over hundreds of posters
+            gridState.scrollToItem(safeGrid - safeGrid % VOD_COLUMNS)
+            return@LaunchedEffect
         }
+        val top = cell.offset.y
+        val viewStart = info.viewportStartOffset + info.beforeContentPadding
+        val viewEnd = info.viewportEndOffset - info.afterContentPadding
+        // keep the focused row fully in view; a row step is one short, eased scroll (a new key press restarts it)
+        if (top < viewStart || top + cell.size.height > viewEnd) gridState.animateScrollBy((top - viewStart).toFloat(), tween(220, easing = FastOutSlowInEasing))
     }
 
     fun openDetails(item: ChannelEntity) {
@@ -268,6 +318,10 @@ fun TvVodScreen(
             return
         }
         when (level) {
+            VodLevel.RAIL -> {
+                val id = railEntries.getOrNull(railIndex)?.id
+                if (id == null || id == currentRailId) level = VodLevel.GROUPS else onRailSelect(id)
+            }
             VodLevel.GROUPS -> if (gridItems.isNotEmpty()) { level = VodLevel.GRID }
             VodLevel.GRID -> gridItems.getOrNull(safeGrid)?.let { openDetails(it) }
         }
@@ -276,6 +330,7 @@ fun TvVodScreen(
     fun onLongOk() {
         if (hideRow != null || detailItem != null) return
         when (level) {
+            VodLevel.RAIL -> {}
             VodLevel.GROUPS -> {
                 val row = rows.getOrNull(safeGroup) ?: return
                 if (row.kind == VodRowKind.GROUP) { hideChoice = 1; hideRow = row }
@@ -303,17 +358,28 @@ fun TvVodScreen(
             return true
         }
         when (level) {
+            VodLevel.RAIL -> when (key) {
+                Key.DirectionUp -> railIndex = (railIndex - 1).coerceAtLeast(0)
+                Key.DirectionDown -> railIndex = (railIndex + 1).coerceAtMost(railEntries.lastIndex)
+                Key.DirectionRight -> level = VodLevel.GROUPS
+                else -> {}
+            }
             VodLevel.GROUPS -> when (key) {
                 Key.DirectionUp -> groupFocus = (safeGroup - 1).coerceAtLeast(0)
                 Key.DirectionDown -> groupFocus = (safeGroup + 1).coerceAtMost(rows.lastIndex)
                 Key.DirectionRight -> if (gridItems.isNotEmpty()) level = VodLevel.GRID
+                // LEFT from the groups: the nav rail expands with this page (Movies / Shows) selected
+                Key.DirectionLeft -> {
+                    railIndex = railEntries.indexOfFirst { it.id == currentRailId }.coerceAtLeast(0)
+                    level = VodLevel.RAIL
+                }
                 else -> {}
             }
             VodLevel.GRID -> when (key) {
-                Key.DirectionLeft -> if (safeGrid % columns == 0) { gridIndex = 0; level = VodLevel.GROUPS } else gridIndex = safeGrid - 1
+                Key.DirectionLeft -> if (safeGrid % VOD_COLUMNS == 0) { gridIndex = 0; level = VodLevel.GROUPS } else gridIndex = safeGrid - 1
                 Key.DirectionRight -> gridIndex = (safeGrid + 1).coerceAtMost(gridItems.lastIndex)
-                Key.DirectionUp -> if (safeGrid - columns >= 0) gridIndex = safeGrid - columns
-                Key.DirectionDown -> gridIndex = (safeGrid + columns).coerceAtMost(gridItems.lastIndex)
+                Key.DirectionUp -> if (safeGrid - VOD_COLUMNS >= 0) gridIndex = safeGrid - VOD_COLUMNS
+                Key.DirectionDown -> gridIndex = (safeGrid + VOD_COLUMNS).coerceAtMost(gridItems.lastIndex)
                 else -> {}
             }
         }
@@ -350,31 +416,25 @@ fun TvVodScreen(
                 }
             }
     ) {
-        Row(modifier = Modifier.fillMaxSize()) {
-            // ---- nav rail (slides out with the groups) ----
-            RailPanel(
-                width = railWidth,
-                k = k,
-                expanded = false,
-                focused = false,
-                selectedIndex = 0,
-                entries = railEntries,
-                currentId = if (isMovies) RailId.MOVIES else RailId.SHOWS
-            )
+        // rail + groups + posters sit in one row that is only translated: panels in = 0, panels out = -(their width)
+        Row(
+            modifier = Modifier
+                .fillMaxSize()
+                .offset { IntOffset(-((railWidth.value + (VOD_PANEL_PX * k).dp) * slide.value).roundToPx(), 0) }
+        ) {
+            // ---- nav rail (expands with LEFT from the groups) ----
+            VodRail(railWidth, k, level, railIndex, railEntries, currentRailId)
 
-            // ---- groups list (slides out to the left while the posters are browsed) ----
+            // ---- groups list ----
             Box(
                 modifier = Modifier
-                    .width(groupsWidth)
+                    .width((VOD_PANEL_PX * k).dp)
                     .fillMaxHeight()
-                    .clipToBounds()
                     .background(VodPanelBg)
             ) {
             Column(
                 modifier = Modifier
-                    .wrapContentWidth(Alignment.Start, unbounded = true)
-                    .width((VOD_PANEL_PX * k).dp)
-                    .fillMaxHeight()
+                    .fillMaxSize()
             ) {
                 Text(
                     text = if (isMovies) "Movies" else "Shows",
@@ -421,7 +481,7 @@ fun TvVodScreen(
             }
 
             // ---- info + poster grid ----
-            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+            Box(modifier = Modifier.requiredWidth(screenWidthDp.dp).fillMaxHeight()) {
                 val backdrop = info?.backdropUrl.orEmpty().ifBlank { infoItem?.logoUrl.orEmpty() }
                 if (backdrop.isNotBlank()) {
                     AsyncImage(
@@ -477,7 +537,7 @@ fun TvVodScreen(
                         }
                     } else {
                         LazyVerticalGrid(
-                            columns = GridCells.Fixed(columns),
+                            columns = GridCells.Fixed(VOD_COLUMNS),
                             state = gridState,
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(horizontal = (40 * k).dp, vertical = (6 * k).dp),
@@ -530,6 +590,27 @@ fun TvVodScreen(
             }
         }
     }
+}
+
+/** The nav rail of the Movies / Shows page; its width animation is read here so only the rail recomposes per frame. */
+@Composable
+private fun VodRail(
+    width: State<androidx.compose.ui.unit.Dp>,
+    k: Float,
+    level: VodLevel,
+    railIndex: Int,
+    entries: List<RailEntry>,
+    currentId: RailId
+) {
+    RailPanel(
+        width = width.value,
+        k = k,
+        expanded = level == VodLevel.RAIL,
+        focused = level == VodLevel.RAIL,
+        selectedIndex = railIndex,
+        entries = entries,
+        currentId = currentId
+    )
 }
 
 /** Title, rating, year / duration / genre, cast, director and plot of the focused poster. */
@@ -591,6 +672,7 @@ private fun DialogButton(k: Float, text: String, focused: Boolean) {
     }
 }
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun PosterCell(k: Float, item: ChannelEntity, focused: Boolean) {
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -607,8 +689,12 @@ private fun PosterCell(k: Float, item: ChannelEntity, focused: Boolean) {
                 )
         ) {
             if (!item.logoUrl.isNullOrBlank()) {
+                val ctx = LocalContext.current
+                val request = remember(item.logoUrl) {
+                    ImageRequest.Builder(ctx).data(item.logoUrl).crossfade(150).build()
+                }
                 AsyncImage(
-                    model = item.logoUrl,
+                    model = request,
                     contentDescription = item.name,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize()
@@ -638,12 +724,16 @@ private fun PosterCell(k: Float, item: ChannelEntity, focused: Boolean) {
             }
         }
         Spacer(Modifier.height((8 * k).dp))
+        // one line like TiviMate: cut with "..." normally, scrolls sideways while the poster has the focus
         Text(
             item.name,
             color = if (focused) Color.White else Color.White.copy(alpha = 0.75f),
             fontSize = (22 * k).sp,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
+            maxLines = 1,
+            softWrap = false,
+            overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis,
+            modifier = if (focused) Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 600, velocity = (60 * k).dp)
+            else Modifier
         )
     }
 }
