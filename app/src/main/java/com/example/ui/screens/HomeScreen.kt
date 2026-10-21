@@ -195,6 +195,8 @@ fun HomeScreen(
     // Movies / Shows page opened from the TV rail (MOVIE or SHOW), null = closed
     var vodType by remember { mutableStateOf<String?>(null) }
     // bumped to rebuild the TV page on a fresh level (rail "TV" / "Favorites" chosen from the Movies / Shows page)
+    // the movie that was being watched: the Movies page reopens on its details after BACK from playback
+    var vodDetailId by remember { mutableStateOf<Long?>(null) }
     var browseEpoch by remember { mutableIntStateOf(0) }
 
     // Search input toggle
@@ -298,6 +300,7 @@ fun HomeScreen(
                 val playing = currentChannelLive ?: currentChannel
                 if (playing != null && playing.contentType != com.example.data.model.ContentType.TV) {
                     viewModel.closePlayer()
+                    vodDetailId = playing.id
                     vodType = playing.contentType
                     tvBrowse = TvBrowseLevel.GUIDE
                 } else if (currentChannel != null) tvBrowse = TvBrowseLevel.GUIDE else exitTv()
@@ -367,7 +370,7 @@ fun HomeScreen(
                     onExit = exitTv,
                     hasMovies = playlists.any { it.isActive && it.movieCount > 0 },
                     hasShows = playlists.any { it.isActive && it.showCount > 0 },
-                    onOpenVod = { vodType = it },
+                    onOpenVod = { vodDetailId = null; vodType = it },
                     focusSuspended = vodType != null,
                     onPreviewBounds = { previewBounds.value = it },
                     overlayMode = tvBrowseOverlay,
@@ -381,16 +384,25 @@ fun HomeScreen(
 
             // Movies / Shows page: above the TV page and the preview video
             vodType?.let { type -> key(type) {
+                val startDetailId = remember { vodDetailId }
+                LaunchedEffect(Unit) { vodDetailId = null }
                 com.example.ui.components.TvVodScreen(
                     contentType = type,
                     itemsFlow = remember(type) { viewModel.vodChannels(type) },
                     groups = allChannelGroups,
                     playlists = playlists,
-                    onPlay = { item ->
-                        viewModel.playVod(item)
+                    onPlay = { item, startMs ->
+                        viewModel.playVod(item, startMs)
+                        vodDetailId = item.id        // BACK from the movie returns to its details (now with Resume)
                         vodType = null
                         tvBrowse = null
                     },
+                    historyFlow = remember(type) { viewModel.vodHistory(type) },
+                    resumeOf = { viewModel.vodResumeMs(it) },
+                    onRemoveHistory = { viewModel.removeFromHistory(it) },
+                    onOpenTrailer = { viewModel.openTrailer(it) },
+                    onOpenExternal = { viewModel.openInExternalPlayer(it) },
+                    initialDetailId = startDetailId,
                     onToggleMyList = { viewModel.toggleVodFavorite(it) },
                     onHideGroup = { id, title -> viewModel.setGroupVisibility(id, title, false, type) },
                     onBack = { vodType = null },
