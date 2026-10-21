@@ -52,6 +52,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -192,6 +194,8 @@ fun HomeScreen(
     var showTvSearch by remember { mutableStateOf(false) }
     // Movies / Shows page opened from the TV rail (MOVIE or SHOW), null = closed
     var vodType by remember { mutableStateOf<String?>(null) }
+    // bumped to rebuild the TV page on a fresh level (rail "TV" / "Favorites" chosen from the Movies / Shows page)
+    var browseEpoch by remember { mutableIntStateOf(0) }
 
     // Search input toggle
     var isSearchActive by remember { mutableStateOf(false) }
@@ -334,7 +338,7 @@ fun HomeScreen(
 
             if (browseLevel != null) {
                 // TV page: preview + EPG grid, playlist groups panel and rail (BACK from playback / LEFT from channel list)
-                TvBrowseScreen(
+                key(browseEpoch) { TvBrowseScreen(
                     initialLevel = browseLevel,
                     player = player,
                     playingChannel = currentChannel,
@@ -372,11 +376,11 @@ fun HomeScreen(
                     // normal TV page sits under the video (which only shows in its preview slot);
                     // the overlay page must sit ABOVE the full-screen video
                     modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay || tvOptionsOpen) 2f else 0f)
-                )
+                ) }
             }
 
             // Movies / Shows page: above the TV page and the preview video
-            vodType?.let { type ->
+            vodType?.let { type -> key(type) {
                 com.example.ui.components.TvVodScreen(
                     contentType = type,
                     itemsFlow = remember(type) { viewModel.vodChannels(type) },
@@ -390,13 +394,32 @@ fun HomeScreen(
                     onToggleMyList = { viewModel.toggleVodFavorite(it) },
                     onHideGroup = { id, title -> viewModel.setGroupVisibility(id, title, false, type) },
                     onBack = { vodType = null },
+                    onExit = exitTv,
+                    focusSuspended = showTvSearch || showPlaylistManager,
+                    onRailSelect = { id ->
+                        when (id) {
+                            com.example.ui.components.RailId.MOVIES -> vodType = com.example.data.model.ContentType.MOVIE
+                            com.example.ui.components.RailId.SHOWS -> vodType = com.example.data.model.ContentType.SHOW
+                            com.example.ui.components.RailId.SETTINGS -> openSettings(TiviSettingsRoute.Main)
+                            else -> {
+                                // TV / Favorites / Search: back to the TV page
+                                if (id == com.example.ui.components.RailId.FAVORITES) {
+                                    viewModel.selectTvGroup(com.example.ui.TvGroupSelection(null, com.example.ui.TvGroupKind.FAVORITES))
+                                }
+                                if (id == com.example.ui.components.RailId.SEARCH) showTvSearch = true
+                                vodType = null
+                                tvBrowse = TvBrowseLevel.GUIDE
+                                browseEpoch++
+                            }
+                        }
+                    },
                     loadInfo = { viewModel.loadVodInfo(it) },
                     onOpenGroup = { id, title -> viewModel.openVodGroup(id, type, title) },
                     onNeedMoreAll = { viewModel.loadMoreVodAll(type) },
                     loading = vodLoading,
                     modifier = Modifier.fillMaxSize().zIndex(4f)
                 )
-            }
+            } }
 
             // One surface for both the preview window and full-screen playback: it is resized, never
             // recreated, so switching between the two never goes black.
