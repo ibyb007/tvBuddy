@@ -569,13 +569,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _playContext.value, _favOnlyGroups.value, _nameSortedGroups.value
         ).any { it.id == channel.id }
 
+    /** The live channel that was on before a movie was started: the TV button of the movie player returns to it. */
+    private var lastTvChannel: ChannelEntity? = null
+
     fun playChannel(channel: ChannelEntity) {
-        currentChannel.value?.let { cur ->
-            if (cur.id != channel.id) previousEntry = cur to currentEntryContext
+        // movies must not overwrite "previous channel" or the channel resumed at the next launch
+        if (channel.contentType == ContentType.TV) {
+            currentChannel.value?.let { cur ->
+                if (cur.id != channel.id && cur.contentType == ContentType.TV) previousEntry = cur to currentEntryContext
+            }
+            currentEntryContext = _playContext.value
+            lastTvChannel = channel
+            prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
         }
-        currentEntryContext = _playContext.value
         resumeHandled = true
-        prefs.edit().putLong(KEY_RESUME_ID, channel.id).putString(KEY_RESUME_URL, channel.streamUrl).apply()
         playerManager.playChannel(
             channel,
             allPlaylists.value.firstOrNull { it.id == channel.playlistId }?.toSpoofProfile() ?: _globalSpoof.value
@@ -905,6 +912,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---- Movies / Shows (VOD) ----
     /** All movies or all shows of every playlist; collected only while the Movies / Shows page is open. */
     fun vodChannels(contentType: String): kotlinx.coroutines.flow.Flow<List<ChannelEntity>> = repository.vodChannels(contentType)
+
+    /** TV button of the movie player: straight back to the last live channel. */
+    fun watchLastTv() {
+        val ch = lastTvChannel
+            ?: pendingResumeId.takeIf { it >= 0 }?.let { id -> rawChannels.value.firstOrNull { it.id == id } }
+            ?: recentChannels.value.firstOrNull()
+            ?: rawChannels.value.firstOrNull()
+        if (ch == null) {
+            android.widget.Toast.makeText(getApplication<Application>(), "No TV channel to play", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        playChannel(ch)
+    }
 
     suspend fun loadVodInfo(channel: ChannelEntity) = repository.loadVodInfo(channel)
 
