@@ -358,6 +358,7 @@ fun HomeScreen(
                     hasMovies = playlists.any { it.isActive && it.movieCount > 0 },
                     hasShows = playlists.any { it.isActive && it.showCount > 0 },
                     onOpenVod = { vodType = it },
+                    focusSuspended = vodType != null,
                     onPreviewBounds = { previewBounds.value = it },
                     overlayMode = tvBrowseOverlay,
                     onDismiss = { tvBrowse = null },
@@ -383,6 +384,7 @@ fun HomeScreen(
                     onToggleMyList = { viewModel.toggleVodFavorite(it) },
                     onHideGroup = { id, title -> viewModel.setGroupVisibility(id, title, false, type) },
                     onBack = { vodType = null },
+                    loadInfo = { viewModel.loadVodInfo(it) },
                     modifier = Modifier.fillMaxSize().zIndex(4f)
                 )
             }
@@ -882,6 +884,7 @@ fun HomeScreen(
             onSetGroupsVisibility = { id, changes, type -> viewModel.setGroupsVisibility(id, changes, type) },
             onReorderGroups = { id, titles, type -> viewModel.reorderGroups(id, titles, type) },
             onApplyPortalParams = { viewModel.applyPortalParams(it) },
+            onLoadAccountInfo = { viewModel.refreshAccountInfo(it) },
             epgSources = allEpgSources,
             playlistEpgCrossRefs = allPlaylistEpgCrossRefs,
             onAddEpgSource = { viewModel.addEpgSource(it) },
