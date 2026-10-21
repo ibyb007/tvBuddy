@@ -871,6 +871,15 @@ class TvBuddyPlayerManager(
         _aspectMode.value = mode
     }
 
+    /** Playback position / length of the current item (movies); duration is 0 while unknown or for live streams. */
+    fun positionMs(): Long = exoPlayer?.currentPosition ?: 0L
+
+    fun durationMs(): Long = exoPlayer?.duration?.takeIf { it != androidx.media3.common.C.TIME_UNSET && it > 0 } ?: 0L
+
+    fun seekToMs(ms: Long) {
+        exoPlayer?.seekTo(ms.coerceAtLeast(0L))
+    }
+
     fun togglePlayPause() {
         exoPlayer?.let {
             if (it.isPlaying) it.pause() else it.play()
