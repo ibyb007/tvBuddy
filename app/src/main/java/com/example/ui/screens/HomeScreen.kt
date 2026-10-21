@@ -113,6 +113,7 @@ fun HomeScreen(
         selectionChannels.withIndex().associate { (i, c) -> c.id to i + 1 }
     }
     val categories by viewModel.categories.collectAsStateWithLifecycle()
+    val vodLoading by viewModel.vodLoading.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedCategory.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
     val playlists by viewModel.allPlaylists.collectAsStateWithLifecycle()
@@ -390,6 +391,9 @@ fun HomeScreen(
                     onHideGroup = { id, title -> viewModel.setGroupVisibility(id, title, false, type) },
                     onBack = { vodType = null },
                     loadInfo = { viewModel.loadVodInfo(it) },
+                    onOpenGroup = { id, title -> viewModel.openVodGroup(id, type, title) },
+                    onNeedMoreAll = { viewModel.loadMoreVodAll(type) },
+                    loading = vodLoading,
                     modifier = Modifier.fillMaxSize().zIndex(4f)
                 )
             }
