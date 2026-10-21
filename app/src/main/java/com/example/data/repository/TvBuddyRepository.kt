@@ -13,6 +13,7 @@ import com.example.data.local.entity.ProgramEntity
 import kotlinx.coroutines.flow.flatMapLatest
 import com.example.data.model.ContentType
 import com.example.data.model.ImportCounts
+import com.example.data.model.VodInfo
 import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
@@ -168,12 +169,18 @@ class TvBuddyRepository(
         shows = channels.count { it.contentType == ContentType.SHOW }
     )
 
-    /** Epoch seconds (Xtream) become dd/MM/yy; anything else the portal reports is shown as it is. */
+    /** Epoch seconds (Xtream) and yyyy-MM-dd dates (Stalker) become dd/MM/yy; any other text is shown as reported. */
     private fun formatExpiration(raw: String?): String? {
         val v = raw?.trim().orEmpty()
         if (v.isEmpty() || v.equals("null", true) || v.equals("unknown", true) || v == "0") return null
         val epoch = v.toLongOrNull()
-        return if (epoch != null && v.length >= 9) SimpleDateFormat("dd/MM/yy", Locale.US).format(Date(epoch * 1000L)) else v
+        if (epoch != null) {
+            return if (v.length >= 9) SimpleDateFormat("dd/MM/yy", Locale.US).format(Date(epoch * 1000L)) else null
+        }
+        Regex("^(\\d{4})-(\\d{2})-(\\d{2})").find(v)?.let { m ->
+            return "${m.groupValues[3]}/${m.groupValues[2]}/${m.groupValues[1].takeLast(2)}"
+        }
+        return v
     }
 
     private fun PlaylistEntity.toStalkerParams() = StalkerParams(
@@ -512,6 +519,53 @@ class TvBuddyRepository(
 
     suspend fun reorderGroups(playlistId: Long, orderedTitles: List<String>, contentType: String = ContentType.TV) = withContext(Dispatchers.IO) {
         channelGroupDao.updateGroupOrders(playlistId, contentType, orderedTitles)
+    }
+
+    private val vodInfoCache = object : LinkedHashMap<Long, VodInfo>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, VodInfo>?) = size > 300
+    }
+
+    /**
+     * Details for the movie / show page. Xtream asks the server for them (get_vod_info / get_series_info) the
+     * moment a poster is highlighted; Stalker already sent them with the list item.
+     */
+    suspend fun loadVodInfo(channel: ChannelEntity): VodInfo? = withContext(Dispatchers.IO) {
+        synchronized(vodInfoCache) { vodInfoCache[channel.id] }?.let { return@withContext it }
+        val pl = playlistDao.getPlaylistById(channel.playlistId) ?: return@withContext null
+        val info: VodInfo? = when (pl.type) {
+            PlaylistType.XTREAM -> xtreamClient.fetchInfo(
+                pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), channel.streamId,
+                isSeries = channel.contentType == ContentType.SHOW, userAgent = pl.toSpoofProfile().getUserAgent()
+            )
+            PlaylistType.STALKER -> channel.metaJson?.let { json ->
+                try {
+                    val j = JSONObject(json)
+                    VodInfo(
+                        plot = j.optString("p"), cast = j.optString("c"), director = j.optString("d"),
+                        genre = j.optString("g"), year = j.optString("y"), duration = j.optString("t"),
+                        backdropUrl = j.optString("b")
+                    )
+                } catch (_: Exception) { null }
+            }
+            else -> null
+        }
+        if (info != null) synchronized(vodInfoCache) { vodInfoCache[channel.id] = info }
+        info
+    }
+
+    /** Re-reads the account's expiry date (login only, no channel download) so it is known for older playlists too. */
+    suspend fun refreshExpiration(playlistId: Long) = withContext(Dispatchers.IO) {
+        try {
+            val pl = playlistDao.getPlaylistById(playlistId) ?: return@withContext
+            val ua = pl.toSpoofProfile().getUserAgent()
+            val exp = when (pl.type) {
+                PlaylistType.XTREAM -> formatExpiration(xtreamClient.authenticate(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), ua).expDate)
+                PlaylistType.STALKER -> formatExpiration(stalkerClient.login(pl.sourceUrl, pl.toStalkerParams(), ua).expiration)
+                else -> null
+            }
+            if (exp != null && exp != pl.expirationDate) playlistDao.updateExpiration(playlistId, exp)
+        } catch (_: Exception) {
+        }
     }
 
     fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getChannelsByType(contentType)
