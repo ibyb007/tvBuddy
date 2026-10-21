@@ -31,7 +31,7 @@ import com.example.data.local.entity.ProgramEntity
         PlaylistEpgCrossRef::class,
         ChannelGroupEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -51,6 +51,14 @@ abstract class TvBuddyDatabase : RoomDatabase() {
          * 3 -> 4: movies / shows (content type on channels and groups) and the Stalker / Xtream portal
          * parameters on playlists. Existing playlists, channels and group settings are kept.
          */
+        /** 4 -> 5: poster rating and (Stalker) item details on channels. */
+        private val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE channels ADD COLUMN rating TEXT")
+                db.execSQL("ALTER TABLE channels ADD COLUMN metaJson TEXT")
+            }
+        }
+
         private val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE channels ADD COLUMN contentType TEXT NOT NULL DEFAULT 'TV'")
@@ -94,7 +102,7 @@ abstract class TvBuddyDatabase : RoomDatabase() {
                     context.applicationContext,
                     TvBuddyDatabase::class.java,
                     "tvbuddy_database.db"
-                ).addMigrations(MIGRATION_3_4).fallbackToDestructiveMigration().build()
+                ).addMigrations(MIGRATION_3_4, MIGRATION_4_5).fallbackToDestructiveMigration().build()
                 INSTANCE = instance
                 instance
             }
