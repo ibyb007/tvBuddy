@@ -136,7 +136,7 @@ fun TvVodPlayerOverlay(
     val k = rememberUiScale()
     var panel by remember { mutableStateOf(VodPanel.NONE) }
     var tick by remember { mutableLongStateOf(0L) }
-    var infoFocus by remember { mutableIntStateOf(1) }      // 0 rewind, 1 play / pause, 2 forward, 3 watch from start
+    var infoFocus by remember { mutableIntStateOf(1) }      // -1 seek bar, 0 rewind, 1 play / pause, 2 forward, 3 watch from start
     var menuIndex by remember { mutableIntStateOf(0) }
     var audioIndex by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
@@ -222,6 +222,7 @@ fun TvVodPlayerOverlay(
         when (panel) {
             VodPanel.NONE -> if (errorMessage != null) onRetry() else { infoFocus = 1; panel = VodPanel.INFO }
             VodPanel.INFO -> when (infoFocus) {
+                -1 -> onTogglePlayPause()                                  // on the seek bar OK pauses / resumes
                 0 -> addSeek(-SEEK_STEP_MS)
                 1 -> onTogglePlayPause()
                 2 -> addSeek(SEEK_STEP_MS)
@@ -248,15 +249,23 @@ fun TvVodPlayerOverlay(
                     else if (repeat % 5 == 0) addSeek(sign * heldSeekStep(repeat))
                 }
                 Key.DirectionDown -> if (repeat == 0) { infoFocus = 1; panel = VodPanel.INFO }
+                Key.DirectionUp -> if (repeat == 0) { infoFocus = -1; panel = VodPanel.INFO }
                 else -> return false
             }
             VodPanel.INFO -> when (key) {
                 Key.DirectionLeft, Key.DirectionRight -> {
-                    if (repeat == 0) infoFocus = (infoFocus + sign.toInt()).coerceIn(0, 3)
+                    if (infoFocus == -1) {
+                        // seek bar focused: LEFT / RIGHT scrub, a held key keeps seeking faster and faster
+                        if (repeat == 0) addSeek(sign * SEEK_STEP_MS)
+                        else if (repeat % 5 == 0) addSeek(sign * heldSeekStep(repeat))
+                    } else if (repeat == 0) infoFocus = (infoFocus + sign.toInt()).coerceIn(0, 3)
                     else if (repeat % 5 == 0) addSeek(sign * heldSeekStep(repeat))     // held key = keep seeking
                 }
-                Key.DirectionUp -> if (repeat == 0) panel = VodPanel.NONE
-                Key.DirectionDown -> if (repeat == 0) { menuIndex = 0; panel = VodPanel.MENU }
+                // UP focuses the seek bar, UP again hides the panel
+                Key.DirectionUp -> if (repeat == 0) { if (infoFocus == -1) panel = VodPanel.NONE else infoFocus = -1 }
+                Key.DirectionDown -> if (repeat == 0) {
+                    if (infoFocus == -1) infoFocus = 1 else { menuIndex = 0; panel = VodPanel.MENU }
+                }
                 else -> return false
             }
             VodPanel.MENU -> {
@@ -392,11 +401,14 @@ fun TvVodPlayerOverlay(
                 // seek bar
                 val shown = (pos + pending).coerceIn(0L, if (dur > 0) dur else Long.MAX_VALUE)
                 val fraction = if (dur > 0) (shown.toFloat() / dur).coerceIn(0f, 1f) else 0f
-                Box(modifier = Modifier.fillMaxWidth().height((14 * k).dp), contentAlignment = Alignment.CenterStart) {
-                    Box(Modifier.fillMaxWidth().height((5 * k).dp).clip(CircleShape).background(Color.White.copy(alpha = 0.3f)))
-                    Box(Modifier.fillMaxWidth(fraction).height((5 * k).dp).clip(CircleShape).background(ProgressBlue))
+                val barFocused = infoFocus == -1
+                val barH = if (barFocused) 10f else 5f
+                val thumb = if (barFocused) 26f else 14f
+                Box(modifier = Modifier.fillMaxWidth().height((28 * k).dp), contentAlignment = Alignment.CenterStart) {
+                    Box(Modifier.fillMaxWidth().height((barH * k).dp).clip(CircleShape).background(Color.White.copy(alpha = if (barFocused) 0.4f else 0.3f)))
+                    Box(Modifier.fillMaxWidth(fraction).height((barH * k).dp).clip(CircleShape).background(ProgressBlue))
                     Box(Modifier.fillMaxWidth(fraction), contentAlignment = Alignment.CenterEnd) {
-                        Box(Modifier.size((14 * k).dp).clip(CircleShape).background(ProgressBlue))
+                        Box(Modifier.size((thumb * k).dp).clip(CircleShape).background(if (barFocused) Color.White else ProgressBlue))
                     }
                 }
                 Spacer(Modifier.height((8 * k).dp))
