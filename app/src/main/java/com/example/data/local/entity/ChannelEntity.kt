@@ -26,6 +26,10 @@ data class ChannelEntity(
     /** TV, MOVIE or SHOW (see [com.example.data.model.ContentType]). */
     @ColumnInfo(defaultValue = "TV")
     val contentType: String = "TV",
+    /** Movie / show score shown as a badge on the poster (blank when the provider has none). */
+    val rating: String? = null,
+    /** Stalker only: the details the portal sends with every list item (plot, cast, ...) as small JSON. */
+    val metaJson: String? = null,
     val channelNumber: Int = 0,
     val drmType: String? = null,
     val drmLicenseUrl: String? = null,
