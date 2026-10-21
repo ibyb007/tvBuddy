@@ -732,6 +732,9 @@ class TvBuddyRepository(
 
     fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getVodListByType(contentType)
 
+    /** Movies / shows that were started, newest first. */
+    fun vodHistory(contentType: String): Flow<List<ChannelEntity>> = historyDao.getVodHistory(contentType)
+
     /**
      * Turns a movie into something the player can open. Xtream movies are direct links already; Stalker movies
      * carry a portal command that has to be exchanged for a real link first. Shows are not playable yet
