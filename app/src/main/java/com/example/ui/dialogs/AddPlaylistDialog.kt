@@ -116,7 +116,6 @@ fun AddPlaylistDialog(
     // M3U state
     var m3uName by remember { mutableStateOf("") }
     var m3uSource by remember { mutableStateOf("") }
-    var m3uIsRaw by remember { mutableStateOf(false) }
 
     // Xtream state
     var xtreamName by remember { mutableStateOf("") }
@@ -129,7 +128,7 @@ fun AddPlaylistDialog(
     // Stalker state
     var stalkerName by remember { mutableStateOf("") }
     var stalkerPortal by remember { mutableStateOf("") }
-    var stalkerMac by remember { mutableStateOf("00:1A:79:") }
+    var stalkerMac by remember { mutableStateOf("") }
     var stalkerAdvancedOpen by remember { mutableStateOf(false) }
     var stalkerUser by remember { mutableStateOf("") }
     var stalkerPass by remember { mutableStateOf("") }
@@ -200,7 +199,7 @@ fun AddPlaylistDialog(
                 Spacer(Modifier.height(gap))
 
                 if (importState is ImportUiState.Processing) {
-                    ProcessingPanel()
+                    ProcessingPanel(importState.message)
                 } else if (importState is ImportUiState.Done) {
                     ProcessedPanel(
                         state = importState,
@@ -312,30 +311,12 @@ fun AddPlaylistDialog(
                             modifier = Modifier.testTag("m3u_name_input")
                         )
                         Spacer(Modifier.height(gap))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            ModeChip("URL", !m3uIsRaw) { m3uIsRaw = false }
-                            ModeChip("Paste text", m3uIsRaw) { m3uIsRaw = true }
-                            Spacer(Modifier.weight(1f))
-                            ModeChip("★ Preset Gist", false) {
-                                m3uName = "ibyb007 Merged Playlist"
-                                m3uSource = "https://gist.githubusercontent.com/ibyb007/ceac7851bdb5932b9bafb42db208df86/raw/merged.m3u"
-                                m3uIsRaw = false
-                            }
-                        }
-                        Spacer(Modifier.height(gap))
                         PlaylistField(
-                            label = if (m3uIsRaw) "M3U content" else "M3U / M3U8 URL",
+                            label = "M3U / M3U8 URL",
                             value = m3uSource,
                             onValueChange = { m3uSource = it },
-                            placeholder = if (m3uIsRaw) "#EXTM3U\n#EXTINF:-1,Channel 1\nhttp://..." else "http://example.com/playlist.m3u8",
-                            singleLine = !m3uIsRaw,
-                            minLines = if (m3uIsRaw) 3 else 1,
-                            maxLines = if (m3uIsRaw) 6 else 1,
-                            keyboardType = if (m3uIsRaw) KeyboardType.Text else KeyboardType.Uri,
+                            placeholder = "http://example.com/playlist.m3u8",
+                            keyboardType = KeyboardType.Uri,
                             imeAction = ImeAction.Done,
                             modifier = Modifier.testTag("m3u_source_input")
                         )
@@ -345,9 +326,9 @@ fun AddPlaylistDialog(
                             enabled = m3uSource.isNotBlank(),
                             modifier = Modifier.testTag("m3u_submit_btn")
                         ) {
-                            val name = m3uName.ifBlank { (if (m3uIsRaw) null else hostOf(m3uSource)) ?: "M3U Playlist" }
+                            val name = m3uName.ifBlank { hostOf(m3uSource) ?: "M3U Playlist" }
                             if (m3uSource.isNotBlank()) {
-                                onAddM3u(name, m3uSource.trim(), m3uIsRaw, selectedSpoof)
+                                onAddM3u(name, m3uSource.trim(), false, selectedSpoof)
                             }
                         }
                     }
@@ -603,7 +584,7 @@ private fun OptionCheck(text: String, checked: Boolean, onChange: (Boolean) -> U
 }
 
 @Composable
-private fun ProcessingPanel() {
+private fun ProcessingPanel(progress: String = "") {
     Column(
         modifier = Modifier.fillMaxWidth().padding(vertical = 28.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -613,7 +594,7 @@ private fun ProcessingPanel() {
         Text("Processing...", fontSize = 18.sp, color = Color.White, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(4.dp))
         Text(
-            "Large portals with movies and shows can take a minute.",
+            if (progress.isNotBlank()) progress else "Large portals with movies and shows can take a minute.",
             fontSize = 12.sp,
             color = Muted
         )
@@ -640,6 +621,14 @@ private fun ProcessedPanel(
         if (state.counts.hasVod) {
             Text("Movies: ${state.counts.movies}", fontSize = 14.sp, color = Muted)
             Text("Shows: ${state.counts.shows}", fontSize = 14.sp, color = Muted)
+        }
+        if (state.counts.incomplete) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Some movies / shows could not be loaded because the portal refused part of the requests. Update the playlist later to fetch the rest.",
+                fontSize = 12.sp,
+                color = Color(0xFFFFB74D)
+            )
         }
         Spacer(Modifier.height(12.dp))
         PlaylistField(
