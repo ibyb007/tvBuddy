@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -101,6 +102,12 @@ fun TvVodScreen(
     onBack: () -> Unit,
     /** Plot, cast, backdrop ... of a movie / show (null when the provider has none). */
     loadInfo: suspend (ChannelEntity) -> VodInfo? = { null },
+    /** A group got the focus: movies / shows are fetched from the portal per group, when it is opened. */
+    onOpenGroup: (playlistId: Long, groupTitle: String) -> Unit = { _, _ -> },
+    /** "All movies" / "All shows" was opened or scrolled near its end: fetch the next part. */
+    onNeedMoreAll: () -> Unit = {},
+    /** True while the app is downloading a group / the "All" list. */
+    loading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
@@ -120,7 +127,8 @@ fun TvVodScreen(
     }
     val byGroup = remember(visibleItems) { visibleItems.groupBy { it.playlistId to it.groupTitle } }
 
-    val rows = remember(typeGroups, playlists, byGroup, isMovies) {
+    // every visible group is listed, also while its items are still to be downloaded
+    val rows = remember(typeGroups, playlists, isMovies) {
         buildList {
             add(VodRow(VodRowKind.MY_LIST, "My list"))
             add(VodRow(VodRowKind.ALL, if (isMovies) "All movies" else "All shows"))
@@ -131,8 +139,7 @@ fun TvVodScreen(
                     "Manual" -> own.sortedBy { it.sortOrder }
                     else -> own.sortedBy { it.originalOrder }
                 }
-                sorted.filter { byGroup.containsKey(pl.id to it.groupTitle) }
-                    .forEach { add(VodRow(VodRowKind.GROUP, it.groupTitle, pl.id)) }
+                sorted.forEach { add(VodRow(VodRowKind.GROUP, it.groupTitle, pl.id)) }
             }
         }
     }
@@ -173,7 +180,23 @@ fun TvVodScreen(
     val detailItem = remember(detailId, items) { detailId?.let { id -> items.firstOrNull { it.id == id } } }
 
     // the grid restarts at its first poster whenever another group is focused
-    LaunchedEffect(selectedRow) { gridIndex = 0 }
+    val openGroup by rememberUpdatedState(onOpenGroup)
+    val needMoreAll by rememberUpdatedState(onNeedMoreAll)
+    LaunchedEffect(selectedRow) {
+        gridIndex = 0
+        // ... and the group's items come from the portal a moment after the focus settles (skipped while scrolling the list)
+        val row = selectedRow ?: return@LaunchedEffect
+        delay(250)
+        when (row.kind) {
+            VodRowKind.GROUP -> openGroup(row.playlistId, row.title)
+            VodRowKind.ALL -> needMoreAll()
+            VodRowKind.MY_LIST -> {}
+        }
+    }
+    // scrolling "All movies" towards its end asks for more
+    LaunchedEffect(selectedRow, level, safeGrid, gridItems.size) {
+        if (selectedRow?.kind == VodRowKind.ALL && level == VodLevel.GRID && safeGrid >= gridItems.size - 36) needMoreAll()
+    }
 
     BackHandler(enabled = true) {
         when {
@@ -447,7 +470,7 @@ fun TvVodScreen(
                         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
                                 text = if (selectedRow?.kind == VodRowKind.MY_LIST) "Nothing in My list yet. Long-press OK on a poster to add it."
-                                else if (items.isEmpty()) "Loading..." else "Nothing here",
+                                else if (loading || items.isEmpty()) "Loading..." else "Nothing here",
                                 color = Color.White.copy(alpha = 0.6f),
                                 fontSize = (28 * k).sp
                             )
