@@ -197,6 +197,22 @@ fun HomeScreen(
     // bumped to rebuild the TV page on a fresh level (rail "TV" / "Favorites" chosen from the Movies / Shows page)
     // the movie that was being watched: the Movies page reopens on its details after BACK from playback
     var vodDetailId by remember { mutableStateOf<Long?>(null) }
+    // a movie was started from the Movies page and is still being opened
+    var vodPlayPending by remember { mutableStateOf(false) }
+    // Live TV stops when the Movies / Shows page opens (TiviMate does the same)
+    LaunchedEffect(vodType) {
+        val cur = currentChannel
+        if (vodType != null && cur != null && cur.contentType == com.example.data.model.ContentType.TV) viewModel.closePlayer()
+    }
+    LaunchedEffect(vodPlayPending, currentChannel?.id) {
+        val c = currentChannel
+        if (vodPlayPending && c != null && c.contentType != com.example.data.model.ContentType.TV) {
+            vodPlayPending = false
+            vodType = null
+            tvBrowse = null
+        }
+    }
+    LaunchedEffect(vodPlayPending) { if (vodPlayPending) { delay(20_000); vodPlayPending = false } }
     var browseEpoch by remember { mutableIntStateOf(0) }
 
     // Search input toggle
@@ -394,8 +410,8 @@ fun HomeScreen(
                     onPlay = { item, startMs ->
                         viewModel.playVod(item, startMs)
                         vodDetailId = item.id        // BACK from the movie returns to its details (now with Resume)
-                        vodType = null
-                        tvBrowse = null
+                        // the Movies page stays up until the movie is really the current item (see vodPlayPending below)
+                        vodPlayPending = true
                     },
                     historyFlow = remember(type) { viewModel.vodHistory(type) },
                     resumeOf = { viewModel.vodResumeMs(it) },
@@ -419,6 +435,7 @@ fun HomeScreen(
                                     viewModel.selectTvGroup(com.example.ui.TvGroupSelection(null, com.example.ui.TvGroupKind.FAVORITES))
                                 }
                                 if (id == com.example.ui.components.RailId.SEARCH) showTvSearch = true
+                                viewModel.watchLastTv()      // live TV was stopped for the Movies page: start it again for the TV page
                                 vodType = null
                                 tvBrowse = TvBrowseLevel.GUIDE
                                 browseEpoch++
