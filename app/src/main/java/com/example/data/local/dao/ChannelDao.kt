@@ -8,6 +8,15 @@ import androidx.room.Update
 import com.example.data.local.entity.ChannelEntity
 import kotlinx.coroutines.flow.Flow
 
+/** The few columns needed to recognise an already stored channel again when a playlist is refreshed. */
+data class ChannelIdentity(
+    val id: Long,
+    val contentType: String,
+    val streamId: String,
+    val streamUrl: String,
+    val isFavorite: Boolean
+)
+
 @Dao
 interface ChannelDao {
     @Query("SELECT * FROM channels WHERE playlistId = :playlistId ORDER BY channelNumber ASC, id ASC")
@@ -23,6 +32,22 @@ interface ChannelDao {
     /** Movies or shows of every playlist (the Movies / Shows pages filter hidden groups themselves). */
     @Query("SELECT * FROM channels WHERE contentType = :contentType ORDER BY channelNumber ASC, id ASC")
     fun getChannelsByType(contentType: String): Flow<List<ChannelEntity>>
+
+    /**
+     * Movies or shows for the list pages WITHOUT the details blob (plot, cast ...): with tens of thousands of
+     * items that blob is most of the data, and the page only needs name, poster and group. The details are
+     * read for the one highlighted item through [getChannelById].
+     */
+    @Query(
+        "SELECT id, playlistId, streamId, name, streamUrl, logoUrl, groupTitle, contentType, rating, " +
+            "NULL AS metaJson, channelNumber, drmType, drmLicenseUrl, drmHeadersJson, drmKeyIdKey, " +
+            "httpUserAgent, httpHeadersJson, isFavorite, addedAt " +
+            "FROM channels WHERE contentType = :contentType ORDER BY channelNumber ASC, id ASC"
+    )
+    fun getVodListByType(contentType: String): Flow<List<ChannelEntity>>
+
+    @Query("SELECT id, contentType, streamId, streamUrl, isFavorite FROM channels WHERE playlistId = :playlistId")
+    suspend fun getIdentities(playlistId: Long): List<ChannelIdentity>
 
     @Query("DELETE FROM channels WHERE playlistId = :playlistId AND contentType = :contentType")
     suspend fun deleteChannelsByPlaylistAndType(playlistId: Long, contentType: String)
