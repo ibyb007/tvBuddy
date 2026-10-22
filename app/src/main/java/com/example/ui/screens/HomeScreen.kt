@@ -36,7 +36,6 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -72,6 +71,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.MainViewModel
 import com.example.ui.components.ChannelListItem
+import com.example.ui.components.MobileGlassNavBar
+import com.example.ui.components.MobilePlaylistPanel
+import com.example.ui.components.MobileSection
+import com.example.ui.components.StartupEmptyState
 import com.example.ui.components.TvBrowseLevel
 import com.example.ui.components.TvBrowseScreen
 import com.example.ui.components.TvPlayerOverlay
@@ -141,6 +144,7 @@ fun HomeScreen(
     val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
     val favOnlyGroups by viewModel.favOnlyGroups.collectAsStateWithLifecycle()
     val nameSortedGroups by viewModel.nameSortedGroups.collectAsStateWithLifecycle()
+    val mobilePlaylistId by viewModel.mobilePlaylistId.collectAsStateWithLifecycle()
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
@@ -179,6 +183,9 @@ fun HomeScreen(
     var showQualityDialog by remember { mutableStateOf(false) }
     var showEpgGuideDialog by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
+    // Phone: floating navbar (TV / Movies / Shows) and its playlist picker
+    var mobileSection by remember { mutableStateOf(MobileSection.LIVE) }
+    var showMobilePlaylists by remember { mutableStateOf(false) }
 
     // TV mode: TiviMate-style page (preview + EPG, playlist groups panel, rail). null = full-screen playback.
     var tvBrowse by remember { mutableStateOf<TvBrowseLevel?>(null) }
@@ -541,19 +548,6 @@ fun HomeScreen(
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHostState) },
             containerColor = DarkBackground,
-            floatingActionButton = {
-                // Prominent Add Playlist button always visible on Mobile when not in fullscreen player
-                if (!isMobileFullscreen && !isInPipMode && currentChannel == null) {
-                    ExtendedFloatingActionButton(
-                        onClick = { showAddDialog = true },
-                        containerColor = AccentCyan,
-                        contentColor = Color.Black,
-                        icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                        text = { Text("Add Playlist", fontWeight = FontWeight.Bold) },
-                        modifier = Modifier.testTag("fab_add_playlist")
-                    )
-                }
-            },
             topBar = {
                 if (!isMobileFullscreen && !isInPipMode) {
                     Column(
@@ -704,11 +698,26 @@ fun HomeScreen(
                 }
             }
         ) { paddingValues ->
-            Column(
+            val hasMovies = playlists.any { it.isActive && it.movieCount > 0 }
+            val hasShows = playlists.any { it.isActive && it.showCount > 0 }
+            // nothing to watch yet (no playlist, or an empty one): the start page replaces chips, list and buttons
+            val mobileStartup = !isLoading && (playlists.isEmpty() ||
+                (channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
+                    mobilePlaylistId == null && !hasMovies && !hasShows))
+            val section = when {
+                mobileSection == MobileSection.MOVIES && !hasMovies -> MobileSection.LIVE
+                mobileSection == MobileSection.SHOWS && !hasShows -> MobileSection.LIVE
+                else -> mobileSection
+            }
+            val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode
+            val listBottomPadding = if (showNavBar) 96.dp else 0.dp
+
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(if (isMobileFullscreen || isInPipMode) androidx.compose.foundation.layout.PaddingValues(0.dp) else paddingValues)
             ) {
+            Column(modifier = Modifier.fillMaxSize()) {
                 // If a channel is selected, show the custom Composable Player Screen
                 if (currentChannel != null) {
                     val player = viewModel.playerManager.getPlayer()
@@ -750,126 +759,191 @@ fun HomeScreen(
                 }
 
                 if (!isMobileFullscreen && !isInPipMode) {
-                    // Category Chips
-                    LazyRow(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
-                    ) {
-                        items(categories) { category ->
-                            val isSelected = (selectedCategory == category)
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = { viewModel.selectCategory(category) },
-                                label = {
-                                    Text(
-                                        text = category,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        fontSize = 12.sp
-                                    )
-                                },
-                                colors = FilterChipDefaults.filterChipColors(
-                                    selectedContainerColor = AccentCyan,
-                                    selectedLabelColor = Color.Black,
-                                    containerColor = DarkSurface,
-                                    labelColor = Color.White
-                                ),
-                                border = FilterChipDefaults.filterChipBorder(
-                                    enabled = true,
-                                    selected = isSelected,
-                                    borderColor = if (isSelected) AccentCyan else Color(0xFF334155)
-                                )
-                            )
-                        }
-                    }
-
-                    // Loading indicator
-                    if (isLoading) {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                CircularProgressIndicator(color = AccentCyan, modifier = Modifier.size(24.dp))
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text("Loading playlist streams...", color = Color.White, fontSize = 13.sp)
+                    if (!dbSettled && playlists.isEmpty()) {
+                        // database still loading: plain background instead of flashing the start page
+                        Box(modifier = Modifier.fillMaxWidth().weight(1f).background(DarkBackground))
+                    } else if (mobileStartup) {
+                        StartupEmptyState(
+                            onAddPlaylist = { showAddDialog = true },
+                            onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
+                            modifier = Modifier.weight(1f),
+                            compact = true,
+                            touchMode = true,
+                            background = DarkBackground
+                        )
+                    } else if (section != MobileSection.LIVE) {
+                        // Movies / Shows list
+                        val vodType = if (section == MobileSection.MOVIES) com.example.data.model.ContentType.MOVIE
+                                      else com.example.data.model.ContentType.SHOW
+                        val vodItems by remember(vodType) { viewModel.vodChannels(vodType) }
+                            .collectAsStateWithLifecycle(initialValue = emptyList())
+                        val activeIds = remember(playlists) { playlists.filter { it.isActive }.map { it.id }.toSet() }
+                        val shownVod = remember(vodItems, activeIds, mobilePlaylistId, searchQuery) {
+                            vodItems.filter { item ->
+                                item.playlistId in activeIds &&
+                                    (mobilePlaylistId == null || item.playlistId == mobilePlaylistId) &&
+                                    (searchQuery.isBlank() || item.name.contains(searchQuery, ignoreCase = true))
                             }
                         }
-                    }
-
-                    // Empty State or Channel List
-                    if (channels.isEmpty() && !isLoading) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f)
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Default.Tv, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(64.dp))
-                                Spacer(modifier = Modifier.height(12.dp))
+                        if (shownVod.isEmpty()) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().weight(1f).padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Text(
-                                    text = if (searchQuery.isNotEmpty()) "No matching channels" else "No channels in playlist",
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 16.sp
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Text(
-                                    text = "Add an M3U playlist, Xtream Codes, Stalker MAC Portal, or test DRM channels.",
+                                    text = if (vodLoading) "Loading..." else if (searchQuery.isNotEmpty()) "No matching titles" else "Nothing here yet",
                                     color = Color(0xFF94A3B8),
-                                    fontSize = 12.sp
+                                    fontSize = 14.sp
                                 )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = AccentCyan,
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .clickable { showAddDialog = true }
-                                            .padding(horizontal = 16.dp, vertical = 10.dp)
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Add, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text("+ Add Playlist", fontWeight = FontWeight.Bold, color = Color.Black)
-                                        }
-                                    }
-
-                                    TextButton(
-                                        onClick = { showDrmDebugger = true },
-                                        colors = androidx.compose.material3.ButtonDefaults.textButtonColors(contentColor = StatusDrm)
-                                    ) {
-                                        Text("DRM Test")
-                                    }
+                            }
+                        } else {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxWidth().weight(1f),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = listBottomPadding),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                items(shownVod, key = { it.id }) { item ->
+                                    ChannelListItem(
+                                        channel = item,
+                                        isSelected = item.id == currentChannel?.id,
+                                        onSelect = { viewModel.playVod(item) },
+                                        onToggleFavorite = { viewModel.toggleVodFavorite(item) }
+                                    )
                                 }
                             }
                         }
                     } else {
-                        // Channel List
-                        LazyColumn(
+                        // Category Chips
+                        LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .weight(1f),
-                            verticalArrangement = Arrangement.spacedBy(2.dp)
+                                .padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp)
                         ) {
-                            items(channels, key = { it.id }) { item ->
-                                val channelProg = EpgMatcher.currentProgramOf(item, allCurrentPrograms)
-                                ChannelListItem(
-                                    channel = item,
-                                    isSelected = item.id == currentChannel?.id,
-                                    currentProgram = channelProg,
-                                    onSelect = { viewModel.playChannel(item) },
-                                    onToggleFavorite = { viewModel.toggleFavorite(item) }
+                            items(categories) { category ->
+                                val isSelected = (selectedCategory == category)
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.selectCategory(category) },
+                                    label = {
+                                        Text(
+                                            text = category,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            fontSize = 12.sp
+                                        )
+                                    },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = AccentCyan,
+                                        selectedLabelColor = Color.Black,
+                                        containerColor = DarkSurface,
+                                        labelColor = Color.White
+                                    ),
+                                    border = FilterChipDefaults.filterChipBorder(
+                                        enabled = true,
+                                        selected = isSelected,
+                                        borderColor = if (isSelected) AccentCyan else Color(0xFF334155)
+                                    )
                                 )
+                            }
+                        }
+
+                        // Loading indicator
+                        if (isLoading) {
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    CircularProgressIndicator(color = AccentCyan, modifier = Modifier.size(24.dp))
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Text("Loading playlist streams...", color = Color.White, fontSize = 13.sp)
+                                }
+                            }
+                        }
+
+                        if (channels.isEmpty() && !isLoading) {
+                            // search / group / playlist with nothing in it
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f)
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(Icons.Default.Tv, contentDescription = null, tint = Color(0xFF64748B), modifier = Modifier.size(48.dp))
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = if (searchQuery.isNotEmpty()) "No matching channels" else "No channels here",
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 15.sp
+                                    )
+                                }
+                            }
+                        } else {
+                            // Channel List
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(1f),
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = listBottomPadding),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                items(channels, key = { it.id }) { item ->
+                                    val channelProg = EpgMatcher.currentProgramOf(item, allCurrentPrograms)
+                                    ChannelListItem(
+                                        channel = item,
+                                        isSelected = item.id == currentChannel?.id,
+                                        currentProgram = channelProg,
+                                        onSelect = { viewModel.playChannel(item) },
+                                        onToggleFavorite = { viewModel.toggleFavorite(item) }
+                                    )
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            // Floating liquid-glass navbar + playlist picker
+            if (showNavBar) {
+                if (showMobilePlaylists) {
+                    MobilePlaylistPanel(
+                        playlists = playlists,
+                        selectedPlaylistId = mobilePlaylistId,
+                        onSelect = {
+                            viewModel.selectMobilePlaylist(it)
+                            showMobilePlaylists = false
+                        },
+                        onAddPlaylist = {
+                            showMobilePlaylists = false
+                            showAddDialog = true
+                        },
+                        onDismiss = { showMobilePlaylists = false },
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+                MobileGlassNavBar(
+                    section = section,
+                    hasMovies = hasMovies,
+                    hasShows = hasShows,
+                    playlistsOpen = showMobilePlaylists,
+                    onSelectSection = {
+                        mobileSection = it
+                        showMobilePlaylists = false
+                    },
+                    onTogglePlaylists = { showMobilePlaylists = !showMobilePlaylists },
+                    onOpenSettings = {
+                        showMobilePlaylists = false
+                        openSettings(TiviSettingsRoute.Main)
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp)
+                )
+            }
             }
         }
     }
