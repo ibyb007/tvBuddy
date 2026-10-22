@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import com.example.data.epg.EpgMatcher
 import android.os.SystemClock
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -338,9 +339,7 @@ fun TvBrowseScreen(
             .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
     }
     fun programsOf(ch: ChannelEntity): List<ProgramEntity> =
-        (if (ch.streamId.isNotBlank()) byEpgId[ch.streamId.lowercase()] else null)
-            ?: byEpgId[ch.name.lowercase()]
-            ?: emptyList()
+        EpgMatcher.programsOf(ch, byEpgId)
     fun slotsFor(ch: ChannelEntity): List<EpgSlot> = buildSlots(programsOf(ch), windowStart, windowEnd)
 
     // ---------------- grid focus ----------------
