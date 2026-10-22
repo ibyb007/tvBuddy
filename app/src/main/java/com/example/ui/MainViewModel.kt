@@ -576,6 +576,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             allPlaylists.value.firstOrNull { it.id == channel.playlistId }?.toSpoofProfile() ?: _globalSpoof.value
         )
         viewModelScope.launch { repository.recordHistory(channel) }
+        // Xtream / Stalker: ask the portal for this channel's guide when no imported XMLTV covers it
+        if (channel.contentType == ContentType.TV) viewModelScope.launch { repository.ensureChannelEpg(channel) }
         startVodProgress(channel)
     }
 
