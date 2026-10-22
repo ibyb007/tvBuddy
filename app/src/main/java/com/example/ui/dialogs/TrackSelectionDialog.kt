@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -26,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -46,15 +48,17 @@ fun TrackSelectionDialog(
     onDisableSubtitles: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.75f).dp
     Dialog(onDismissRequest = onDismiss) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth(0.9f)
-                .clip(RoundedCornerShape(18.dp))
-                .border(1.dp, Color(0xFF334155), RoundedCornerShape(18.dp)),
+                .width(300.dp)
+                .heightIn(max = maxH)
+                .clip(RoundedCornerShape(14.dp))
+                .border(1.dp, Color(0xFF334155), RoundedCornerShape(14.dp)),
             color = DarkBackground
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
+            Column(modifier = Modifier.padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 12.dp).padding(end = 8.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -62,16 +66,16 @@ fun TrackSelectionDialog(
                 ) {
                     Text(
                         text = title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         color = Color.White,
                         fontWeight = FontWeight.Bold
                     )
-                    IconButton(onClick = onDismiss) {
+                    IconButton(onClick = onDismiss, modifier = Modifier.size(36.dp)) {
                         Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.LightGray)
                     }
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(4.dp))
 
                 if (isSubtitles) {
                     val anySelected = tracks.any { it.isSelected }
@@ -91,7 +95,7 @@ fun TrackSelectionDialog(
                                 onDisableSubtitles()
                                 onDismiss()
                             }
-                            .padding(12.dp)
+                              .padding(10.dp)
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -132,16 +136,18 @@ fun TrackSelectionDialog(
                                         onSelectTrack(track)
                                         onDismiss()
                                     }
-                                    .padding(12.dp)
+                                    .padding(10.dp)
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Column {
+                                    Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = track.label,
+                                            maxLines = 2,
+                                            fontSize = 14.sp,
                                             color = if (track.isSelected) AccentCyan else Color.White,
                                             fontWeight = if (track.isSelected) FontWeight.Bold else FontWeight.Normal
                                         )
