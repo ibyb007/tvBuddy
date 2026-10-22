@@ -1585,33 +1585,12 @@ fun TvEmptyState(
                 }
             }
     ) {
-        Column(
-            modifier = Modifier.align(Alignment.Center),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Text("tvBuddy does not provide any content", color = Color.White, fontSize = 32.sp)
-            Spacer(Modifier.height(16.dp))
-            Text(
-                "Add your own playlist to start watching",
-                color = Color.White.copy(alpha = 0.6f),
-                fontSize = 26.sp
-            )
-            Spacer(Modifier.height(48.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
-                listOf("Add playlist", "Settings").forEachIndexed { i, label ->
-                    val sel = selected == i && !showSettings
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { if (i == 0) onAddPlaylist() else { showSettings = true; settingsIndex = 0 } }
-                            .background(if (sel) TvSelected else Color(0xFF25292D))
-                            .padding(horizontal = 32.dp, vertical = 20.dp)
-                    ) {
-                        Text(label, color = if (sel) Color.Black else Color.White, fontSize = 24.sp)
-                    }
-                }
-            }
-        }
+        StartupEmptyState(
+            onAddPlaylist = onAddPlaylist,
+            onOpenSettings = { showSettings = true; settingsIndex = 0 },
+            selected = if (showSettings) -1 else selected,
+            compact = false
+        )
         if (showSettings) {
             Box(Modifier.align(Alignment.CenterEnd)) { SettingsPanel(settingsIndex) }
         }
