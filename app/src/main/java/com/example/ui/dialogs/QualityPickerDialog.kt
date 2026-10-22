@@ -77,7 +77,45 @@ fun QualityPickerDialog(
         try { focus.requestFocus() } catch (_: Exception) {}
     }
 
-    val shape = RoundedCornerShape(if (tv) (24 * k).dp else 16.dp)
+    val shape = RoundedCornerShape(if (tv) (24 * k).dp else 14.dp)
+
+    if (!tv) {
+        // Phone: small centred popup (not full screen) that fits the player
+        val maxH = (LocalConfiguration.current.screenHeightDp * 0.75f).dp
+        Dialog(onDismissRequest = onDismiss) {
+            Column(
+                modifier = Modifier
+                    .width(280.dp)
+                    .heightIn(max = maxH)
+                    .clip(shape)
+                    .background(PanelBg)
+                    .padding(horizontal = 8.dp, vertical = 10.dp)
+            ) {
+                Text(
+                    "Video quality",
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(start = 10.dp, top = 2.dp, bottom = 6.dp)
+                )
+                LazyColumn(state = listState, modifier = Modifier.fillMaxWidth()) {
+                    itemsIndexed(entries) { index, option ->
+                        TrackRow(
+                            label = option?.let { trackLabel(it) } ?: "Auto",
+                            chosen = index == selectedIndex,
+                            k = k,
+                            tv = false,
+                            modifier = if (index == selectedIndex) Modifier.focusRequester(focus) else Modifier
+                        ) {
+                            onSelectTrack(option)
+                            onDismiss()
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -146,7 +184,7 @@ private fun TrackRow(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = if (tv) (3 * k).dp else 2.dp)
-            .height(if (tv) (84 * k).dp else 48.dp)
+            .height(if (tv) (84 * k).dp else 42.dp)
             .clip(RoundedCornerShape(if (tv) (10 * k).dp else 10.dp))
             .background(if (focused) RowFocus else Color.Transparent)
             .onFocusChanged { focused = it.isFocused }
@@ -164,7 +202,7 @@ private fun TrackRow(
         Text(
             label,
             color = fg,
-            fontSize = if (tv) (28 * k).sp else 15.sp,
+            fontSize = if (tv) (28 * k).sp else 14.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
