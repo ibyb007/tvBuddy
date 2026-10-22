@@ -2,6 +2,7 @@ package com.example.data.parser
 
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.model.DrmType
+import com.example.data.util.LogoUrl
 import java.io.BufferedReader
 import java.io.StringReader
 
@@ -123,7 +124,11 @@ object M3uParser {
                     currentEpgName = extractAttribute(trimmed, "tvg-name")
                     // The display name is the text after the comma; tvg-name is often just an EPG id
                     currentName = extractChannelName(trimmed).ifBlank { currentEpgName }
-                    currentLogo = normalizeLogoUrl(extractAttribute(trimmed, "tvg-logo"))
+                    currentLogo = normalizeLogoUrl(
+                        extractAttribute(trimmed, "tvg-logo").ifBlank { extractAttribute(trimmed, "tvg-logo-small") }
+                            .ifBlank { extractAttribute(trimmed, "logo") }
+                            .ifBlank { extractAttribute(trimmed, "tvg-icon") }
+                    )
                     val group = extractAttribute(trimmed, "group-title")
                     if (group.isNotBlank()) {
                         currentGroup = group
@@ -220,7 +225,9 @@ object M3uParser {
                                 drmLicenseUrl = currentDrmLicenseUrl,
                                 drmKeyIdKey = currentDrmKeyIdKey,
                                 httpUserAgent = currentUserAgent,
-                                httpHeadersJson = headersJson
+                                httpHeadersJson = headersJson,
+                                epgChannelId = currentTvgId.ifBlank { null },
+                                epgName = currentEpgName.ifBlank { null }
                             )
                         )
 
@@ -254,12 +261,7 @@ object M3uParser {
         return ""
     }
 
-    private fun normalizeLogoUrl(raw: String): String? {
-        var u = raw.trim().trim('"', '\'')
-        if (u.isEmpty()) return null
-        if (u.startsWith("//")) u = "https:$u"
-        return u.replace(" ", "%20")
-    }
+    private fun normalizeLogoUrl(raw: String): String? = LogoUrl.normalize(raw)
 
     private const val PIPE_KEYS =
         "user-agent|useragent|http-user-agent|referer|referrer|http-referer|http-referrer|origin|cookie|" +
