@@ -754,7 +754,11 @@ fun HomeScreen(
                             onOpenSubtitles = { showSubtitleDialog = true },
                             onRetry = { currentChannel?.let { viewModel.playChannel(it) } },
                             onClosePlayer = { viewModel.closePlayer() },
-                            onOpenSpoofSettings = { showSpoofDialog = true }
+                            onOpenSpoofSettings = { showSpoofDialog = true },
+                            audioBoostProfile = audioBoostProfile,
+                            onCycleAudioBoost = { viewModel.cycleAudioBoost() },
+                            audioTracks = audioTracks,
+                            onOpenSettings = { openSettings(TiviSettingsRoute.Main) }
                         )
                     }
                 }
