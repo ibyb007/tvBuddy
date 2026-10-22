@@ -105,6 +105,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedCategory = MutableStateFlow("All")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
+    /** Phone mode: opacity of the floating navbar and its playlist panel (0.1 - 1.0), saved across launches. */
+    private val _navbarOpacity = MutableStateFlow(prefs.getFloat("navbar_opacity", 0.7f).coerceIn(0.1f, 1f))
+    val navbarOpacity: StateFlow<Float> = _navbarOpacity.asStateFlow()
+
+    fun setNavbarOpacity(value: Float) {
+        val v = value.coerceIn(0.1f, 1f)
+        _navbarOpacity.value = v
+        prefs.edit().putFloat("navbar_opacity", v).apply()
+    }
+
     /** Phone mode: playlist picked in the floating navbar (null = all playlists). */
     private val _mobilePlaylistId = MutableStateFlow<Long?>(null)
     val mobilePlaylistId: StateFlow<Long?> = _mobilePlaylistId.asStateFlow()
