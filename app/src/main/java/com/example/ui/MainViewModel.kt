@@ -105,6 +105,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedCategory = MutableStateFlow("All")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
+    /** Phone mode: playlist picked in the floating navbar (null = all playlists). */
+    private val _mobilePlaylistId = MutableStateFlow<Long?>(null)
+    val mobilePlaylistId: StateFlow<Long?> = _mobilePlaylistId.asStateFlow()
+
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
 
@@ -233,8 +237,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Phone mode: the group chips. The same live TV groups the TV page shows (portal / Xtream / M3U order, hidden
      * groups and inactive playlists left out), so Stalker portals and Xtream accounts get their groups there too.
      */
-    val categories: StateFlow<List<String>> = tvGroupSections
-        .map { sections -> listOf("All", "★ Favorites") + sections.flatMap { it.groups }.distinct() }
+    val categories: StateFlow<List<String>> = combine(tvGroupSections, _mobilePlaylistId) { sections, plId ->
+        val shown = if (plId == null) sections else sections.filter { it.playlistId == plId }
+        listOf("All", "★ Favorites") + shown.flatMap { it.groups }.distinct()
+    }
         .stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", "★ Favorites"))
 
     private data class FilterState(
@@ -243,19 +249,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val tvMode: Boolean,
         val selection: TvGroupSelection,
         val favOnly: Set<String>,
-        val nameSorted: Set<String>
+        val nameSorted: Set<String>,
+        val mobilePlaylistId: Long? = null
     )
 
     private val groupViewPrefs = combine(_favOnlyGroups, _nameSortedGroups) { fav, byName -> fav to byName }
 
+    private val modeState = combine(_isTvMode, _mobilePlaylistId) { tvMode, plId -> tvMode to plId }
+
     private val filterState = combine(
         _selectedCategory,
         _searchQuery,
-        _isTvMode,
+        modeState,
         _tvSelection,
         groupViewPrefs
-    ) { category, query, tvMode, selection, viewPrefs ->
-        FilterState(category, query, tvMode, selection, viewPrefs.first, viewPrefs.second)
+    ) { category, query, mode, selection, viewPrefs ->
+        FilterState(category, query, mode.first, selection, viewPrefs.first, viewPrefs.second, mode.second)
     }
 
     /** Applies a TV group selection (playlist / favourites / group, fav-only + name-sort options) to the channel list. */
@@ -304,7 +313,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             applySelection(channels, playlists, groups, fs.selection, fs.favOnly, fs.nameSorted)
         } else {
             // phone mode: category chip
-            val all = applySelection(channels, playlists, groups, TvGroupSelection(), emptySet(), emptySet())
+            val all = applySelection(channels, playlists, groups, TvGroupSelection(playlistId = fs.mobilePlaylistId), emptySet(), emptySet())
             when (fs.category) {
                 "All" -> all
                 "★ Favorites" -> all.filter { it.isFavorite }
@@ -391,6 +400,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectCategory(category: String) {
         _selectedCategory.value = category
+    }
+
+    /** Phone navbar: show one playlist (null = all playlists). Group chips go back to "All". */
+    fun selectMobilePlaylist(playlistId: Long?) {
+        _mobilePlaylistId.value = playlistId
+        _selectedCategory.value = "All"
     }
 
     // ---- TV groups panel actions ----
