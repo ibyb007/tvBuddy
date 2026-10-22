@@ -5,6 +5,10 @@ import androidx.room.withTransaction
 import com.example.data.local.TvBuddyDatabase
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ChannelGroupEntity
+import com.example.data.local.entity.EpgChannelEntity
+import com.example.data.epg.EpgMatcher
+import com.example.data.util.LogoUrl
+import kotlinx.coroutines.sync.Mutex
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.HistoryEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
@@ -69,6 +73,10 @@ class TvBuddyRepository(
     private val programDao = database.programDao()
     private val epgSourceDao = database.epgSourceDao()
     private val channelGroupDao = database.channelGroupDao()
+    private val epgChannelDao = database.epgChannelDao()
+    private val remapMutex = Mutex()
+    /** Channels whose portal EPG was asked for lately (id -> time), so zapping back and forth does not hammer the portal. */
+    private val portalEpgAsked = java.util.concurrent.ConcurrentHashMap<Long, Long>()
 
     private val epgScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val epgPrefs by lazy { context.getSharedPreferences("tvbuddy_epg", Context.MODE_PRIVATE) }
@@ -126,10 +134,102 @@ class TvBuddyRepository(
         epgScope.launch {
             val now = System.currentTimeMillis()
             for (p in playlistDao.getAllPlaylists().first()) {
-                val urls = epgPrefs.getStringSet("urls_${p.id}", null)?.toList() ?: continue
-                if (now - epgPrefs.getLong("ts_${p.id}", 0L) > 12L * 60 * 60 * 1000) {
-                    fetchEpgUrls(p.id, urls, userAgent)
+                val stale = now - epgPrefs.getLong("ts_${p.id}", 0L) > 12L * 60 * 60 * 1000
+                if (p.type == PlaylistType.STALKER) {
+                    if (p.includeTv && stale) refreshPortalEpg(p.id)
+                    continue
                 }
+                val urls = epgPrefs.getStringSet("urls_${p.id}", null)?.toList() ?: continue
+                if (stale) fetchEpgUrls(p.id, urls, userAgent)
+            }
+        }
+    }
+
+    /**
+     * Stalker portals deliver their guide themselves (get_epg_info, IPTVnator style): one bulk request for the
+     * whole portal, then a per-channel get_short_epg for the channels it left out. Stored under the portal keys the
+     * matcher knows, next to whatever XMLTV guides were imported.
+     */
+    suspend fun refreshPortalEpg(playlistId: Long): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val pl = playlistDao.getPlaylistById(playlistId) ?: throw Exception("Playlist not found")
+            if (pl.type != PlaylistType.STALKER) return@withContext Result.success(0)
+            val ua = pl.toSpoofProfile().getUserAgent()
+            val auth = stalkerSession(pl)
+            if (!auth.success) throw Exception(auth.message)
+            val programs = stalkerClient.fetchBulkEpg(auth, pl.toStalkerParams(), pl.id, ua)
+            val minTime = System.currentTimeMillis() - 24L * 3_600_000L
+            val keep = programs.filter { it.endTimeMs >= minTime }
+            if (keep.isNotEmpty()) {
+                keep.map { it.epgChannelId }.distinct().chunked(500).forEach { programDao.deleteProgramsForChannels(it) }
+                keep.chunked(2000).forEach { programDao.insertPrograms(it) }
+            }
+            epgPrefs.edit().putLong("ts_$playlistId", System.currentTimeMillis()).apply()
+            remapEpg(playlistId)
+            Result.success(keep.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Makes sure the channel that is being watched has a guide: when no imported XMLTV and no earlier portal answer
+     * has upcoming programmes for it, asks the portal itself (Xtream get_simple_data_table / get_short_epg, Stalker
+     * get_short_epg). Asked at most once per five minutes per channel.
+     */
+    suspend fun ensureChannelEpg(channel: ChannelEntity) = withContext(Dispatchers.IO) {
+        if (channel.contentType != ContentType.TV || channel.streamId.isBlank()) return@withContext
+        try {
+            val now = System.currentTimeMillis()
+            val last = portalEpgAsked[channel.id]
+            if (last != null && now - last < 5 * 60_000L) return@withContext
+            val pl = playlistDao.getPlaylistById(channel.playlistId) ?: return@withContext
+            if (pl.type != PlaylistType.XTREAM && pl.type != PlaylistType.STALKER) return@withContext
+            val keys = listOfNotNull(channel.epgChannelId, EpgMatcher.portalKey(pl.id, channel.streamId)).distinct()
+            if (keys.any { programDao.countUpcoming(it, now) > 1 }) return@withContext
+            portalEpgAsked[channel.id] = now
+            val ua = pl.toSpoofProfile().getUserAgent()
+            val programs = when (pl.type) {
+                PlaylistType.XTREAM -> {
+                    val full = xtreamClient.fetchFullEpg(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, channel.streamId, ua)
+                    full.ifEmpty { xtreamClient.fetchShortEpg(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, channel.streamId, 12, ua) }
+                }
+                else -> {
+                    val auth = stalkerSession(pl)
+                    if (auth.success) stalkerClient.fetchShortEpg(auth, pl.toStalkerParams(), pl.id, ua, channel.streamId, 12) else emptyList()
+                }
+            }
+            val fresh = programs.filter { it.endTimeMs >= now - 6 * 3_600_000L }
+            if (fresh.isNotEmpty()) {
+                programDao.deleteProgramsForChannel(fresh.first().epgChannelId)
+                programDao.insertPrograms(fresh)
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * Resolves, for every live channel of [playlistId] (0 = all playlists), which guide channel its programmes are
+     * stored under, and fills in logos from the guide's channel icons where the playlist had none. Run after every
+     * guide import and every playlist import / update. See [EpgMatcher].
+     */
+    suspend fun remapEpg(playlistId: Long = 0L) = withContext(Dispatchers.IO) {
+        remapMutex.withLock {
+            try {
+                val ids = programDao.getDistinctChannelIds().toHashSet()
+                if (ids.isEmpty()) return@withLock
+                val index = EpgMatcher.Index(epgChannelDao.getAll(), ids)
+                val refs = channelDao.getTvEpgRefs(playlistId)
+                database.withTransaction {
+                    for (r in refs) {
+                        val resolved = EpgMatcher.resolve(r, index)
+                        if (resolved != null && resolved != r.epgChannelId) channelDao.setEpgChannelId(r.id, resolved)
+                        if (r.logoUrl.isNullOrBlank() && resolved != null) {
+                            LogoUrl.normalize(index.icons[resolved])?.let { channelDao.setLogoUrl(r.id, it) }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
             }
         }
     }
@@ -256,50 +356,83 @@ class TvBuddyRepository(
         storeDescriptions: Boolean = true
     ): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val minTime = if (pastDaysToKeep > 0) {
-                System.currentTimeMillis() - (pastDaysToKeep.toLong() * 24L * 60L * 60L * 1000L)
-            } else 0L
+            val now = System.currentTimeMillis()
+            val minTime = if (pastDaysToKeep > 0) now - pastDaysToKeep.toLong() * 24L * 60L * 60L * 1000L else 0L
+            // a guide reaching months ahead is dead weight on a TV: a bit over a week is plenty
+            val maxStart = now + 10L * 24L * 60L * 60L * 1000L
 
-            val programs = if (isRawText) {
-                XmltvParser.parseString(urlOrContent, storeDescriptions, minTime)
+            // Streamed: the document is read, and written to the database in batches, while it downloads
+            // (the old code held every programme of the guide in memory first).
+            val clearedChannels = HashSet<String>()
+            var total = 0
+            var channelCount = 0
+            val onChannels: (List<com.example.data.parser.XmltvChannel>) -> Unit = { list ->
+                channelCount += list.size
+                val rows = list.map { c ->
+                    EpgChannelEntity(
+                        channelId = c.id,
+                        lowerId = c.id.lowercase(),
+                        displayName = c.displayNames.firstOrNull() ?: c.id,
+                        normNames = EpgMatcher.normNamesOf(c.displayNames, c.id),
+                        iconUrl = LogoUrl.normalize(c.iconUrl)
+                    )
+                }
+                kotlinx.coroutines.runBlocking { rows.chunked(500).forEach { epgChannelDao.insertAll(it) } }
+            }
+            val onPrograms: (List<ProgramEntity>) -> Unit = { batch ->
+                total += batch.size
+                kotlinx.coroutines.runBlocking {
+                    // the old rows of a channel go when its first new programme arrives (never after, or the batch would delete itself)
+                    val fresh = batch.map { it.epgChannelId }.distinct().filter { clearedChannels.add(it) }
+                    fresh.chunked(500).forEach { programDao.deleteProgramsForChannels(it) }
+                    programDao.insertPrograms(batch)
+                }
+            }
+
+            if (isRawText) {
+                XmltvParser.parseStreaming(
+                    java.io.ByteArrayInputStream(urlOrContent.toByteArray(Charsets.UTF_8)),
+                    storeDescriptions, minTime, maxStart, onChannels = onChannels, onPrograms = onPrograms
+                )
             } else {
-                val req = Request.Builder().url(urlOrContent).header("User-Agent", userAgent).build()
-                okHttpClient.newCall(req).execute().use { resp ->
+                val req = Request.Builder().url(urlOrContent)
+                    .header("User-Agent", userAgent)
+                    .header("Accept-Encoding", "gzip")
+                    .build()
+                // the guide of a big provider is hundreds of MB: no total-call timeout, a generous read timeout
+                val client = okHttpClient.newBuilder().readTimeout(120, TimeUnit.SECONDS).callTimeout(0, TimeUnit.SECONDS).build()
+                client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) throw Exception("HTTP ${resp.code}: ${resp.message}")
                     val rawStream = resp.body?.byteStream() ?: throw Exception("Empty response body")
-                    val bodyStream = BufferedInputStream(rawStream)
+                    val bodyStream = BufferedInputStream(rawStream, 64 * 1024)
                     bodyStream.mark(2)
                     val b0 = bodyStream.read()
                     val b1 = bodyStream.read()
                     bodyStream.reset()
-                    val isGzip = b0 == 0x1f && b1 == 0x8b
-                    if (isGzip) {
-                        GZIPInputStream(bodyStream).use { gzStream ->
-                            XmltvParser.parse(gzStream, storeDescriptions, minTime)
-                        }
-                    } else {
-                        XmltvParser.parse(bodyStream, storeDescriptions, minTime)
+                    // gzip is recognised by its signature, not by the URL or headers: ".xml" links that serve gzip
+                    // and ".gz" links that serve plain XML both exist
+                    val stream = if (b0 == 0x1f && b1 == 0x8b) GZIPInputStream(bodyStream, 64 * 1024) else bodyStream
+                    stream.use {
+                        XmltvParser.parseStreaming(it, storeDescriptions, minTime, maxStart, onChannels = onChannels, onPrograms = onPrograms)
                     }
                 }
             }
 
-            if (programs.isNotEmpty()) {
-                programs.map { it.epgChannelId }.distinct().chunked(500).forEach {
-                    programDao.deleteProgramsForChannels(it)
-                }
-                programDao.insertPrograms(programs)
-            }
+            if (total == 0 && channelCount == 0) throw Exception("The guide contains no channels or programmes")
 
             if (minTime > 0L) {
                 programDao.purgeOldPrograms(minTime)
             }
+
+            // link the playlists' channels to the new guide and fill in missing logos from its icons
+            remapEpg()
 
             val count = programDao.getDistinctUpdatedChannelsCount()
             val timeFormatted = SimpleDateFormat("dd/MM/yy hh:mm a", Locale.US).format(Date())
             val statusMsg = "EPG is successfully updated for $count channels on $timeFormatted"
             epgPrefs.edit().putString("latest_status", statusMsg).apply()
 
-            Result.success(programs.size)
+            Result.success(total)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -311,6 +444,7 @@ class TvBuddyRepository(
 
     suspend fun clearAllEpg() = withContext(Dispatchers.IO) {
         programDao.clearAllPrograms()
+        epgChannelDao.clear()
         epgPrefs.edit().putString("latest_status", "EPG cleared").apply()
     }
 
@@ -330,6 +464,7 @@ class TvBuddyRepository(
         channelDao.deleteChannelsByPlaylist(playlist.id)
         channelGroupDao.deleteGroupsByPlaylist(playlist.id)
         epgSourceDao.clearAssignedSourcesForPlaylist(playlist.id)
+        programDao.deleteProgramsByPrefix("sp${playlist.id}:")
         playlistDao.deletePlaylist(playlist)
         epgPrefs.edit().remove("urls_${playlist.id}").remove("ts_${playlist.id}").apply()
     }
@@ -464,15 +599,24 @@ class TvBuddyRepository(
                     }
                     // one attempt with the playlist's own signature: no extra requests against a provider that may rate-limit / ban
                     val content = fetchM3uText(pl.sourceUrl, spoof, allowFallback = false).first
+                    // the playlist may have gained / changed its guide link
+                    val urls = M3uParser.extractEpgUrls(content)
+                    if (urls.isNotEmpty() && urls.toSet() != epgPrefs.getStringSet("urls_${pl.id}", null)) {
+                        startPlaylistEpgImport(pl.id, urls, ua)
+                    }
                     M3uParser.parse(content, pl.id, ua, headers)
                 }
                 PlaylistType.XTREAM -> {
                     val auth = xtreamClient.authenticate(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), ua)
                     if (!auth.success) throw Exception(auth.message)
                     expiration = formatExpiration(auth.expDate)
+                    // playlists added before the panel guide was wired in get it now; the rest follow the 12 h refresh
+                    if (pl.includeTv && epgPrefs.getStringSet("urls_${pl.id}", null).isNullOrEmpty()) {
+                        startPlaylistEpgImport(pl.id, listOf(xtreamClient.xmltvUrl(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty())), ua)
+                    }
                     xtreamClient.fetchChannels(
                         pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, ua,
-                        includeTv = pl.includeTv, includeVod = pl.includeVod
+                        includeTv = pl.includeTv, includeVod = pl.includeVod, liveExtension = auth.liveExtension
                     )
                 }
                 PlaylistType.STALKER -> {
@@ -508,7 +652,14 @@ class TvBuddyRepository(
                     // a panel that dropped the category request answers with everything in "Live TV": keep the group it had
                     val keepGroup = ch.contentType == ContentType.TV && ch.groupTitle == "Live TV" &&
                         match.groupTitle.isNotBlank() && match.groupTitle != "Live TV"
-                    ch.copy(id = match.id, isFavorite = match.isFavorite, groupTitle = if (keepGroup) match.groupTitle else ch.groupTitle)
+                    ch.copy(
+                        id = match.id,
+                        isFavorite = match.isFavorite,
+                        groupTitle = if (keepGroup) match.groupTitle else ch.groupTitle,
+                        // what the guide taught us (mapping, icon) survives a refresh that brings nothing better
+                        epgChannelId = ch.epgChannelId ?: match.epgChannelId,
+                        logoUrl = ch.logoUrl ?: match.logoUrl
+                    )
                 }
             }
 
@@ -524,6 +675,7 @@ class TvBuddyRepository(
 
             syncGroupsForPlaylist(pl.id, merged, pl.showNewlyAddedGroups)
             playlistDao.updateContentCounts(pl.id, counts.tv, counts.movies, counts.shows, expiration, System.currentTimeMillis())
+            if (counts.tv > 0) epgScope.launch { remapEpg(pl.id) }
             Result.success(merged.size)
         } catch (e: Exception) {
             Result.failure(e)
@@ -813,6 +965,8 @@ class TvBuddyRepository(
             syncGroupsForPlaylist(playlistId, channels, true)
         }
         playlistDao.updateContentCounts(playlistId, counts.tv, counts.movies, counts.shows, expiration, System.currentTimeMillis())
+        // a guide imported earlier may already cover these channels (and carry their logos)
+        if (counts.tv > 0) epgScope.launch { remapEpg(playlistId) }
         return counts
     }
 
@@ -845,9 +999,13 @@ class TvBuddyRepository(
 
             val channels = xtreamClient.fetchChannels(
                 serverUrl, username, password, playlistId, spoof.getUserAgent(),
-                includeTv = includeTv, includeVod = includeVod
+                includeTv = includeTv, includeVod = includeVod, liveExtension = auth.liveExtension
             )
             val counts = storeImported(playlistId, channels, formatExpiration(auth.expDate))
+            // the panel's own XMLTV guide: its ids are the channels' epg_channel_id values
+            if (includeTv && counts.tv > 0) {
+                startPlaylistEpgImport(playlistId, listOf(xtreamClient.xmltvUrl(serverUrl, username, password)), spoof.getUserAgent())
+            }
             Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
             Result.failure(e)
@@ -896,6 +1054,11 @@ class TvBuddyRepository(
             val counts = importStalkerContent(playlistId, params, auth, spoof.getUserAgent(), includeTv, includeVod, onProgress)
             if (counts.tv + counts.movies + counts.shows == 0) throw Exception("The portal returned no channels or movies")
             playlistDao.updateContentCounts(playlistId, counts.tv, counts.movies, counts.shows, formatExpiration(auth.expiration), System.currentTimeMillis())
+            // the portal's own guide (get_epg_info), fetched in the background
+            if (includeTv && counts.tv > 0) {
+                val id = playlistId
+                epgScope.launch { refreshPortalEpg(id); remapEpg(id) }
+            }
             Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
             // don't leave an empty, half-added playlist behind
@@ -1035,6 +1198,7 @@ class TvBuddyRepository(
         }
         if (tv == 0 && !pl.includeTv) channelGroupDao.deleteGroupsByPlaylistAndType(pl.id, ContentType.TV)
         playlistDao.updateContentCounts(pl.id, tv, movies, shows, expiration, System.currentTimeMillis())
+        if (tv > 0) epgScope.launch { refreshPortalEpg(pl.id); remapEpg(pl.id) }
         return tv + movies + shows
     }
 
