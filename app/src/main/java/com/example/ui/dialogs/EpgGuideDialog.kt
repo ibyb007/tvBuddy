@@ -1,5 +1,6 @@
 package com.example.ui.dialogs
 
+import com.example.data.epg.EpgMatcher
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -170,10 +171,7 @@ fun EpgGuideDialog(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(channels, key = { it.id }) { channel ->
-                        val channelPrograms = programs.filter {
-                            it.epgChannelId.equals(channel.streamId, ignoreCase = true) ||
-                            it.epgChannelId.equals(channel.name, ignoreCase = true)
-                        }
+                        val channelPrograms = EpgMatcher.programsOfList(channel, programs)
                         val liveProgram = channelPrograms.firstOrNull { it.isLive } ?: channelPrograms.firstOrNull()
 
                         Surface(
