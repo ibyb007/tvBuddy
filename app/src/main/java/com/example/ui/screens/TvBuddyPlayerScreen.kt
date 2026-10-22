@@ -6,7 +6,12 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -19,6 +24,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,7 +38,10 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.BrightnessMedium
+import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PictureInPictureAlt
@@ -52,7 +61,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,7 +74,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -73,7 +88,9 @@ import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.SpoofProfile
 import com.example.player.AspectMode
+import com.example.player.AudioBoostProfile
 import com.example.player.StreamInfo
+import com.example.player.TrackInfo
 import com.example.player.VideoQuality
 import com.example.ui.components.VideoPlayerSurface
 import com.example.ui.theme.AccentCyan
@@ -88,7 +105,8 @@ import kotlinx.coroutines.delay
  * adaptive HLS (.m3u8), DASH (.mpd), RTSP, and progressive video streams.
  * Includes Picture-in-Picture (PiP), Quality selector, and EPG integration.
  */
-@OptIn(UnstableApi::class)
+@androidx.annotation.OptIn(UnstableApi::class)
+@kotlin.OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun TvBuddyPlayerScreen(
     player: ExoPlayer,
@@ -116,8 +134,13 @@ fun TvBuddyPlayerScreen(
     onRetry: () -> Unit,
     onClosePlayer: () -> Unit,
     onOpenSpoofSettings: () -> Unit = {},
+    audioBoostProfile: AudioBoostProfile = AudioBoostProfile.OFF,
+    onCycleAudioBoost: () -> Unit = {},
+    audioTracks: List<TrackInfo> = emptyList(),
+    onOpenSettings: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val isLive = channel == null || channel.contentType == com.example.data.model.ContentType.TV
     var showControls by remember { mutableStateOf(true) }
 
     // Intercept hardware/gesture Back to close player cleanly
@@ -137,6 +160,30 @@ fun TvBuddyPlayerScreen(
         }
     }
 
+    // ---- Swipe gestures: right half = volume, left half = brightness ----
+    val context = LocalContext.current
+    val activity = remember(context) { context.findHostActivity() }
+    val audioManager = remember(context) { context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
+    var gestureKind by remember { mutableStateOf<SwipeKind?>(null) }
+    var gestureLevel by remember { mutableFloatStateOf(0f) }
+    var gestureTick by remember { mutableIntStateOf(0) }
+    LaunchedEffect(gestureTick) {
+        if (gestureKind != null) {
+            delay(900)
+            gestureKind = null
+        }
+    }
+    // hand brightness control back to the system when the player goes away
+    DisposableEffect(activity) {
+        onDispose {
+            activity?.window?.let { w ->
+                val lp = w.attributes
+                lp.screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                w.attributes = lp
+            }
+        }
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -148,6 +195,49 @@ fun TvBuddyPlayerScreen(
                 if (!isInPipMode) {
                     showControls = !showControls
                 }
+            }
+            .pointerInput(isInPipMode) {
+                if (isInPipMode) return@pointerInput
+                var kind = SwipeKind.VOLUME
+                var level = 0f
+                detectVerticalDragGestures(
+                    onDragStart = { offset ->
+                        kind = if (offset.x > size.width / 2f) SwipeKind.VOLUME else SwipeKind.BRIGHTNESS
+                        level = when (kind) {
+                            SwipeKind.VOLUME -> {
+                                val max = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                audioManager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toFloat() / max
+                            }
+                            SwipeKind.BRIGHTNESS -> currentBrightness(activity, context)
+                        }
+                        gestureKind = kind
+                        gestureLevel = level
+                    },
+                    onDragEnd = { gestureTick++ },
+                    onDragCancel = { gestureTick++ },
+                    onVerticalDrag = { change, dragAmount ->
+                        change.consume()
+                        // a full-height swipe moves the level ~100%
+                        level = (level - dragAmount / size.height * 1.2f).coerceIn(0f, 1f)
+                        when (kind) {
+                            SwipeKind.VOLUME -> {
+                                val max = audioManager.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+                                audioManager.setStreamVolume(
+                                    android.media.AudioManager.STREAM_MUSIC,
+                                    Math.round(level * max),
+                                    0
+                                )
+                            }
+                            SwipeKind.BRIGHTNESS -> activity?.window?.let { w ->
+                                val lp = w.attributes
+                                lp.screenBrightness = level.coerceAtLeast(0.02f)
+                                w.attributes = lp
+                            }
+                        }
+                        gestureKind = kind
+                        gestureLevel = level
+                    }
+                )
             }
     ) {
         // Core Media3 PlayerView Surface
@@ -264,6 +354,16 @@ fun TvBuddyPlayerScreen(
             }
         }
 
+        // Volume / brightness indicator
+        AnimatedVisibility(
+            visible = gestureKind != null,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(if (gestureKind == SwipeKind.VOLUME) Alignment.CenterEnd else Alignment.CenterStart)
+        ) {
+            SwipeLevelIndicator(kind = gestureKind ?: SwipeKind.VOLUME, level = gestureLevel)
+        }
+
         // Overlay Controls
         AnimatedVisibility(
             visible = showControls,
@@ -275,7 +375,7 @@ fun TvBuddyPlayerScreen(
                     .fillMaxSize()
                     .then(if (isFullscreen) Modifier.windowInsetsPadding(WindowInsets.safeDrawing) else Modifier)
             ) {
-                // Top Action Bar
+                // Top bar: back + channel / programme (long names scroll)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -283,91 +383,67 @@ fun TvBuddyPlayerScreen(
                         .background(
                             Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent))
                         )
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(start = 8.dp, end = 12.dp, top = 6.dp, bottom = 10.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Back Button & Channel Info
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.weight(1f, fill = false)
+                        IconButton(
+                            onClick = onClosePlayer,
+                            modifier = Modifier
+                                .size(34.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.15f))
+                                .testTag("player_back_btn")
                         ) {
-                            IconButton(
-                                onClick = onClosePlayer,
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.15f))
-                                    .testTag("player_back_btn")
-                            ) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Back",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.width(10.dp))
+
+                        if (channel != null) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = channel.name,
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Clip,
+                                    modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 800)
                                 )
-                            }
-
-                            Spacer(modifier = Modifier.width(10.dp))
-
-                            if (channel != null) {
-                                Column {
+                                val sub = if (currentProgram != null) "▶ ${currentProgram.title}" else channel.groupTitle
+                                if (sub.isNotBlank()) {
                                     Text(
-                                        text = channel.name,
-                                        color = Color.White,
-                                        fontSize = 15.sp,
-                                        fontWeight = FontWeight.Bold,
+                                        text = sub,
+                                        color = if (currentProgram != null) AccentCyan else Color(0xFF94A3B8),
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Medium,
                                         maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        softWrap = false,
+                                        overflow = TextOverflow.Clip,
+                                        modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1200)
                                     )
-                                    if (currentProgram != null) {
-                                        Text(
-                                            text = "▶ ${currentProgram.title}",
-                                            color = AccentCyan,
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    } else {
-                                        Text(
-                                            text = channel.groupTitle,
-                                            color = Color(0xFF94A3B8),
-                                            fontSize = 11.sp
-                                        )
-                                    }
                                 }
                             }
                         }
-
                     }
                 }
 
-                // Center Play / Zapping Controls
-                Row(
-                    modifier = Modifier.align(Alignment.Center),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(20.dp)
-                ) {
-                    IconButton(
-                        onClick = onPreviousChannel,
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.55f))
-                            .border(1.dp, Color(0xFF334155), CircleShape)
-                            .testTag("player_prev_btn")
-                    ) {
-                        Icon(Icons.Default.SkipPrevious, contentDescription = "Previous Channel", tint = Color.White, modifier = Modifier.size(24.dp))
-                    }
-
+                // Centre: nothing for live TV; movies / shows keep a play-pause button
+                if (!isLive) {
                     IconButton(
                         onClick = onTogglePlayPause,
                         modifier = Modifier
-                            .size(56.dp)
+                            .align(Alignment.Center)
+                            .size(52.dp)
                             .clip(CircleShape)
                             .background(AccentCyan)
                             .testTag("player_play_pause_btn")
@@ -376,138 +452,200 @@ fun TvBuddyPlayerScreen(
                             imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
                             contentDescription = if (isPlaying) "Pause" else "Play",
                             tint = Color.Black,
-                            modifier = Modifier.size(32.dp)
+                            modifier = Modifier.size(30.dp)
                         )
-                    }
-
-                    IconButton(
-                        onClick = onNextChannel,
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(Color.Black.copy(alpha = 0.55f))
-                            .border(1.dp, Color(0xFF334155), CircleShape)
-                            .testTag("player_next_btn")
-                    ) {
-                        Icon(Icons.Default.SkipNext, contentDescription = "Next Channel", tint = Color.White, modifier = Modifier.size(24.dp))
                     }
                 }
 
-                // Bottom Bar Controls
-                Box(
+                // Bottom bar: the same action buttons as the TV long-OK bar, fullscreen pinned right
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .align(Alignment.BottomCenter)
                         .background(
                             Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f)))
                         )
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(start = 8.dp, end = 8.dp, top = 18.dp, bottom = 6.dp)
                 ) {
-                    Column {
-                        if (currentProgram != null && currentProgram.isLive) {
-                            LinearProgressIndicator(
-                                progress = { currentProgram.progress },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(3.dp)
-                                    .clip(RoundedCornerShape(1.5.dp))
-                                    .padding(bottom = 6.dp),
-                                color = AccentCyan,
-                                trackColor = Color(0xFF1E293B)
-                            )
+                    if (currentProgram != null && currentProgram.isLive) {
+                        LinearProgressIndicator(
+                            progress = { currentProgram.progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 4.dp)
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(1.5.dp)),
+                            color = AccentCyan,
+                            trackColor = Color(0xFF1E293B)
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        val audioSelected = audioTracks.firstOrNull { it.isSelected }
+                        val audioLabel = when {
+                            audioTracks.isEmpty() -> "Audio"
+                            audioSelected == null -> "Audio off"
+                            else -> audioSelected.language.takeIf { it.isNotBlank() && it != "und" }
+                                ?.let { code ->
+                                    java.util.Locale(code).getDisplayLanguage(java.util.Locale.ENGLISH)
+                                        .takeIf { it.isNotBlank() && it != code } ?: code
+                                } ?: "Audio"
                         }
+                        val qualityLabel = if (streamInfo.height > 0) "${streamInfo.height}p"
+                        else videoQuality.title.substringBefore(" ")
+                        val fav = channel?.isFavorite == true
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            if (channel != null) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    IconButton(
-                                        onClick = { onToggleFavorite(channel) },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (channel.isFavorite) Icons.Filled.Star else Icons.Outlined.StarOutline,
-                                            contentDescription = "Favorite",
-                                            tint = if (channel.isFavorite) StatusWarning else Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                    Text(
-                                        text = channel.groupTitle,
-                                        color = Color(0xFF94A3B8),
-                                        fontSize = 11.sp
-                                    )
-                                }
-                            }
+                            MobileActionButton("Boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq, onClick = onCycleAudioBoost)
+                            MobileActionButton(qualityLabel, Icons.Default.HighQuality, tag = "quality_btn", onClick = onOpenQualityPicker)
+                            MobileActionButton(audioLabel, Icons.AutoMirrored.Filled.VolumeUp, onClick = onOpenAudioTracks)
+                            MobileActionButton("Subtitles", Icons.Default.ClosedCaption, onClick = onOpenSubtitles)
+                            MobileActionButton(
+                                label = if (fav) "Favorited" else "Favorite",
+                                icon = if (fav) Icons.Filled.Star else Icons.Outlined.StarOutline,
+                                highlight = fav,
+                                onClick = { channel?.let(onToggleFavorite) }
+                            )
+                            MobileActionButton(aspectMode.title, Icons.Default.AspectRatio, onClick = onCycleAspect)
+                            MobileActionButton("PiP", Icons.Default.PictureInPictureAlt, tag = "pip_btn", onClick = onEnterPip)
+                        }
 
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                IconButton(onClick = onOpenAudioTracks, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.AutoMirrored.Filled.VolumeUp, contentDescription = "Audio Tracks", tint = Color.White, modifier = Modifier.size(20.dp))
-                                }
-                                IconButton(onClick = onOpenSubtitles, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.Default.ClosedCaption, contentDescription = "Subtitles", tint = Color.White, modifier = Modifier.size(20.dp))
-                                }
-
-                                // Picture-in-Picture
-                                IconButton(
-                                    onClick = onEnterPip,
-                                    modifier = Modifier.size(36.dp).testTag("pip_btn")
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.PictureInPictureAlt,
-                                        contentDescription = "Picture in Picture",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-
-                                // Quality picker (no box / border)
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .clickable(onClick = onOpenQualityPicker)
-                                        .padding(horizontal = 6.dp, vertical = 8.dp)
-                                        .testTag("quality_btn")
-                                ) {
-                                    Icon(Icons.Default.HighQuality, contentDescription = "Quality", tint = Color.White, modifier = Modifier.size(20.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = videoQuality.title.substringBefore(" "),
-                                        color = Color.White,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                }
-
-                                // Aspect ratio / resize
-                                IconButton(onClick = onCycleAspect, modifier = Modifier.size(36.dp)) {
-                                    Icon(Icons.Default.AspectRatio, contentDescription = "Aspect Ratio", tint = Color.White, modifier = Modifier.size(20.dp))
-                                }
-
-                                // Fullscreen toggle: bottom-right corner (auto-rotates with the phone)
-                                IconButton(
-                                    onClick = onToggleFullscreen,
-                                    modifier = Modifier.size(36.dp).testTag("fullscreen_toggle_btn")
-                                ) {
-                                    Icon(
-                                        imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
-                                        contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            }
+                        // Fullscreen toggle: bottom-right corner (auto-rotates with the phone)
+                        IconButton(
+                            onClick = onToggleFullscreen,
+                            modifier = Modifier.size(40.dp).testTag("fullscreen_toggle_btn")
+                        ) {
+                            Icon(
+                                imageVector = if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
                         }
                     }
                 }
             }
         }
     }
+}
+
+private enum class SwipeKind { VOLUME, BRIGHTNESS }
+
+/** One round action button with its label underneath (same look as the TV long-OK action bar, phone sized). */
+@kotlin.OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MobileActionButton(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
+    highlight: Boolean = false,
+    tag: String? = null,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .width(60.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .then(if (tag != null) Modifier.testTag(tag) else Modifier)
+            .padding(vertical = 2.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(34.dp)
+                .clip(CircleShape)
+                .background(Color.White.copy(alpha = 0.16f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                icon,
+                contentDescription = label,
+                tint = if (highlight) StatusWarning else Color.White,
+                modifier = Modifier.size(19.dp)
+            )
+        }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 9.5.sp,
+            lineHeight = 11.sp,
+            fontWeight = FontWeight.Medium,
+            textAlign = TextAlign.Center,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Clip,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 2.dp).basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
+        )
+    }
+}
+
+/** Small side pill shown while swiping: icon, vertical level bar and percentage. */
+@Composable
+private fun SwipeLevelIndicator(kind: SwipeKind, level: Float) {
+    Column(
+        modifier = Modifier
+            .padding(horizontal = 18.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.Black.copy(alpha = 0.6f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            imageVector = when {
+                kind == SwipeKind.BRIGHTNESS -> Icons.Default.BrightnessMedium
+                level <= 0f -> Icons.Default.VolumeOff
+                else -> Icons.AutoMirrored.Filled.VolumeUp
+            },
+            contentDescription = null,
+            tint = Color.White,
+            modifier = Modifier.size(20.dp)
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            modifier = Modifier
+                .width(4.dp)
+                .height(70.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color.White.copy(alpha = 0.25f)),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .fillMaxHeight(level.coerceIn(0f, 1f))
+                    .background(AccentCyan)
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("${(level * 100).toInt()}%", color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+private fun currentBrightness(activity: android.app.Activity?, context: android.content.Context): Float {
+    val w = activity?.window?.attributes?.screenBrightness ?: -1f
+    if (w >= 0f) return w
+    return try {
+        android.provider.Settings.System.getInt(context.contentResolver, android.provider.Settings.System.SCREEN_BRIGHTNESS) / 255f
+    } catch (_: Exception) {
+        0.5f
+    }
+}
+
+private fun android.content.Context.findHostActivity(): android.app.Activity? {
+    var ctx: android.content.Context? = this
+    while (ctx is android.content.ContextWrapper) {
+        if (ctx is android.app.Activity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
 }
