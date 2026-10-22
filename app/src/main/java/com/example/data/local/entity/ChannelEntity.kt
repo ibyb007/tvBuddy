@@ -38,5 +38,12 @@ data class ChannelEntity(
     val httpUserAgent: String? = null,
     val httpHeadersJson: String? = null,
     val isFavorite: Boolean = false,
-    val addedAt: Long = System.currentTimeMillis()
+    val addedAt: Long = System.currentTimeMillis(),
+    /**
+     * The XMLTV channel id this channel's programmes are stored under: the playlist's tvg-id, the Xtream
+     * `epg_channel_id`, the Stalker `xmltv_id`, or whatever the EPG matcher resolved after an EPG import.
+     */
+    val epgChannelId: String? = null,
+    /** M3U tvg-name: a second name to look the channel up by in the XMLTV channel list. */
+    val epgName: String? = null
 )
