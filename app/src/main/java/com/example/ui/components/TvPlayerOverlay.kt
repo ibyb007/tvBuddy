@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import com.example.data.epg.EpgMatcher
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -208,9 +209,7 @@ fun TvPlayerOverlay(
             .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
     }
     fun programsOf(ch: ChannelEntity): List<ProgramEntity> =
-        (if (ch.streamId.isNotBlank()) byEpgId[ch.streamId.lowercase()] else null)
-            ?: byEpgId[ch.name.lowercase()]
-            ?: emptyList()
+        EpgMatcher.programsOf(ch, byEpgId)
 
     /** Slots for a channel; gaps without EPG data become hour-long "No information" slots. */
     fun slotsOf(ch: ChannelEntity, from: Long, to: Long): List<EpgSlot> = buildSlots(programsOf(ch), from, to)
