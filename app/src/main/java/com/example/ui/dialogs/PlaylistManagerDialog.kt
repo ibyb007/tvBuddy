@@ -43,6 +43,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -274,7 +276,10 @@ fun PlaylistManagerDialog(
     onSelectAudioBoost: (com.example.player.AudioBoostProfile) -> Unit = {},
     warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
     onToggleWarp: (Boolean) -> Unit = {},
-    onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {}
+    onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {},
+    // Phone only: opacity of the floating navbar (null = no such setting, e.g. TV mode)
+    navbarOpacity: Float? = null,
+    onNavbarOpacityChange: (Float) -> Unit = {}
 ) {
     val navStack = remember { mutableStateListOf<TiviSettingsRoute>().apply { addAll(routeChain(initialRoute)) } }
     val currentRoute = navStack.lastOrNull() ?: TiviSettingsRoute.Main
@@ -408,7 +413,9 @@ fun PlaylistManagerDialog(
                                 logEnabled = playbackLogEnabled,
                                 logCount = playbackLogCount,
                                 onToggleLog = onTogglePlaybackLog,
-                                onExportLog = onExportPlaybackLog
+                                onExportLog = onExportPlaybackLog,
+                                navbarOpacity = navbarOpacity,
+                                onNavbarOpacityChange = onNavbarOpacityChange
                             )
 
                             is TiviSettingsRoute.Playlists -> PlaylistsSubMenu(
@@ -715,7 +722,9 @@ private fun MainSettingsMenu(
     logEnabled: Boolean,
     logCount: Int,
     onToggleLog: (Boolean) -> Unit,
-    onExportLog: () -> Unit
+    onExportLog: () -> Unit,
+    navbarOpacity: Float? = null,
+    onNavbarOpacityChange: (Float) -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "Settings")
@@ -750,6 +759,11 @@ private fun MainSettingsMenu(
                     subtitle = audioBoostProfile.title,
                     onClick = onOpenAudioBoost
                 )
+            }
+            if (navbarOpacity != null) {
+                item {
+                    NavbarOpacityRow(value = navbarOpacity, onValueChange = onNavbarOpacityChange)
+                }
             }
             item {
                 val starting = warpState.phase == com.example.data.network.WarpManager.Phase.STARTING
@@ -786,6 +800,37 @@ private fun MainSettingsMenu(
                 }
             }
         }
+    }
+}
+
+/** Phone only: slider for the opacity of the floating navbar (10% - 100%). */
+@Composable
+private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "Navbar opacity",
+                color = TiviPrimaryText,
+                fontSize = 18.sp,
+                modifier = Modifier.weight(1f)
+            )
+            Text(text = "${(value * 100).toInt()}%", color = TiviSecondaryText, fontSize = 16.sp)
+        }
+        Slider(
+            value = value,
+            onValueChange = { onValueChange((Math.round(it * 20f) / 20f).coerceIn(0.1f, 1f)) },
+            valueRange = 0.1f..1f,
+            colors = SliderDefaults.colors(
+                thumbColor = TiviAccentBlue,
+                activeTrackColor = TiviAccentBlue,
+                inactiveTrackColor = TiviSecondaryText.copy(alpha = 0.3f)
+            )
+        )
+        Text(
+            text = "Floating bottom bar on the phone",
+            color = TiviSecondaryText,
+            fontSize = 13.sp
+        )
     }
 }
 
