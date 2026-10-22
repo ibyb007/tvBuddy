@@ -35,7 +35,7 @@ object JsonPlaylistParser {
                 val streamUrl = item.optString("url", item.optString("streamUrl", item.optString("stream_url", "")))
                 if (streamUrl.isBlank()) continue
 
-                val logo = item.optString("logo", item.optString("logoUrl", item.optString("icon", ""))).ifBlank { null }
+                val logo = com.example.data.util.LogoUrl.normalize(item.optString("logo", item.optString("logoUrl", item.optString("icon", ""))))
                 val group = item.optString("group", item.optString("category", item.optString("groupTitle", "General"))).ifBlank { "General" }
                 val id = item.optString("id", item.optString("streamId", "json_${i + 1}"))
                 val chno = item.optInt("channelNumber", item.optInt("chno", i + 1))
@@ -71,6 +71,7 @@ object JsonPlaylistParser {
                         name = name,
                         streamUrl = streamUrl,
                         logoUrl = logo,
+                        epgChannelId = listOf("tvg_id", "tvgId", "epg_id", "epgId", "epg_channel_id").map { k -> item.optString(k, "").trim() }.firstOrNull { v -> v.isNotEmpty() && v != "null" },
                         groupTitle = group,
                         channelNumber = chno,
                         drmType = if (drmType != DrmType.NONE) drmType.name else null,
