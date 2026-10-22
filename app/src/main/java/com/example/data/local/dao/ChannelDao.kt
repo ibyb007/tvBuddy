@@ -20,8 +20,27 @@ data class ChannelIdentity(
 /** Id and group of a stored live channel (to keep its group when a refresh could not read the portal's genres). */
 data class ChannelGroupRef(val streamId: String, val groupTitle: String)
 
+/** What the EPG matcher needs of a live channel. */
+data class ChannelEpgRef(
+    val id: Long,
+    val streamId: String,
+    val name: String,
+    val epgChannelId: String?,
+    val epgName: String?,
+    val logoUrl: String?
+)
+
 @Dao
 interface ChannelDao {
+    @Query("SELECT id, streamId, name, epgChannelId, epgName, logoUrl FROM channels WHERE contentType = 'TV' AND (:playlistId = 0 OR playlistId = :playlistId)")
+    suspend fun getTvEpgRefs(playlistId: Long): List<ChannelEpgRef>
+
+    @Query("UPDATE channels SET epgChannelId = :epgChannelId WHERE id = :id")
+    suspend fun setEpgChannelId(id: Long, epgChannelId: String?)
+
+    @Query("UPDATE channels SET logoUrl = :logoUrl WHERE id = :id")
+    suspend fun setLogoUrl(id: Long, logoUrl: String?)
+
     @Query("SELECT streamId, groupTitle FROM channels WHERE playlistId = :playlistId AND contentType = 'TV' AND streamId != ''")
     suspend fun getTvGroupsByStreamId(playlistId: Long): List<ChannelGroupRef>
 
