@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import com.example.data.epg.EpgMatcher
 import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -158,10 +159,7 @@ fun HomeScreen(
     // Active program for current playing channel
     val currentProgram = remember(currentChannel, allCurrentPrograms) {
         currentChannel?.let { ch ->
-            allCurrentPrograms.firstOrNull {
-                it.epgChannelId.equals(ch.streamId, ignoreCase = true) ||
-                it.epgChannelId.equals(ch.name, ignoreCase = true)
-            }
+            EpgMatcher.currentProgramOf(ch, allCurrentPrograms)
         }
     }
 
@@ -860,10 +858,7 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             items(channels, key = { it.id }) { item ->
-                                val channelProg = allCurrentPrograms.firstOrNull {
-                                    it.epgChannelId.equals(item.streamId, ignoreCase = true) ||
-                                    it.epgChannelId.equals(item.name, ignoreCase = true)
-                                }
+                                val channelProg = EpgMatcher.currentProgramOf(item, allCurrentPrograms)
                                 ChannelListItem(
                                     channel = item,
                                     isSelected = item.id == currentChannel?.id,
