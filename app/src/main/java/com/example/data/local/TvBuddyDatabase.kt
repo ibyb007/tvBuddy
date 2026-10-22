@@ -9,12 +9,14 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.data.local.dao.ChannelDao
 import com.example.data.local.dao.ChannelGroupDao
+import com.example.data.local.dao.EpgChannelDao
 import com.example.data.local.dao.EpgSourceDao
 import com.example.data.local.dao.HistoryDao
 import com.example.data.local.dao.PlaylistDao
 import com.example.data.local.dao.ProgramDao
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ChannelGroupEntity
+import com.example.data.local.entity.EpgChannelEntity
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.HistoryEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
@@ -29,9 +31,10 @@ import com.example.data.local.entity.ProgramEntity
         ProgramEntity::class,
         EpgSourceEntity::class,
         PlaylistEpgCrossRef::class,
-        ChannelGroupEntity::class
+        ChannelGroupEntity::class,
+        EpgChannelEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -42,6 +45,7 @@ abstract class TvBuddyDatabase : RoomDatabase() {
     abstract fun programDao(): ProgramDao
     abstract fun epgSourceDao(): EpgSourceDao
     abstract fun channelGroupDao(): ChannelGroupDao
+    abstract fun epgChannelDao(): EpgChannelDao
 
     companion object {
         @Volatile
@@ -56,6 +60,20 @@ abstract class TvBuddyDatabase : RoomDatabase() {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE channels ADD COLUMN rating TEXT")
                 db.execSQL("ALTER TABLE channels ADD COLUMN metaJson TEXT")
+            }
+        }
+
+        /** 5 -> 6: EPG channel id / name on channels and the XMLTV channel list (names and icons). */
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE channels ADD COLUMN epgChannelId TEXT")
+                db.execSQL("ALTER TABLE channels ADD COLUMN epgName TEXT")
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS epg_channels (" +
+                        "channelId TEXT NOT NULL, lowerId TEXT NOT NULL, displayName TEXT NOT NULL, " +
+                        "normNames TEXT NOT NULL, iconUrl TEXT, PRIMARY KEY(channelId))"
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_epg_channels_lowerId ON epg_channels(lowerId)")
             }
         }
 
@@ -102,7 +120,7 @@ abstract class TvBuddyDatabase : RoomDatabase() {
                     context.applicationContext,
                     TvBuddyDatabase::class.java,
                     "tvbuddy_database.db"
-                ).addMigrations(MIGRATION_3_4, MIGRATION_4_5).fallbackToDestructiveMigration().build()
+                ).addMigrations(MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6).fallbackToDestructiveMigration().build()
                 INSTANCE = instance
                 instance
             }
