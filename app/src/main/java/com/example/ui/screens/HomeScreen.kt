@@ -145,6 +145,7 @@ fun HomeScreen(
     val favOnlyGroups by viewModel.favOnlyGroups.collectAsStateWithLifecycle()
     val nameSortedGroups by viewModel.nameSortedGroups.collectAsStateWithLifecycle()
     val mobilePlaylistId by viewModel.mobilePlaylistId.collectAsStateWithLifecycle()
+    val navbarOpacity by viewModel.navbarOpacity.collectAsStateWithLifecycle()
 
     // Player state
     val currentChannel by viewModel.currentChannel.collectAsStateWithLifecycle()
@@ -710,7 +711,7 @@ fun HomeScreen(
                 else -> mobileSection
             }
             val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode
-            val listBottomPadding = if (showNavBar) 96.dp else 0.dp
+            val listBottomPadding = if (showNavBar) 84.dp else 0.dp
 
             Box(
                 modifier = Modifier
@@ -922,7 +923,8 @@ fun HomeScreen(
                             showAddDialog = true
                         },
                         onDismiss = { showMobilePlaylists = false },
-                        modifier = Modifier.fillMaxSize()
+                        modifier = Modifier.fillMaxSize(),
+                        opacity = navbarOpacity
                     )
                 }
                 MobileGlassNavBar(
@@ -941,7 +943,8 @@ fun HomeScreen(
                     },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 12.dp)
+                        .padding(bottom = 12.dp),
+                    opacity = navbarOpacity
                 )
             }
             }
@@ -1066,7 +1069,9 @@ fun HomeScreen(
             onToggleWarp = { viewModel.setWarpEnabled(it) },
             onEditPlaylistSpoof = { spoofPlaylistId = it.id },
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
-            onTriggerClearEpg = { viewModel.triggerClearEpg() }
+            onTriggerClearEpg = { viewModel.triggerClearEpg() },
+            navbarOpacity = if (isTvMode) null else navbarOpacity,
+            onNavbarOpacityChange = { viewModel.setNavbarOpacity(it) }
         )
     }
 
