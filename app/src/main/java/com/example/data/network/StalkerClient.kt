@@ -1,6 +1,9 @@
 package com.example.data.network
 
+import com.example.data.epg.EpgMatcher
 import com.example.data.local.entity.ChannelEntity
+import com.example.data.local.entity.ProgramEntity
+import com.example.data.util.LogoUrl
 import com.example.data.model.ContentType
 import com.example.data.model.VodInfo
 import kotlinx.coroutines.Dispatchers
@@ -175,6 +178,14 @@ class StalkerClient(
 
     private fun enc(v: String) = URLEncoder.encode(v, "UTF-8")
 
+    private fun digestHex(algorithm: String, text: String): String =
+        MessageDigest.getInstance(algorithm).digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+
+    private fun randomHex(n: Int): String {
+        val chars = "abcdef0123456789"
+        return buildString { repeat(n) { append(chars[kotlin.random.Random.nextInt(chars.length)]) } }
+    }
+
     private fun Request.Builder.stalkerHeaders(userAgent: String, mac: String, token: String? = null): Request.Builder {
         header("User-Agent", userAgent)
         header("Cookie", "mac=$mac; stb_lang=en; timezone=GMT")
@@ -224,12 +235,15 @@ class StalkerClient(
         withContext(Dispatchers.IO) {
             val loadPhp = getLoadPhpUrl(portalUrl)
             val mac = params.normalizedMac
+            // a real MAG box also sends the SHA-1 of its MAC ("prehash"); portals that check it refuse boxes without it
+            val prehash = digestHex("SHA-1", mac).uppercase()
             val hsReq = Request.Builder()
-                .url("$loadPhp?type=stb&action=handshake&token=&mac=$mac")
+                .url("$loadPhp?type=stb&action=handshake&token=&prehash=$prehash&JsHttpRequest=1-xml&mac=$mac")
                 .stalkerHeaders(userAgent, mac)
                 .build()
 
             var token = ""
+            var random = ""
             try {
                 okHttpClient.newCall(hsReq).execute().use { response ->
                     if (!response.isSuccessful) {
@@ -238,6 +252,7 @@ class StalkerClient(
                     val json = JSONObject(response.body?.string().orEmpty())
                     val js = json.optJSONObject("js") ?: json
                     token = js.optString("token")
+                    random = js.optString("random")
                 }
             } catch (e: Exception) {
                 return@withContext StalkerAuthResult(false, "Handshake failed: ${e.localizedMessage}")
@@ -253,12 +268,34 @@ class StalkerClient(
                 if (!ok) return@withContext StalkerAuthResult(false, "Portal rejected the username / password")
             }
 
-            // STB profile: portals that bind a box to serial / device ids need it before they list anything
-            val profileUrl = "$loadPhp?type=stb&action=get_profile&hd=1&num_banks=2&stb_type=MAG250&client_type=STB" +
-                "&image_version=218&video_out=hdmi&auth_second_step=1&not_valid_token=0&api_signature=262&JsHttpRequest=1-xml" +
+            // STB profile: portals that bind a box to serial / device ids need it before they list anything.
+            // IPTVnator's coherent MAG250 identity (firmware banner, hardware revision, metrics) is sent as well.
+            val metrics = JSONObject()
+                .put("mac", mac).put("model", "MAG250").put("type", "STB")
+                .put("random", random.ifBlank { randomHex(40) }).put("sn", params.effectiveSerial)
+                .toString()
+            fun profileUrl(secondStep: Boolean) = "$loadPhp?type=stb&action=get_profile&hd=1&num_banks=2&stb_type=MAG250&client_type=STB" +
+                "&image_version=218&video_out=hdmi&auth_second_step=${if (secondStep) 1 else 0}&not_valid_token=0&api_signature=262&JsHttpRequest=1-xml" +
+                "&hw_version=${enc("1.7-BD-00")}" +
+                "&ver=${enc("ImageDescription: 0.2.18-r14-pub-250; ImageDate: Fri Jan 15 15:20:44 EET 2016; PORTAL version: 5.6.0; API Version: JS API version: 328; STB API version: 134; Player Engine version: 0x566")}" +
+                "&metrics=${enc(metrics)}&prehash=$prehash" +
                 "&sn=${enc(params.effectiveSerial)}&device_id=${enc(params.effectiveDeviceId)}" +
                 "&device_id2=${enc(params.effectiveDeviceId2)}&mac=$mac"
-            val profile = getJson(profileUrl, userAgent, mac, token)
+            var profile = getJson(profileUrl(params.username.isNotBlank()), userAgent, mac, token)
+                // portals that only know the "second step" form (what this client always sent before) still get it
+                ?: getJson(profileUrl(true), userAgent, mac, token)
+            // status 2 = "login / password required" (do_auth was not sent above because none were given... or the portal wants it after the profile)
+            val status = profile?.optJSONObject("js")?.optInt("status", 0) ?: 0
+            if (status == 2 && params.username.isNotBlank()) {
+                val url = "$loadPhp?type=stb&action=do_auth&login=${enc(params.username)}&password=${enc(params.password)}" +
+                    "&device_id=${enc(params.effectiveDeviceId)}&device_id2=${enc(params.effectiveDeviceId2)}&mac=$mac"
+                getJson(url, userAgent, mac, token)
+                profile = getJson(profileUrl(true), userAgent, mac, token) ?: profile
+            }
+            if (status == 1) {
+                val msg = profile?.optJSONObject("js")?.let { it.optString("block_msg") }.orEmpty()
+                if (msg.isNotBlank() && msg != "null") return@withContext StalkerAuthResult(false, "Portal blocked this device: $msg")
+            }
             // some portals hand out a fresh token with the profile
             val newToken = profile?.optJSONObject("js")?.optString("token").orEmpty()
             if (newToken.isNotBlank()) token = newToken
@@ -315,7 +352,11 @@ class StalkerClient(
         out
     }
 
-    /** Live TV channels with their genre as group (one request for the genres, one for the whole channel list). */
+    /**
+     * Live TV channels with their genre as group. Like IPTVnator: the whole list in one `get_all_channels`
+     * request first; a portal that cannot answer that (empty / error) is crawled page by page through
+     * `get_ordered_list` (genre=*, sorted by number) instead.
+     */
     suspend fun fetchLiveChannels(
         auth: StalkerAuthResult,
         params: StalkerParams,
@@ -365,7 +406,49 @@ class StalkerClient(
         return js?.optJSONArray("data") ?: root?.optJSONArray("js") ?: JSONArray()
     }
 
-    private fun fetchLive(
+    /** First non-blank text of the given keys ("null" counts as blank). */
+    private fun firstText(o: JSONObject, vararg keys: String): String =
+        keys.map { o.optString(it).trim() }.firstOrNull { it.isNotEmpty() && it != "null" }.orEmpty()
+
+    /** Base the portal's channel logos hang off: "<portal root>/misc/logos/320/". */
+    private fun logoBase(loadPhp: String): String =
+        loadPhp.substringBefore("/server/load.php").trimEnd('/') + "/misc/logos/320/"
+
+    /**
+     * A live channel's logo. Portals send an absolute URL, a path from the host root ("/stalker_portal/misc/..."),
+     * or - the usual case on Stalker / Ministra - just the file name ("1234.png"), which lives in the portal's
+     * logo directory.
+     */
+    private fun liveLogo(loadPhp: String, raw: String): String? {
+        val v = raw.trim()
+        if (v.isEmpty() || v.equals("null", true)) return null
+        LogoUrl.normalize(v)?.let { return it }               // already absolute
+        if (v.startsWith("/")) return LogoUrl.normalize(v, loadPhp)
+        return LogoUrl.normalize(logoBase(loadPhp) + v)
+    }
+
+    private fun mapLive(
+        o: JSONObject, index: Int, genreMap: Map<String, String>, loadPhp: String, playlistId: Long, userAgent: String
+    ): ChannelEntity? {
+        // first NON-blank of id / stream_id: a blank id beside a valid stream_id must not make the row unplayable
+        val id = firstText(o, "id", "stream_id")
+        if (id.isEmpty()) return null
+        val cmd = cleanCmd(o.optString("cmd"))
+        return ChannelEntity(
+            playlistId = playlistId,
+            streamId = id,
+            name = firstText(o, "name", "o_name").ifEmpty { "Channel $id" },
+            streamUrl = cmd,
+            logoUrl = liveLogo(loadPhp, firstText(o, "logo", "logo_url", "icon")),
+            groupTitle = genreMap[o.optString("tv_genre_id")] ?: "Live TV",
+            channelNumber = o.optInt("number", index + 1),
+            contentType = ContentType.TV,
+            httpUserAgent = userAgent,
+            epgChannelId = firstText(o, "xmltv_id").ifEmpty { null }
+        )
+    }
+
+    private suspend fun fetchLive(
         auth: StalkerAuthResult,
         params: StalkerParams,
         playlistId: Long,
@@ -384,30 +467,136 @@ class StalkerClient(
             if (id.isNotBlank() && title.isNotBlank()) genreMap[id] = title
         }
 
-        val channels = mutableListOf<ChannelEntity>()
-        try {
-            val items = itemsOf(getJsonRetry("$loadPhp?type=itv&action=get_all_channels&mac=$mac", userAgent, mac, token, bulkHttp))
-            for (i in 0 until items.length()) {
-                val ch = items.optJSONObject(i) ?: continue
-                val id = ch.optString("id", "${i + 1}")
-                channels.add(
-                    ChannelEntity(
-                        playlistId = playlistId,
-                        streamId = id,
-                        name = ch.optString("name", "Channel $id"),
-                        streamUrl = cleanCmd(ch.optString("cmd")),
-                        logoUrl = ch.optString("logo").ifBlank { null },
-                        groupTitle = genreMap[ch.optString("tv_genre_id")] ?: "Live TV",
-                        channelNumber = ch.optInt("number", i + 1),
-                        contentType = ContentType.TV,
-                        httpUserAgent = userAgent
-                    )
-                )
+        val seen = HashSet<String>()
+        val channels = ArrayList<ChannelEntity>()
+        fun add(arr: JSONArray) {
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val ch = mapLive(o, channels.size, genreMap, loadPhp, playlistId, userAgent) ?: continue
+                if (seen.add(ch.streamId)) channels.add(ch)
             }
+        }
+
+        // 1) the whole list in one request (what a STB does)
+        try {
+            add(itemsOf(getJsonRetry("$loadPhp?type=itv&action=get_all_channels&mac=$mac", userAgent, mac, token, bulkHttp)))
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        if (channels.isNotEmpty()) return channels
+
+        // 2) crawl get_ordered_list: page 1 tells the total and the page size, the rest runs a few pages at a time
+        fun pageUrl(p: Int) = "$loadPhp?type=itv&action=get_ordered_list&category=*&genre=*&sortby=number&p=$p&mac=$mac"
+        suspend fun page(p: Int): JSONObject? = withContext(Dispatchers.IO) {
+            getJsonRetry(pageUrl(p), userAgent, mac, token, pageHttp, attempts = 2)
+        }
+        val first = page(1) ?: return channels
+        val js = first.optJSONObject("js") ?: return channels
+        val firstData = js.optJSONArray("data") ?: return channels
+        add(firstData)
+        val total = minOf(js.optInt("total_items", firstData.length()), 30_000)
+        val perPage = js.optInt("max_page_items", 0).takeIf { it > 0 } ?: firstData.length().takeIf { it > 0 } ?: 14
+        val pages = maxOf(1, (total + perPage - 1) / perPage)
+        var p = 2
+        while (p <= pages && channels.size < total) {
+            val batch = (p until minOf(p + 4, pages + 1)).toList()
+            val results = coroutineScope { batch.map { n -> async { page(n) } }.awaitAll() }
+            var added = 0
+            for (r in results) {
+                // a page that failed twice: stop with what we have rather than hang on a dying portal
+                val data = r?.optJSONObject("js")?.optJSONArray("data") ?: return channels
+                val before = channels.size
+                add(data)
+                added += channels.size - before
+            }
+            // a portal that ignores "p" keeps returning the same channels: that is the end of the list
+            if (added == 0) break
+            p += 4
+        }
         return channels
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Portal EPG (IPTVnator's Stalker flow): one bulk get_epg_info for the whole portal, and get_short_epg
+    // per channel for the ones the bulk answer lacks (some portals only list future programmes in it).
+    // ---------------------------------------------------------------------------------------------
+
+    private fun epgEntries(value: Any?): JSONArray? = when (value) {
+        is JSONArray -> value
+        is JSONObject -> value.optJSONArray("data") ?: value.optJSONArray("epg") ?: value.optJSONArray("items")
+        else -> null
+    }
+
+    private fun epgTime(o: JSONObject, tsKey: String, vararg textKeys: String): Long {
+        o.optString(tsKey).toLongOrNull()?.takeIf { it > 0 }?.let { return it * 1000L }
+        val text = textKeys.map { o.optString(it).trim() }.firstOrNull { it.isNotEmpty() && it != "null" } ?: return 0L
+        text.toLongOrNull()?.takeIf { it > 100_000_000 }?.let { return it * 1000L }
+        val m = Regex("^(\\d{4})-(\\d{2})-(\\d{2})[ T](\\d{2}):(\\d{2})(?::(\\d{2}))?").find(text) ?: return 0L
+        return try {
+            // no timestamps: the text is the portal's wall clock, read it in the device's zone like IPTVnator's Date.parse
+            java.util.GregorianCalendar(
+                m.groupValues[1].toInt(), m.groupValues[2].toInt() - 1, m.groupValues[3].toInt(),
+                m.groupValues[4].toInt(), m.groupValues[5].toInt(), m.groupValues[6].ifEmpty { "0" }.toInt()
+            ).timeInMillis
+        } catch (_: Exception) { 0L }
+    }
+
+    private fun toProgram(o: JSONObject, channelKeyId: String, playlistId: Long): ProgramEntity? {
+        val start = epgTime(o, "start_timestamp", "time", "start")
+        val stop = epgTime(o, "stop_timestamp", "time_to", "stop")
+        val title = firstText(o, "name", "title")
+        if (start <= 0L || stop <= start || title.isEmpty()) return null
+        return ProgramEntity(
+            epgChannelId = EpgMatcher.portalKey(playlistId, channelKeyId),
+            title = title,
+            description = firstText(o, "descr", "description").ifEmpty { null },
+            category = firstText(o, "category").ifEmpty { null },
+            startTimeMs = start,
+            endTimeMs = stop
+        )
+    }
+
+    /** Programmes of every channel for the next [periodHours] hours; empty when the portal has no bulk EPG. */
+    suspend fun fetchBulkEpg(
+        auth: StalkerAuthResult, params: StalkerParams, playlistId: Long, userAgent: String, periodHours: Int = 48
+    ): List<ProgramEntity> = withContext(Dispatchers.IO) {
+        val mac = params.normalizedMac
+        val root = getJsonRetry(
+            "${auth.portalUrl}?type=itv&action=get_epg_info&period=$periodHours&mac=$mac",
+            userAgent, mac, auth.token, bulkHttp, attempts = 2
+        ) ?: return@withContext emptyList()
+        val out = ArrayList<ProgramEntity>()
+        val raw = root.opt("js")
+        val data: Any? = if (raw is JSONObject && raw.has("data")) raw.opt("data") else raw
+        when (data) {
+            // a flat list: every entry names its channel in ch_id
+            is JSONArray -> for (i in 0 until data.length()) {
+                val o = data.optJSONObject(i) ?: continue
+                val ch = firstText(o, "ch_id", "channel_id")
+                if (ch.isNotEmpty()) toProgram(o, ch, playlistId)?.let(out::add)
+            }
+            // keyed by channel id
+            is JSONObject -> data.keys().forEach { chId ->
+                val arr = epgEntries(data.opt(chId)) ?: return@forEach
+                for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { o -> toProgram(o, chId, playlistId)?.let(out::add) }
+            }
+        }
+        out
+    }
+
+    /** `get_short_epg` of one channel: the programme on air and the next few. */
+    suspend fun fetchShortEpg(
+        auth: StalkerAuthResult, params: StalkerParams, playlistId: Long, userAgent: String, channelId: String, size: Int = 10
+    ): List<ProgramEntity> = withContext(Dispatchers.IO) {
+        val mac = params.normalizedMac
+        val root = getJsonRetry(
+            "${auth.portalUrl}?type=itv&action=get_short_epg&ch_id=${enc(channelId)}&size=$size&mac=$mac",
+            userAgent, mac, auth.token, attempts = 2
+        ) ?: return@withContext emptyList()
+        val arr = epgEntries(root.opt("js")) ?: return@withContext emptyList()
+        val out = ArrayList<ProgramEntity>()
+        for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { o -> toProgram(o, channelId, playlistId)?.let(out::add) }
+        out.sortedBy { it.startTimeMs }
     }
 
     /**
