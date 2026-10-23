@@ -185,6 +185,10 @@ fun TvBuddyPlayerScreen(
     val activity = remember(context) { context.findHostActivity() }
     val audioManager = remember(context) { context.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager }
     var gestureKind by remember { mutableStateOf<SwipeKind?>(null) }
+    // last shown kind: keeps the pill on its own side while it fades out (otherwise it jumps to the left)
+    class ShownKind(var v: SwipeKind)
+    val shownKind = remember { ShownKind(SwipeKind.VOLUME) }
+    gestureKind?.let { shownKind.v = it }
     var gestureLevel by remember { mutableFloatStateOf(0f) }
     var gestureTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(gestureTick) {
@@ -408,9 +412,9 @@ fun TvBuddyPlayerScreen(
             visible = gestureKind != null,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(if (gestureKind == SwipeKind.VOLUME) Alignment.CenterEnd else Alignment.CenterStart)
+            modifier = Modifier.align(if (shownKind.v == SwipeKind.VOLUME) Alignment.CenterEnd else Alignment.CenterStart)
         ) {
-            SwipeLevelIndicator(kind = gestureKind ?: SwipeKind.VOLUME, level = gestureLevel)
+            SwipeLevelIndicator(kind = shownKind.v, level = gestureLevel)
         }
 
         // Overlay Controls
