@@ -19,3 +19,6 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# FFmpeg audio decoder is instantiated by reflection from DefaultRenderersFactory
+-keep class androidx.media3.decoder.ffmpeg.** { *; }
