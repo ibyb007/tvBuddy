@@ -182,7 +182,12 @@ class TvBuddyPlayerManager(
     }
 
     private fun createPlayer(): ExoPlayer {
-        return ExoPlayer.Builder(context)
+        // Hardware decoders first; when the phone has none for the audio format (E-AC3 / E-AC3-JOC 5.1, AC3, DTS ...)
+        // the FFmpeg software decoder takes over, and a failing codec falls back to the next one.
+        val renderers = androidx.media3.exoplayer.DefaultRenderersFactory(context)
+            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setEnableDecoderFallback(true)
+        return ExoPlayer.Builder(context, renderers)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build().apply {
