@@ -243,6 +243,10 @@ fun MobileVodPlayer(
 
     // ---- swipe: volume (right half) / brightness (left half) ----
     var gestureKind by remember { mutableStateOf<MvSwipeKind?>(null) }
+    // last shown kind: keeps the pill on its own side while it fades out (otherwise it jumps to the left)
+    class ShownKind(var v: MvSwipeKind)
+    val shownKind = remember { ShownKind(MvSwipeKind.VOLUME) }
+    gestureKind?.let { shownKind.v = it }
     var gestureLevel by remember { mutableFloatStateOf(0f) }
     var gestureTick by remember { mutableIntStateOf(0) }
     LaunchedEffect(gestureTick) {
@@ -396,9 +400,9 @@ fun MobileVodPlayer(
             visible = gestureKind != null,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(if (gestureKind == MvSwipeKind.VOLUME) Alignment.CenterEnd else Alignment.CenterStart)
+            modifier = Modifier.align(if (shownKind.v == MvSwipeKind.VOLUME) Alignment.CenterEnd else Alignment.CenterStart)
         ) {
-            MvLevelIndicator(kind = gestureKind ?: MvSwipeKind.VOLUME, level = gestureLevel)
+            MvLevelIndicator(kind = shownKind.v, level = gestureLevel)
         }
 
         // ---- scrub preview (time under the finger while dragging the seek bar) ----
