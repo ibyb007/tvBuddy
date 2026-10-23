@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -61,8 +62,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = TvBuddyRepository(application)
     val playerManager = TvBuddyPlayerManager(application)
 
-    val allPlaylists = repository.allPlaylists.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-    private val rawChannels = repository.allChannels.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+    // true once the database delivered its first playlists / channels (so the UI never shows "no playlist" while loading)
+    private val _playlistsLoaded = MutableStateFlow(false)
+    private val _channelsLoaded = MutableStateFlow(false)
+    val dataLoaded: StateFlow<Boolean> = combine(_playlistsLoaded, _channelsLoaded) { p, c -> p && c }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    val allPlaylists = repository.allPlaylists.onEach { _playlistsLoaded.value = true }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    private val rawChannels = repository.allChannels.onEach { _channelsLoaded.value = true }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val playbackHistory = repository.playbackHistory.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val allEpgSources = repository.allEpgSources.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val allPlaylistEpgCrossRefs = repository.allPlaylistEpgCrossRefs.stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
