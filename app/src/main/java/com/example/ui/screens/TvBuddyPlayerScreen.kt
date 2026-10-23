@@ -92,7 +92,10 @@ import com.example.player.AudioBoostProfile
 import com.example.player.StreamInfo
 import com.example.player.TrackInfo
 import com.example.player.VideoQuality
+import com.example.ui.components.Badge
 import com.example.ui.components.VideoPlayerSurface
+import com.example.ui.components.fmtClock
+import com.example.ui.components.fmtFps
 import com.example.ui.theme.AccentCyan
 import com.example.ui.theme.DarkSurfaceElevated
 import com.example.ui.theme.StatusDrm
@@ -393,8 +396,6 @@ fun TvBuddyPlayerScreen(
                             onClick = onClosePlayer,
                             modifier = Modifier
                                 .size(34.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.15f))
                                 .testTag("player_back_btn")
                         ) {
                             Icon(
@@ -405,21 +406,32 @@ fun TvBuddyPlayerScreen(
                             )
                         }
 
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
 
                         if (channel != null) {
                             Column(modifier = Modifier.weight(1f)) {
+                                // shows at most 15 letters; a longer name scrolls inside that width
+                                val titleStyle = androidx.compose.ui.text.TextStyle(fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+                                val density = androidx.compose.ui.platform.LocalDensity.current
+                                val titleWidth = remember(channel.name) {
+                                    if (channel.name.length > 15) {
+                                        with(density) { measurer.measure(channel.name.take(15), titleStyle).size.width.toDp() }
+                                    } else null
+                                }
                                 Text(
                                     text = channel.name,
                                     color = Color.White,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Bold,
+                                    style = titleStyle,
                                     maxLines = 1,
                                     softWrap = false,
                                     overflow = TextOverflow.Clip,
-                                    modifier = Modifier.fillMaxWidth().basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 800)
+                                    modifier = (if (titleWidth != null) Modifier.width(titleWidth) else Modifier)
+                                        .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 800)
                                 )
-                                val sub = if (currentProgram != null) "▶ ${currentProgram.title}" else channel.groupTitle
+                                val sub = if (currentProgram != null)
+                                    "▶ ${fmtClock(currentProgram.startTimeMs)} - ${fmtClock(currentProgram.endTimeMs)}  ${currentProgram.title}"
+                                else channel.groupTitle
                                 if (sub.isNotBlank()) {
                                     Text(
                                         text = sub,
@@ -467,6 +479,40 @@ fun TvBuddyPlayerScreen(
                         )
                         .padding(start = 8.dp, end = 8.dp, top = 18.dp, bottom = 6.dp)
                 ) {
+                    // quality / fps / audio layout / DRM, right side just above the progress bar
+                    run {
+                        val res = when {
+                            streamInfo.height >= 2160 -> "4K"
+                            streamInfo.height >= 1080 -> "FHD"
+                            streamInfo.height >= 720 -> "HD"
+                            streamInfo.height > 0 -> "SD"
+                            else -> null
+                        }
+                        val layout = when (audioTracks.firstOrNull { it.isSelected }?.channelCount ?: 0) {
+                            0 -> null
+                            1 -> "Mono"
+                            2 -> "Stereo"
+                            6 -> "5.1"
+                            8 -> "7.1"
+                            else -> "${audioTracks.first { it.isSelected }.channelCount} ch"
+                        }
+                        val tags = listOfNotNull(
+                            res,
+                            streamInfo.frameRate.takeIf { it > 0f }?.let { fmtFps(it) },
+                            layout,
+                            if (streamInfo.isDrmProtected) "DRM" else null
+                        )
+                        if (tags.isNotEmpty()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                tags.forEach { Badge(it) }
+                            }
+                        }
+                    }
+
                     if (currentProgram != null && currentProgram.isLive) {
                         LinearProgressIndicator(
                             progress = { currentProgram.progress },
@@ -502,12 +548,11 @@ fun TvBuddyPlayerScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                            horizontalArrangement = Arrangement.spacedBy(0.dp)
                         ) {
                             MobileActionButton("Boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq, onClick = onCycleAudioBoost)
                             MobileActionButton(qualityLabel, Icons.Default.HighQuality, tag = "quality_btn", onClick = onOpenQualityPicker)
                             MobileActionButton(audioLabel, Icons.AutoMirrored.Filled.VolumeUp, onClick = onOpenAudioTracks)
-                            MobileActionButton("Subtitles", Icons.Default.ClosedCaption, onClick = onOpenSubtitles)
                             MobileActionButton(
                                 label = if (fav) "Favorited" else "Favorite",
                                 icon = if (fav) Icons.Filled.Star else Icons.Outlined.StarOutline,
@@ -552,7 +597,7 @@ private fun MobileActionButton(
 ) {
     Column(
         modifier = modifier
-            .width(60.dp)
+            .width(50.dp)
             .clip(RoundedCornerShape(10.dp))
             .clickable(onClick = onClick)
             .then(if (tag != null) Modifier.testTag(tag) else Modifier)
