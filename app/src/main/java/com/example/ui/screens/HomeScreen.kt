@@ -758,7 +758,17 @@ fun HomeScreen(
                             audioBoostProfile = audioBoostProfile,
                             onCycleAudioBoost = { viewModel.cycleAudioBoost() },
                             audioTracks = audioTracks,
-                            onOpenSettings = { openSettings(TiviSettingsRoute.Main) }
+                            onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
+                            channelsList = selectionChannels,
+                            channelNumbering = browseNumbering,
+                            allPrograms = allCurrentPrograms,
+                            groupSections = tvGroupSections,
+                            groupSelection = com.example.ui.components.MobileGroupSelection(mobilePlaylistId, selectedCategory),
+                            onSelectChannel = { viewModel.playChannel(it) },
+                            onSelectGroup = { pid, category ->
+                                viewModel.selectMobilePlaylist(pid)
+                                viewModel.selectCategory(category)
+                            }
                         )
                     }
                 }
