@@ -57,6 +57,8 @@ fun ChannelListItem(
     channel: ChannelEntity,
     isSelected: Boolean,
     currentProgram: com.example.data.local.entity.ProgramEntity? = null,
+    /** position inside the shown group (TV logic); falls back to the playlist's own number */
+    number: Int? = null,
     onSelect: () -> Unit,
     onToggleFavorite: () -> Unit,
     modifier: Modifier = Modifier
@@ -109,7 +111,7 @@ fun ChannelListItem(
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    text = "${channel.channelNumber}",
+                    text = "${number ?: channel.channelNumber}",
                     color = AccentCyan,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold
