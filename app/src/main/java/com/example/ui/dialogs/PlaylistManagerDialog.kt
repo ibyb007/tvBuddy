@@ -20,7 +20,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -279,7 +282,9 @@ fun PlaylistManagerDialog(
     onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {},
     // Phone only: opacity of the floating navbar (null = no such setting, e.g. TV mode)
     navbarOpacity: Float? = null,
-    onNavbarOpacityChange: (Float) -> Unit = {}
+    onNavbarOpacityChange: (Float) -> Unit = {},
+    // Phone only: the floating bottom navbar, drawn over the full-screen settings page
+    mobileNav: (@Composable () -> Unit)? = null
 ) {
     val navStack = remember { mutableStateListOf<TiviSettingsRoute>().apply { addAll(routeChain(initialRoute)) } }
     val currentRoute = navStack.lastOrNull() ?: TiviSettingsRoute.Main
@@ -380,15 +385,18 @@ fun PlaylistManagerDialog(
                 )
             } else {
                 // Right-side TiviMate Slide-Over Settings Drawer
+                val phone = mobileNav != null
                 Box(
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .fillMaxHeight()
-                        .width(380.dp)
+                    modifier = (if (phone) Modifier.fillMaxSize() else Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(380.dp))
                         .background(TiviDrawerBg)
                         .pointerInput(Unit) { detectTapGestures(onTap = { }) } // Consume taps inside drawer
                 ) {
                     AnimatedContent(
+                        modifier = if (phone) Modifier
+                            .statusBarsPadding()
+                            // keep the last rows clear of the floating navbar
+                            .padding(bottom = 84.dp + androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
+                        else Modifier,
                         targetState = currentEntry,
                         transitionSpec = {
                             val forward = targetState.depth >= initialState.depth
@@ -652,6 +660,14 @@ fun PlaylistManagerDialog(
 
                             is TiviSettingsRoute.AddEpgSourceUrl -> Unit
                         }
+                    }
+                    if (mobileNav != null) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .navigationBarsPadding()
+                                .padding(bottom = 12.dp)
+                        ) { mobileNav() }
                     }
                 }
             }
