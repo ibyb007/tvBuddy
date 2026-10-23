@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
 import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.HighQuality
 import androidx.compose.material.icons.filled.BrightnessMedium
@@ -92,7 +94,11 @@ import com.example.player.AudioBoostProfile
 import com.example.player.StreamInfo
 import com.example.player.TrackInfo
 import com.example.player.VideoQuality
+import com.example.ui.TvGroupSection
 import com.example.ui.components.Badge
+import com.example.ui.components.MobileChannelPanel
+import com.example.ui.components.MobileGroupSelection
+import com.example.ui.components.MobilePanelPage
 import com.example.ui.components.VideoPlayerSurface
 import com.example.ui.components.fmtClock
 import com.example.ui.components.fmtFps
@@ -141,8 +147,19 @@ fun TvBuddyPlayerScreen(
     onCycleAudioBoost: () -> Unit = {},
     audioTracks: List<TrackInfo> = emptyList(),
     onOpenSettings: () -> Unit = {},
+    // channel list / groups panel (fullscreen only)
+    channelsList: List<ChannelEntity> = emptyList(),
+    channelNumbering: Map<Long, Int> = emptyMap(),
+    allPrograms: List<ProgramEntity> = emptyList(),
+    groupSections: List<TvGroupSection> = emptyList(),
+    groupSelection: MobileGroupSelection = MobileGroupSelection(null, "All"),
+    onSelectChannel: (ChannelEntity) -> Unit = {},
+    onSelectGroup: (Long?, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
 ) {
+    // null = closed; CHANNELS -> (back) GROUPS -> (back) closed
+    var panel by remember { mutableStateOf<MobilePanelPage?>(null) }
+    LaunchedEffect(isFullscreen, isInPipMode) { if (!isFullscreen || isInPipMode) panel = null }
     val isLive = channel == null || channel.contentType == com.example.data.model.ContentType.TV
     var showControls by remember { mutableStateOf(true) }
 
@@ -195,12 +212,14 @@ fun TvBuddyPlayerScreen(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null
             ) {
-                if (!isInPipMode) {
+                if (panel != null) {
+                    panel = null
+                } else if (!isInPipMode) {
                     showControls = !showControls
                 }
             }
-            .pointerInput(isInPipMode) {
-                if (isInPipMode) return@pointerInput
+            .pointerInput(isInPipMode, panel != null) {
+                if (isInPipMode || panel != null) return@pointerInput
                 var kind = SwipeKind.VOLUME
                 var level = 0f
                 detectVerticalDragGestures(
@@ -354,6 +373,33 @@ fun TvBuddyPlayerScreen(
                         }
                     }
                 }
+            }
+        }
+
+        // Channel list / groups panel (left side, fullscreen only)
+        if (panel != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .fillMaxHeight()
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(androidx.compose.foundation.layout.WindowInsetsSides.Start))
+            ) {
+                MobileChannelPanel(
+                    page = panel ?: MobilePanelPage.CHANNELS,
+                    onPageChange = { panel = it },
+                    onClose = { panel = null },
+                    channels = channelsList,
+                    numbering = channelNumbering,
+                    playingId = channel?.id,
+                    programs = allPrograms,
+                    sections = groupSections,
+                    selection = groupSelection,
+                    onSelectChannel = {
+                        onSelectChannel(it)
+                        panel = null
+                    },
+                    onSelectGroup = onSelectGroup
+                )
             }
         }
 
@@ -550,6 +596,12 @@ fun TvBuddyPlayerScreen(
                                 .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(0.dp)
                         ) {
+                            if (isFullscreen && isLive) {
+                                MobileActionButton("Channels", Icons.Default.FormatListBulleted, tag = "channels_btn") {
+                                    showControls = false
+                                    panel = MobilePanelPage.CHANNELS
+                                }
+                            }
                             MobileActionButton("Boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq, onClick = onCycleAudioBoost)
                             MobileActionButton(qualityLabel, Icons.Default.HighQuality, tag = "quality_btn", onClick = onOpenQualityPicker)
                             MobileActionButton(audioLabel, Icons.AutoMirrored.Filled.VolumeUp, onClick = onOpenAudioTracks)
