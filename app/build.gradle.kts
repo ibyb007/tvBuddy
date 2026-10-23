@@ -119,6 +119,8 @@ dependencies {
   implementation(libs.media3.ui)
   implementation(libs.media3.datasource.okhttp)
   implementation(libs.media3.common)
+  // software E-AC3 / AC3 / DTS / TrueHD decoding for phones whose hardware has no Dolby decoder (5.1 audio)
+  implementation(libs.media3.ffmpeg.decoder)
   implementation(libs.converter.moshi)
   implementation(libs.firebase.ai)
   // Uncomment to use Firestore:
