@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -365,10 +367,17 @@ fun HomeScreen(
     }
 
     // Avoid flashing the "no content" screen while the database is still loading
+    // (waits for the real first database result instead of a fixed timer; the timeout is only a safety net)
+    val dataLoaded by viewModel.dataLoaded.collectAsStateWithLifecycle()
     var dbSettled by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(1200)
-        dbSettled = true
+    LaunchedEffect(dataLoaded) {
+        if (dataLoaded) {
+            kotlinx.coroutines.delay(250)   // let the derived channel list catch up
+            dbSettled = true
+        } else {
+            kotlinx.coroutines.delay(6000)
+            dbSettled = true
+        }
     }
 
     if (isTvMode && channels.isEmpty() && currentChannel == null && tvBrowse == null) {
@@ -746,12 +755,16 @@ fun HomeScreen(
                 (channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
                     mobilePlaylistId == null && !hasMovies && !hasShows))
             val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode
-            val listBottomPadding = if (showNavBar) 84.dp else 0.dp
+            val navInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
+                .asPaddingValues().calculateBottomPadding()
+            val listBottomPadding = if (showNavBar) 84.dp + navInset else navInset
 
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(if (isMobileFullscreen || isInPipMode) androidx.compose.foundation.layout.PaddingValues(0.dp) else paddingValues)
+                    // edge to edge at the bottom: only the top bar is kept clear, content scrolls under the system navigation bar
+                    .padding(if (isMobileFullscreen || isInPipMode) androidx.compose.foundation.layout.PaddingValues(0.dp)
+                             else androidx.compose.foundation.layout.PaddingValues(top = paddingValues.calculateTopPadding()))
             ) {
             Column(modifier = Modifier.fillMaxSize()) {
                 // If a channel is selected, show the custom Composable Player Screen
@@ -1019,6 +1032,7 @@ fun HomeScreen(
                     },
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
+                        .navigationBarsPadding()
                         .padding(bottom = 12.dp),
                     opacity = navbarOpacity
                 )
@@ -1147,7 +1161,27 @@ fun HomeScreen(
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
             onTriggerClearEpg = { viewModel.triggerClearEpg() },
             navbarOpacity = if (isTvMode) null else navbarOpacity,
-            onNavbarOpacityChange = { viewModel.setNavbarOpacity(it) }
+            onNavbarOpacityChange = { viewModel.setNavbarOpacity(it) },
+            // phone: full-screen settings page with the same floating navbar (Settings highlighted)
+            mobileNav = if (isTvMode) null else ({
+                MobileGlassNavBar(
+                    section = section,
+                    hasMovies = hasMovies,
+                    hasShows = hasShows,
+                    playlistsOpen = false,
+                    settingsOpen = true,
+                    onSelectSection = {
+                        mobileSection = it
+                        showPlaylistManager = false
+                    },
+                    onTogglePlaylists = {
+                        showPlaylistManager = false
+                        showMobilePlaylists = true
+                    },
+                    onOpenSettings = {},
+                    opacity = navbarOpacity
+                )
+            })
         )
     }
 
