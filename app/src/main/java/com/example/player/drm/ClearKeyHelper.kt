@@ -205,15 +205,15 @@ class LocalClearKeyDrmCallback(private val jwkBytes: ByteArray) : MediaDrmCallba
     override fun executeProvisionRequest(
         uuid: UUID,
         request: ExoMediaDrm.ProvisionRequest
-    ): ByteArray {
-        return ByteArray(0)
+    ): MediaDrmCallback.Response {
+        return MediaDrmCallback.Response(ByteArray(0))
     }
 
     override fun executeKeyRequest(
         uuid: UUID,
         request: ExoMediaDrm.KeyRequest
-    ): ByteArray {
-        return jwkBytes
+    ): MediaDrmCallback.Response {
+        return MediaDrmCallback.Response(jwkBytes)
     }
 }
 
