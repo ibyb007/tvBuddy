@@ -285,7 +285,9 @@ fun PlaylistManagerDialog(
     navbarOpacity: Float? = null,
     onNavbarOpacityChange: (Float) -> Unit = {},
     // Phone only: the floating bottom navbar, drawn over the full-screen settings page
-    mobileNav: (@Composable () -> Unit)? = null
+    mobileNav: (@Composable () -> Unit)? = null,
+    // Phone only: bottom system-bar inset measured by the host screen (a Dialog window reports 0 for it)
+    navBarInset: androidx.compose.ui.unit.Dp = 0.dp
 ) {
     val navStack = remember { mutableStateListOf<TiviSettingsRoute>().apply { addAll(routeChain(initialRoute)) } }
     val currentRoute = navStack.lastOrNull() ?: TiviSettingsRoute.Main
@@ -396,7 +398,7 @@ fun PlaylistManagerDialog(
                         modifier = if (phone) Modifier
                             .statusBarsPadding()
                             // keep the last rows clear of the floating navbar
-                            .padding(bottom = 84.dp + androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
+                            .padding(bottom = 84.dp + navBarInset)
                         else Modifier,
                         targetState = currentEntry,
                         transitionSpec = {
@@ -666,8 +668,7 @@ fun PlaylistManagerDialog(
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .navigationBarsPadding()
-                                .padding(bottom = 12.dp)
+                                .padding(bottom = navBarInset + 12.dp)
                         ) { mobileNav() }
                     }
                 }
