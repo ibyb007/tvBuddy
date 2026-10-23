@@ -41,7 +41,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -59,30 +58,13 @@ const val DEFAULT_NAVBAR_OPACITY = 0.7f
 enum class MobileSection { LIVE, MOVIES, SHOWS }
 
 /**
- * "Liquid glass" surface: a dark tint at [alpha] opacity, a soft top-down light sheen and a bright
- * rim that fades out along the edge, so list items scrolling underneath stay visible through it.
+ * Glass surface: a flat dark tint at [alpha] opacity with a thin plain rim, so list items scrolling
+ * underneath stay visible through it.
  */
 fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): Modifier = this
     .clip(shape)
     .background(Color(0xFF111726).copy(alpha = alpha))
-    .background(
-        Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.03f))
-        )
-    )
-    .border(
-        BorderStroke(
-            1.dp,
-            Brush.linearGradient(
-                listOf(
-                    Color.White.copy(alpha = 0.60f),
-                    Color.White.copy(alpha = 0.08f),
-                    Color.White.copy(alpha = 0.28f)
-                )
-            )
-        ),
-        shape
-    )
+    .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)), shape)   // flat: no gradient sheen / rim
 
 /** Floating bottom bar: TV · Movies · Shows (VOD only) · Playlists · Settings. */
 @Composable
@@ -95,7 +77,8 @@ fun MobileGlassNavBar(
     onTogglePlaylists: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
-    opacity: Float = DEFAULT_NAVBAR_OPACITY
+    opacity: Float = DEFAULT_NAVBAR_OPACITY,
+    settingsOpen: Boolean = false
 ) {
     Row(
         modifier = modifier
@@ -104,21 +87,21 @@ fun MobileGlassNavBar(
         horizontalArrangement = Arrangement.spacedBy(0.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        NavItem("TV", Icons.Default.Tv, selected = section == MobileSection.LIVE && !playlistsOpen) {
+        NavItem("TV", Icons.Default.Tv, selected = section == MobileSection.LIVE && !playlistsOpen && !settingsOpen) {
             onSelectSection(MobileSection.LIVE)
         }
         if (hasMovies) {
-            NavItem("Movies", Icons.Default.Movie, selected = section == MobileSection.MOVIES && !playlistsOpen) {
+            NavItem("Movies", Icons.Default.Movie, selected = section == MobileSection.MOVIES && !playlistsOpen && !settingsOpen) {
                 onSelectSection(MobileSection.MOVIES)
             }
         }
         if (hasShows) {
-            NavItem("Shows", Icons.Default.VideoLibrary, selected = section == MobileSection.SHOWS && !playlistsOpen) {
+            NavItem("Shows", Icons.Default.VideoLibrary, selected = section == MobileSection.SHOWS && !playlistsOpen && !settingsOpen) {
                 onSelectSection(MobileSection.SHOWS)
             }
         }
         NavItem("Playlists", Icons.Default.FormatListBulleted, selected = playlistsOpen, onClick = onTogglePlaylists)
-        NavItem("Settings", Icons.Default.Settings, selected = false, onClick = onOpenSettings)
+        NavItem("Settings", Icons.Default.Settings, selected = settingsOpen, onClick = onOpenSettings)
     }
 }
 
