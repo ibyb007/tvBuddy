@@ -181,10 +181,59 @@ class TvBuddyPlayerManager(
         return exoPlayer ?: createPlayer().also { exoPlayer = it }
     }
 
+    private fun isTelevision(): Boolean {
+        val uiMode = context.getSystemService(Context.UI_MODE_SERVICE) as? android.app.UiModeManager
+        return uiMode?.currentModeType == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION ||
+            context.packageManager.hasSystemFeature(android.content.pm.PackageManager.FEATURE_LEANBACK)
+    }
+
+    /** Channel order of PCM: FL FR FC LFE BL BR (SL SR). Centre / surrounds are folded into L/R, LFE dropped. */
+    private fun stereoDownmix(): androidx.media3.common.audio.AudioProcessor {
+        val mixer = androidx.media3.common.audio.ChannelMixingAudioProcessor()
+        fun matrix(inCh: Int, coef: FloatArray) =
+            androidx.media3.common.audio.ChannelMixingMatrix(inCh, 2, coef)
+        mixer.putChannelMixingMatrix(matrix(1, floatArrayOf(1f, 1f)))
+        mixer.putChannelMixingMatrix(matrix(2, floatArrayOf(1f, 0f, 0f, 1f)))
+        // rows = input channel, columns = output (L, R)
+        mixer.putChannelMixingMatrix(matrix(6, floatArrayOf(
+            0.60f, 0f,      // FL
+            0f, 0.60f,      // FR
+            0.42f, 0.42f,   // FC
+            0f, 0f,         // LFE
+            0.42f, 0f,      // BL
+            0f, 0.42f       // BR
+        )))
+        mixer.putChannelMixingMatrix(matrix(8, floatArrayOf(
+            0.55f, 0f,
+            0f, 0.55f,
+            0.40f, 0.40f,
+            0f, 0f,
+            0.30f, 0f,      // BL
+            0f, 0.30f,      // BR
+            0.30f, 0f,      // SL
+            0f, 0.30f       // SR
+        )))
+        return mixer
+    }
+
     private fun createPlayer(): ExoPlayer {
         // Hardware decoders first; when the phone has none for the audio format (E-AC3 / E-AC3-JOC 5.1, AC3, DTS ...)
         // the FFmpeg software decoder takes over, and a failing codec falls back to the next one.
-        val renderers = androidx.media3.exoplayer.DefaultRenderersFactory(context)
+        val renderers = object : androidx.media3.exoplayer.DefaultRenderersFactory(context) {
+            override fun buildAudioSink(
+                context: Context,
+                enableFloatOutput: Boolean,
+                enableAudioOutputPlaybackParams: Boolean
+            ): androidx.media3.exoplayer.audio.AudioSink? {
+                val builder = androidx.media3.exoplayer.audio.DefaultAudioSink.Builder(context)
+                    .setEnableFloatOutput(enableFloatOutput)
+                    .setEnableAudioOutputPlaybackParameters(enableAudioOutputPlaybackParams)
+                // Phones: the software (FFmpeg) decoder hands 5.1 / 7.1 PCM to AudioTrack, which dies on many phones
+                // (AudioTrack write failed -6) and makes the stream stall and rebuffer. Mix it down to stereo first.
+                if (!isTelevision()) builder.setAudioProcessors(arrayOf(stereoDownmix()))
+                return builder.build()
+            }
+        }
             .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
             .setEnableDecoderFallback(true)
         return ExoPlayer.Builder(context, renderers)
