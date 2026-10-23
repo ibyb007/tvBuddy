@@ -74,6 +74,8 @@ import com.example.ui.components.ChannelListItem
 import com.example.ui.components.MobileGlassNavBar
 import com.example.ui.components.MobilePlaylistPanel
 import com.example.ui.components.MobileSection
+import com.example.ui.components.MobileVodPlayer
+import com.example.ui.components.MobileVodSection
 import com.example.ui.components.StartupEmptyState
 import com.example.ui.components.TvBrowseLevel
 import com.example.ui.components.TvBrowseScreen
@@ -187,6 +189,31 @@ fun HomeScreen(
     // Phone: floating navbar (TV / Movies / Shows) and its playlist picker
     var mobileSection by remember { mutableStateOf(MobileSection.LIVE) }
     var showMobilePlaylists by remember { mutableStateOf(false) }
+    // Phone: Movies / Shows only appear when a playlist has them (same rule as the TV rail); the top bar needs this too
+    val hasMovies = playlists.any { it.isActive && it.movieCount > 0 }
+    val hasShows = playlists.any { it.isActive && it.showCount > 0 }
+    val section = when {
+        mobileSection == MobileSection.MOVIES && !hasMovies -> MobileSection.LIVE
+        mobileSection == MobileSection.SHOWS && !hasShows -> MobileSection.LIVE
+        else -> mobileSection
+    }
+    val isVodSection = section != MobileSection.LIVE
+    // the movie / show that is open in the player right now (null while nothing or live TV plays)
+    val vodPlaying = currentChannel?.takeIf { it.contentType != com.example.data.model.ContentType.TV }
+    // Phone Movies / Shows: the poster whose details page is open (kept while the movie plays, so BACK returns to it)
+    var mobileVodDetailId by remember { mutableStateOf<Long?>(null) }
+    // Phone: favourite flag of the playing movie (the player's copy of the item never refreshes)
+    var mobileVodFavOverride by remember { mutableStateOf<Pair<Long, Boolean>?>(null) }
+    LaunchedEffect(currentChannel?.id) { mobileVodFavOverride = null }
+    // Switching between TV / Movies / Shows stops what is playing (live TV <-> movie) and closes any details page
+    LaunchedEffect(section) {
+        mobileVodDetailId = null
+        val cur = currentChannel
+        if (!isTvMode && cur != null) {
+            val curIsVod = cur.contentType != com.example.data.model.ContentType.TV
+            if ((isVodSection && !curIsVod) || (!isVodSection && curIsVod)) viewModel.closePlayer()
+        }
+    }
 
     // TV mode: TiviMate-style page (preview + EPG, playlist groups panel, rail). null = full-screen playback.
     var tvBrowse by remember { mutableStateOf<TvBrowseLevel?>(null) }
@@ -291,7 +318,7 @@ fun HomeScreen(
     // 4. Close player / stop playback if a channel is playing
     // 5. Exit TV mode if in TV mode
     // 6. When no player is playing and on main home screen, let system exit app (pausing/stopping playback!)
-    val shouldInterceptBack = !isInPipMode && (isMobileFullscreen || currentChannel != null || isTvMode || isSearchActive || searchQuery.isNotEmpty())
+    val shouldInterceptBack = !isInPipMode && (isMobileFullscreen || currentChannel != null || isTvMode || isSearchActive || searchQuery.isNotEmpty() || mobileVodDetailId != null)
 
     // Leaves TV mode: closes the app on a real TV, goes back to the phone UI otherwise
     val exitTv: () -> Unit = {
@@ -328,7 +355,11 @@ fun HomeScreen(
                 } else if (currentChannel != null) tvBrowse = TvBrowseLevel.GUIDE else exitTv()
             }
             currentChannel != null -> {
+                // a movie that was opened from a details page: BACK returns to that page (mobileVodDetailId is kept)
                 viewModel.closePlayer()
+            }
+            mobileVodDetailId != null -> {
+                mobileVodDetailId = null
             }
         }
     }
@@ -605,6 +636,8 @@ fun HomeScreen(
                                     Icon(Icons.Default.Search, contentDescription = "Search", tint = Color.White)
                                 }
 
+                                // Movies / Shows keep only the search button: no EPG guide, no overflow menu
+                                if (!isVodSection) {
                                 // EPG Guide
                                 IconButton(
                                     onClick = { showEpgGuideDialog = true },
@@ -669,6 +702,7 @@ fun HomeScreen(
                                         )
                                     }
                                 }
+                                }   // !isVodSection
                             }
                         }
 
@@ -683,7 +717,15 @@ fun HomeScreen(
                                 OutlinedTextField(
                                     value = searchQuery,
                                     onValueChange = { viewModel.setSearchQuery(it) },
-                                    placeholder = { Text("Search channel or category...") },
+                                    placeholder = {
+                                        Text(
+                                            when (section) {
+                                                MobileSection.MOVIES -> "Search movies..."
+                                                MobileSection.SHOWS -> "Search shows..."
+                                                else -> "Search channel or category..."
+                                            }
+                                        )
+                                    },
                                     modifier = Modifier.weight(1f).testTag("search_channels_input"),
                                     singleLine = true,
                                     colors = iptvTextFieldColors()
@@ -699,17 +741,10 @@ fun HomeScreen(
                 }
             }
         ) { paddingValues ->
-            val hasMovies = playlists.any { it.isActive && it.movieCount > 0 }
-            val hasShows = playlists.any { it.isActive && it.showCount > 0 }
             // nothing to watch yet (no playlist, or an empty one): the start page replaces chips, list and buttons
             val mobileStartup = !isLoading && (playlists.isEmpty() ||
                 (channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
                     mobilePlaylistId == null && !hasMovies && !hasShows))
-            val section = when {
-                mobileSection == MobileSection.MOVIES && !hasMovies -> MobileSection.LIVE
-                mobileSection == MobileSection.SHOWS && !hasShows -> MobileSection.LIVE
-                else -> mobileSection
-            }
             val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode
             val listBottomPadding = if (showNavBar) 84.dp else 0.dp
 
@@ -729,7 +764,42 @@ fun HomeScreen(
                             Modifier.fillMaxWidth().height(240.dp)
                         }
                     ) {
-                        TvBuddyPlayerScreen(
+                        if (vodPlaying != null) {
+                            MobileVodPlayer(
+                                player = player,
+                                channel = mobileVodFavOverride?.takeIf { it.first == vodPlaying.id }
+                                    ?.let { vodPlaying.copy(isFavorite = it.second) } ?: vodPlaying,
+                                isPlaying = isPlaying,
+                                isBuffering = isBuffering,
+                                errorMessage = playerError,
+                                aspectMode = aspectMode,
+                                streamInfo = streamInfo,
+                                videoQuality = videoQuality,
+                                audioBoostProfile = audioBoostProfile,
+                                audioTracks = audioTracks,
+                                positionMs = { viewModel.playerManager.positionMs() },
+                                durationMs = { viewModel.playerManager.durationMs() },
+                                onSeekTo = { viewModel.playerManager.seekToMs(it) },
+                                onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
+                                onToggleMyList = {
+                                    val now = mobileVodFavOverride?.takeIf { it.first == vodPlaying.id }?.second ?: vodPlaying.isFavorite
+                                    viewModel.toggleVodFavorite(vodPlaying.copy(isFavorite = now))
+                                    mobileVodFavOverride = vodPlaying.id to !now
+                                },
+                                onCycleAspect = { viewModel.cycleAspect() },
+                                onCycleAudioBoost = { viewModel.cycleAudioBoost() },
+                                onOpenQualityPicker = { showQualityDialog = true },
+                                onOpenAudioTracks = { showAudioDialog = true },
+                                onOpenSubtitles = { showSubtitleDialog = true },
+                                onRetry = { viewModel.playVod(vodPlaying) },
+                                // BACK / close: the movie stops and its details page (mobileVodDetailId) comes back
+                                onClose = { viewModel.closePlayer() },
+                                isInPipMode = isInPipMode,
+                                isFullscreen = isMobileFullscreen,
+                                onEnterPip = onEnterPip,
+                                onToggleFullscreen = { isMobileFullscreen = !isMobileFullscreen }
+                            )
+                        } else TvBuddyPlayerScreen(
                             player = player,
                             channel = currentChannel,
                             isPlaying = isPlaying,
@@ -786,47 +856,38 @@ fun HomeScreen(
                             touchMode = true,
                             background = DarkBackground
                         )
-                    } else if (section != MobileSection.LIVE) {
-                        // Movies / Shows list
+                    } else if (isVodSection) {
+                        // Movies / Shows: groups of the TV page as chips + poster grid; the selected poster's info sits in the player's place
                         val vodType = if (section == MobileSection.MOVIES) com.example.data.model.ContentType.MOVIE
                                       else com.example.data.model.ContentType.SHOW
-                        val vodItems by remember(vodType) { viewModel.vodChannels(vodType) }
-                            .collectAsStateWithLifecycle(initialValue = emptyList())
-                        val activeIds = remember(playlists) { playlists.filter { it.isActive }.map { it.id }.toSet() }
-                        val shownVod = remember(vodItems, activeIds, mobilePlaylistId, searchQuery) {
-                            vodItems.filter { item ->
-                                item.playlistId in activeIds &&
-                                    (mobilePlaylistId == null || item.playlistId == mobilePlaylistId) &&
-                                    (searchQuery.isBlank() || item.name.contains(searchQuery, ignoreCase = true))
-                            }
-                        }
-                        if (shownVod.isEmpty()) {
-                            Box(
-                                modifier = Modifier.fillMaxWidth().weight(1f).padding(24.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = if (vodLoading) "Loading..." else if (searchQuery.isNotEmpty()) "No matching titles" else "Nothing here yet",
-                                    color = Color(0xFF94A3B8),
-                                    fontSize = 14.sp
-                                )
-                            }
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxWidth().weight(1f),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = listBottomPadding),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                items(shownVod, key = { it.id }) { item ->
-                                    ChannelListItem(
-                                        channel = item,
-                                        isSelected = item.id == currentChannel?.id,
-                                        onSelect = { viewModel.playVod(item) },
-                                        onToggleFavorite = { viewModel.toggleVodFavorite(item) }
-                                    )
-                                }
-                            }
-                        }
+                        MobileVodSection(
+                            contentType = vodType,
+                            itemsFlow = remember(vodType) { viewModel.vodChannels(vodType) },
+                            historyFlow = remember(vodType) { viewModel.vodHistory(vodType) },
+                            groups = allChannelGroups,
+                            playlists = playlists,
+                            playlistFilterId = mobilePlaylistId,
+                            searchQuery = searchQuery,
+                            detailId = mobileVodDetailId,
+                            onDetailChange = { id ->
+                                // opening another poster's details while a movie plays stops that movie
+                                if (id != null && vodPlaying != null) viewModel.closePlayer()
+                                mobileVodDetailId = id
+                            },
+                            playing = vodPlaying,
+                            onPlay = { item, startMs -> viewModel.playVod(item, startMs) },
+                            onToggleMyList = { viewModel.toggleVodFavorite(it) },
+                            onOpenTrailer = { viewModel.openTrailer(it) },
+                            onOpenExternal = { viewModel.openInExternalPlayer(it) },
+                            onRemoveHistory = { viewModel.removeFromHistory(it) },
+                            resumeOf = { viewModel.vodResumeMs(it) },
+                            loadInfo = { viewModel.loadVodInfo(it) },
+                            onOpenGroup = { id, title -> viewModel.openVodGroup(id, vodType, title) },
+                            onNeedMoreAll = { viewModel.loadMoreVodAll(vodType) },
+                            loading = vodLoading,
+                            bottomPadding = listBottomPadding,
+                            modifier = Modifier.weight(1f)
+                        )
                     } else {
                         // Category Chips
                         LazyRow(
