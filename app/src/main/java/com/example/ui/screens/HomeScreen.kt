@@ -1163,6 +1163,8 @@ fun HomeScreen(
             onTriggerClearEpg = { viewModel.triggerClearEpg() },
             navbarOpacity = if (isTvMode) null else navbarOpacity,
             onNavbarOpacityChange = { viewModel.setNavbarOpacity(it) },
+            navBarInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
+                .asPaddingValues().calculateBottomPadding(),
             // phone: full-screen settings page with the same floating navbar (Settings highlighted)
             mobileNav = if (isTvMode) null else ({
                 MobileGlassNavBar(
