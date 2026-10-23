@@ -902,6 +902,7 @@ fun HomeScreen(
                                         channel = item,
                                         isSelected = item.id == currentChannel?.id,
                                         currentProgram = channelProg,
+                                        number = browseNumbering[item.id],
                                         onSelect = { viewModel.playChannel(item) },
                                         onToggleFavorite = { viewModel.toggleFavorite(item) }
                                     )
@@ -1081,8 +1082,10 @@ fun HomeScreen(
 
     if (showAudioDialog) {
         TrackSelectionDialog(
-            title = "Audio Tracks",
+            title = "Audio tracks",
             tracks = audioTracks,
+            isAudio = true,
+            onDisableAudio = { viewModel.playerManager.disableAudio() },
             onSelectTrack = { viewModel.playerManager.selectTrack(it) },
             onDismiss = { showAudioDialog = false }
         )
