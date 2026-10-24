@@ -599,6 +599,7 @@ fun TvPlayerOverlay(
                 nextSlot = channel?.let(::slotNext),
                 now = now,
                 streamInfo = streamInfo,
+                audioTracks = audioTracks,
                 strip = strip,
                 channelsList = channelsList,
                 stripIndex = stripIndex,
@@ -620,6 +621,7 @@ fun TvPlayerOverlay(
                 nextSlot = channel?.let(::slotNext),
                 now = now,
                 streamInfo = streamInfo,
+                audioTracks = audioTracks,
                 strip = emptyList(),
                 channelsList = channelsList,
                 stripIndex = 0,
@@ -780,6 +782,7 @@ private fun InfoBanner(
     nextSlot: EpgSlot?,
     now: Long,
     streamInfo: StreamInfo,
+    audioTracks: List<TrackInfo>,
     strip: List<ChannelEntity>,
     channelsList: List<ChannelEntity>,
     stripIndex: Int,
@@ -863,6 +866,17 @@ private fun InfoBanner(
                         if (streamInfo.frameRate > 0f) {
                             Spacer(Modifier.width(6.dp))
                             Badge(fmtFps(streamInfo.frameRate))
+                        }
+                        when (audioTracks.firstOrNull { it.isSelected }?.channelCount ?: 0) {
+                            0 -> null
+                            1 -> "Mono"
+                            2 -> "Stereo"
+                            6 -> "5.1"
+                            8 -> "7.1"
+                            else -> "${audioTracks.first { it.isSelected }.channelCount} ch"
+                        }?.let {
+                            Spacer(Modifier.width(6.dp))
+                            Badge(it)
                         }
                         if (streamInfo.isDrmProtected) {
                             Spacer(Modifier.width(6.dp))
