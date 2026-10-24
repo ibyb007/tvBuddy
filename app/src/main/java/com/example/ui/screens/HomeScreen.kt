@@ -755,7 +755,7 @@ fun HomeScreen(
             val mobileStartup = !isLoading && (playlists.isEmpty() ||
                 (channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
                     mobilePlaylistId == null && !hasMovies && !hasShows))
-            val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode
+            val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode && !showPlaylistManager
             val navInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
                 .asPaddingValues().calculateBottomPadding()
             val listBottomPadding = if (showNavBar) 84.dp + navInset else navInset
@@ -1163,8 +1163,6 @@ fun HomeScreen(
             onTriggerClearEpg = { viewModel.triggerClearEpg() },
             navbarOpacity = if (isTvMode) null else navbarOpacity,
             onNavbarOpacityChange = { viewModel.setNavbarOpacity(it) },
-            navBarInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
-                .asPaddingValues().calculateBottomPadding(),
             // phone: full-screen settings page with the same floating navbar (Settings highlighted)
             mobileNav = if (isTvMode) null else ({
                 MobileGlassNavBar(
