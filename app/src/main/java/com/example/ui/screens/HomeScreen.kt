@@ -1075,11 +1075,15 @@ fun HomeScreen(
     }
 
     if (showEpgGuideDialog) {
-        EpgGuideDialog(
+        val epgWindow by viewModel.epgWindowPrograms.collectAsStateWithLifecycle()
+        com.example.ui.components.MobileEpgGuide(
             channels = channels,
-            programs = allCurrentPrograms,
-            onSelectChannel = { viewModel.playChannel(it) },
-            onImportXmltv = { src, isRaw -> viewModel.importXmltv(src, isRaw) },
+            programs = if (epgWindow.isNotEmpty()) epgWindow else allCurrentPrograms,
+            playingId = currentChannel?.id,
+            onPlayChannel = {
+                viewModel.playChannel(it)
+                showEpgGuideDialog = false
+            },
             onDismiss = { showEpgGuideDialog = false }
         )
     }
