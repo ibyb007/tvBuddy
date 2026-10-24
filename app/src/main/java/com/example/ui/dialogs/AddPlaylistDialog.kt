@@ -9,7 +9,9 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -108,7 +110,7 @@ fun AddPlaylistDialog(
 ) {
     val tv = isTvMode
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("M3U / M3U8", "Xtream Codes", "Stalker / MAC", "Raw JSON")
+    val tabTitles = listOf("M3U", "XTREAM", "STALKER", "RAW JSON")
 
     var selectedSpoof by remember { mutableStateOf(SpoofPreset.TIVIMATE) }
     var spoofDropdownExpanded by remember { mutableStateOf(false) }
@@ -159,8 +161,13 @@ fun AddPlaylistDialog(
     Dialog(
         // BACK / outside taps do nothing while the portal is being processed
         onDismissRequest = { if (!processing) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
+        // safeDrawingPadding = status / navigation bars + on-screen keyboard: the card shrinks above the keyboard
+        Box(
+            modifier = Modifier.fillMaxSize().safeDrawingPadding(),
+            contentAlignment = Alignment.Center
+        ) {
         Surface(
             modifier = (if (tv) Modifier.width(520.dp) else Modifier.fillMaxWidth(0.92f))
                 .heightIn(max = (screenHeightDp * 0.94f).dp)
@@ -184,11 +191,6 @@ fun AddPlaylistDialog(
                             fontSize = if (tv) 20.sp else 22.sp,
                             color = Color.White,
                             fontWeight = FontWeight.Bold
-                        )
-                        Text(
-                            text = "M3U, Xtream Codes, Stalker portal or raw JSON",
-                            fontSize = 12.sp,
-                            color = Muted
                         )
                     }
                     IconButton(onClick = { if (!processing) onDismiss() }, modifier = Modifier.size(if (tv) 36.dp else 48.dp)) {
@@ -289,13 +291,12 @@ fun AddPlaylistDialog(
                         }
                     }
                 }
-                if (!tv) {
+                if (selectedTab == 2) {
+                    // Stalker: what to fetch sits right under the player signature, outside "Advanced"
+                    Spacer(Modifier.height(gap))
+                    OptionCheck("Include TV channels", stalkerIncludeTv) { stalkerIncludeTv = it }
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = "Disguises requests as TiviMate, OTT Navigator or other players so providers don't block the connection.",
-                        fontSize = 11.sp,
-                        color = Hint
-                    )
+                    OptionCheck("Include VOD (movies and shows)", stalkerIncludeVod) { stalkerIncludeVod = it }
                 }
 
                 Spacer(Modifier.height(gap + 2.dp))
@@ -487,10 +488,6 @@ fun AddPlaylistDialog(
                                 imeAction = ImeAction.Done,
                                 modifier = Modifier.testTag("stalker_serial_input")
                             )
-                            Spacer(Modifier.height(gap))
-                            OptionCheck("Include TV channels", stalkerIncludeTv) { stalkerIncludeTv = it }
-                            Spacer(Modifier.height(4.dp))
-                            OptionCheck("Include VOD (movies and shows)", stalkerIncludeVod) { stalkerIncludeVod = it }
                         }
                         val ready = stalkerPortal.isNotBlank() && stalkerMac.isNotBlank() &&
                             (stalkerIncludeTv || stalkerIncludeVod)
@@ -559,6 +556,7 @@ fun AddPlaylistDialog(
                 }
                 } // end of form (not processing / processed)
             }
+        }
         }
     }
 }
