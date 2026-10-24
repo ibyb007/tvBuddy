@@ -228,6 +228,24 @@ private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
 }
 
+private val LocalPhoneSettings = compositionLocalOf { false }
+
+/**
+ * TV: a dialog window (right-side drawer). Phone: drawn inside the app window like every other page, so
+ * the status bar, the floating navbar and the system insets behave exactly the same as on those pages.
+ */
+@Composable
+private fun SettingsHost(phone: Boolean, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    if (phone) {
+        Box(modifier = Modifier.fillMaxSize()) { content() }
+    } else {
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        ) { content() }
+    }
+}
+
 private val TiviDrawerBg = Color(0xEB181B20)
 private val TiviModalBg = Color(0xFF1E2229)
 private val TiviFocusBg = Color(0xFFE8EAED)
@@ -285,9 +303,7 @@ fun PlaylistManagerDialog(
     navbarOpacity: Float? = null,
     onNavbarOpacityChange: (Float) -> Unit = {},
     // Phone only: the floating bottom navbar, drawn over the full-screen settings page
-    mobileNav: (@Composable () -> Unit)? = null,
-    // Phone only: bottom system-bar inset measured by the host screen (a Dialog window reports 0 for it)
-    navBarInset: androidx.compose.ui.unit.Dp = 0.dp
+    mobileNav: (@Composable () -> Unit)? = null
 ) {
     val navStack = remember { mutableStateListOf<TiviSettingsRoute>().apply { addAll(routeChain(initialRoute)) } }
     val currentRoute = navStack.lastOrNull() ?: TiviSettingsRoute.Main
@@ -329,14 +345,11 @@ fun PlaylistManagerDialog(
     // Sub-dialogs for inline text/number edits
     var textEditDialogState by remember { mutableStateOf<TextEditPrompt?>(null) }
 
-    Dialog(
-        onDismissRequest = { navigateBack() },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
+    SettingsHost(
+        phone = mobileNav != null,
+        onDismiss = { navigateBack() }
     ) {
-        CompositionLocalProvider(LocalDrawerFocus provides focusMemory) {
+        CompositionLocalProvider(LocalDrawerFocus provides focusMemory, LocalPhoneSettings provides (mobileNav != null)) {
         BackHandler {
             navigateBack()
         }
@@ -391,14 +404,14 @@ fun PlaylistManagerDialog(
                 val phone = mobileNav != null
                 Box(
                     modifier = (if (phone) Modifier.fillMaxSize() else Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(380.dp))
-                        .background(TiviDrawerBg)
+                        .background(if (phone) com.example.ui.theme.DarkBackground else TiviDrawerBg)
                         .pointerInput(Unit) { detectTapGestures(onTap = { }) } // Consume taps inside drawer
                 ) {
                     AnimatedContent(
                         modifier = if (phone) Modifier
                             .statusBarsPadding()
                             // keep the last rows clear of the floating navbar
-                            .padding(bottom = 84.dp + navBarInset)
+                            .padding(bottom = 84.dp + androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
                         else Modifier,
                         targetState = currentEntry,
                         transitionSpec = {
@@ -668,7 +681,8 @@ fun PlaylistManagerDialog(
                         Box(
                             modifier = Modifier
                                 .align(Alignment.BottomCenter)
-                                .padding(bottom = navBarInset + 12.dp)
+                                .navigationBarsPadding()
+                                .padding(bottom = 12.dp)
                         ) { mobileNav() }
                     }
                 }
@@ -839,8 +853,8 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
             onValueChange = { onValueChange((Math.round(it * 20f) / 20f).coerceIn(0.1f, 1f)) },
             valueRange = 0.1f..1f,
             colors = SliderDefaults.colors(
-                thumbColor = TiviAccentBlue,
-                activeTrackColor = TiviAccentBlue,
+                thumbColor = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
+                activeTrackColor = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
                 inactiveTrackColor = TiviSecondaryText.copy(alpha = 0.3f)
             )
         )
@@ -1919,14 +1933,15 @@ private fun TiviMenuRow(
     val requester = focusRequester ?: remember { FocusRequester() }
     val active = enabled
     // a busy row keeps focus (so it is not thrown to another row) but looks unfocused and ignores clicks
-    val showFocus = isFocused && !busy
+    val phoneUi = LocalPhoneSettings.current
+    val showFocus = isFocused && !busy && !phoneUi
     val hadFocus = remember { booleanArrayOf(false) }
     DisposableEffect(Unit) {
         onDispose { if (hadFocus[0]) { hadFocus[0] = false; memory?.rowLostFocus() } }
     }
 
     // first row of a new screen / the row we came from on BACK takes focus right away
-    val claimsFocus = remember { active && memory?.claim(title) == true }
+    val claimsFocus = remember { active && memory?.claim(title) == true && !phoneUi }
     LaunchedEffect(Unit) {
         if (claimsFocus) {
             repeat(4) {
@@ -2081,8 +2096,8 @@ private fun TiviSwitchRow(
                 checked = checked,
                 onCheckedChange = null,
                 colors = SwitchDefaults.colors(
-                    checkedThumbColor = TiviAccentBlue,
-                    checkedTrackColor = TiviAccentBlue.copy(alpha = 0.45f),
+                    checkedThumbColor = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
+                    checkedTrackColor = (if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue).copy(alpha = 0.45f),
                     uncheckedThumbColor = if (isFocused) TiviFocusText else TiviSecondaryText,
                     uncheckedTrackColor = Color.Gray.copy(alpha = 0.35f)
                 )
