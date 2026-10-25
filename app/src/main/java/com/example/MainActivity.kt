@@ -115,8 +115,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
-        // In PiP mode keep the video playing, otherwise pause so audio/video does not continue in background
-        if (!isPip()) viewModel.onAppPaused()
+        // In PiP mode keep the video playing, otherwise pause so audio/video does not continue in background.
+        // On a TV onPause also fires when a system overlay (Quick settings, volume / input panels) takes the focus
+        // while our window is still visible: playback must keep running then, like TiviMate. When the user really
+        // leaves the app (Home, another app) onStop follows and stops the stream.
+        if (!isPip() && !isRunningOnTv()) viewModel.onAppPaused()
     }
 
     override fun onStop() {
