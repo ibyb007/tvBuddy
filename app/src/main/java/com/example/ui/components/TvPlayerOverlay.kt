@@ -428,8 +428,9 @@ fun TvPlayerOverlay(
             TvPanel.MENU -> {
                 val n = menuItems().size
                 when (key) {
-                    Key.DirectionLeft -> menuIndex = (menuIndex - 1).coerceAtLeast(0)
-                    Key.DirectionRight -> menuIndex = (menuIndex + 1).coerceAtMost(n - 1)
+                    // wraps around: LEFT on the first button -> last, RIGHT on the last button -> first
+                    Key.DirectionLeft -> if (n > 0) menuIndex = (menuIndex - 1 + n) % n
+                    Key.DirectionRight -> if (n > 0) menuIndex = (menuIndex + 1) % n
                     Key.DirectionUp, Key.DirectionDown -> {}
                     else -> return false
                 }
