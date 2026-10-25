@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -1078,11 +1079,27 @@ private val lastFollowMs = java.util.WeakHashMap<androidx.compose.foundation.laz
 
 internal suspend fun androidx.compose.foundation.lazy.LazyListState.followTarget(target: Int, jump: Boolean) {
     if (firstVisibleItemIndex == target && firstVisibleItemScrollOffset == 0) return
-    // a held D-pad key fires every ~40 ms: restarting a scroll animation each time stutters, so follow instantly then
     val t = android.os.SystemClock.uptimeMillis()
     val rapid = t - (lastFollowMs[this] ?: 0L) < 160L
     lastFollowMs[this] = t
-    if (jump || rapid) scrollToItem(target) else animateScrollToItem(target)
+    val itemPx = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 0
+    val far = kotlin.math.abs(target - firstVisibleItemIndex) > 6
+    if (jump || far || itemPx <= 0) {
+        scrollToItem(target)
+        return
+    }
+    // Scroll by an exact pixel distance with a short animation that is restarted from the CURRENT position on each
+    // step. While a key is held the list therefore glides at a steady speed (TiviMate-like) instead of jumping a
+    // whole row per key repeat; a single press eases in and out.
+    val distance = ((target - firstVisibleItemIndex) * itemPx - firstVisibleItemScrollOffset).toFloat()
+    animateScrollBy(
+        distance,
+        androidx.compose.animation.core.tween(
+            durationMillis = if (rapid) 100 else 170,
+            easing = if (rapid) androidx.compose.animation.core.LinearEasing
+            else androidx.compose.animation.core.FastOutSlowInEasing
+        )
+    )
 }
 
 @Composable
