@@ -2,9 +2,10 @@ package com.example.ui.components
 
 import com.example.data.local.entity.ProgramEntity
 import java.text.SimpleDateFormat
-import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 
 const val HOUR_MS = 3_600_000L
 const val HALF_HOUR_MS = 1_800_000L
@@ -32,10 +33,14 @@ data class EpgSlot(val startMs: Long, val endMs: Long, val program: ProgramEntit
     }
 }
 
-fun floorToHour(ms: Long): Long = Calendar.getInstance().run {
-    timeInMillis = ms
-    set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
-    timeInMillis
+/**
+ * Start of the local hour containing [ms]. Plain arithmetic on the zone offset: this runs for every row of the
+ * guide, and a Calendar.getInstance() per call was one of the main costs of scrolling the channel list.
+ */
+fun floorToHour(ms: Long): Long {
+    val off = TimeZone.getDefault().getOffset(ms).toLong()
+    val local = ms + off
+    return local - Math.floorMod(local, HOUR_MS) - off
 }
 
 fun floorToHalfHour(ms: Long): Long {
@@ -43,11 +48,10 @@ fun floorToHalfHour(ms: Long): Long {
     return if (ms - h >= HALF_HOUR_MS) h + HALF_HOUR_MS else h
 }
 
-private fun nextHour(ms: Long): Long = Calendar.getInstance().run {
-    timeInMillis = floorToHour(ms)
-    add(Calendar.HOUR_OF_DAY, 1)
-    timeInMillis
-}
+private fun nextHour(ms: Long): Long = floorToHour(ms) + HOUR_MS
+
+/** "No information" slots of a channel without any programme, identical for every such channel and window. */
+private val emptySlotCache = ConcurrentHashMap<Pair<Long, Long>, List<EpgSlot>>()
 
 /**
  * Builds a gap-free list of slots covering [fromMs, toMs).
@@ -55,6 +59,19 @@ private fun nextHour(ms: Long): Long = Calendar.getInstance().run {
  * (10:00-11:00, 11:00-12:00, ...).
  */
 fun buildSlots(programs: List<ProgramEntity>, fromMs: Long, toMs: Long): List<EpgSlot> {
+    if (programs.isEmpty()) {
+        // most channels of a big playlist have no guide data: share one immutable list instead of rebuilding it per row
+        val key = fromMs to toMs
+        emptySlotCache[key]?.let { return it }
+        val built = buildSlotsUncached(programs, fromMs, toMs)
+        if (emptySlotCache.size > 16) emptySlotCache.clear()
+        emptySlotCache[key] = built
+        return built
+    }
+    return buildSlotsUncached(programs, fromMs, toMs)
+}
+
+private fun buildSlotsUncached(programs: List<ProgramEntity>, fromMs: Long, toMs: Long): List<EpgSlot> {
     val out = ArrayList<EpgSlot>()
     var cursor = fromMs
 
@@ -85,7 +102,14 @@ fun List<EpgSlot>.indexAt(timeMs: Long): Int {
     return if (i >= 0) i else if (isNotEmpty() && timeMs < first().startMs) 0 else lastIndex
 }
 
-private val clockFormat get() = SimpleDateFormat("hh:mm a", Locale.getDefault())
+// SimpleDateFormat is expensive to create and was rebuilt on every call; keep one per thread
+private val clockFormat = object : ThreadLocal<SimpleDateFormat>() {
+    override fun initialValue() = SimpleDateFormat("hh:mm a", Locale.getDefault())
+}
 
 /** "10:00 am" */
-fun fmtClock(ms: Long): String = clockFormat.format(Date(ms)).lowercase(Locale.getDefault())
+fun fmtClock(ms: Long): String {
+    val f = clockFormat.get()!!
+    f.timeZone = TimeZone.getDefault()
+    return f.format(Date(ms)).lowercase(Locale.getDefault())
+}
