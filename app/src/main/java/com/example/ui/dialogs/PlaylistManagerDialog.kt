@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -2115,15 +2116,10 @@ private fun TiviSwitchRow(
         subtitle = subtitle,
         onClick = { onCheckedChange(!checked) },
         trailingContent = { isFocused ->
-            Switch(
+            SlimSwitch(
                 checked = checked,
-                onCheckedChange = null,
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
-                    checkedTrackColor = (if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue).copy(alpha = 0.45f),
-                    uncheckedThumbColor = if (isFocused) TiviFocusText else TiviSecondaryText,
-                    uncheckedTrackColor = Color.Gray.copy(alpha = 0.35f)
-                )
+                accent = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
+                offThumb = if (isFocused) TiviFocusText else TiviSecondaryText
             )
         }
     )
@@ -2207,4 +2203,45 @@ private fun PlaylistEntity.withUpdatedProp(name: String, value: Any?): PlaylistE
     "updateOnStart" -> (value as? Boolean)?.let { copy(updateOnStart = it) } ?: this
     "showNewlyAddedGroups" -> (value as? Boolean)?.let { copy(showNewlyAddedGroups = it) } ?: this
     else -> this
+}
+
+
+/**
+ * Slim switch: a thin rounded track with a larger round thumb that overhangs it (Material 3 "expressive" /
+ * TiviMate look), instead of the chunky default switch.
+ */
+@Composable
+internal fun SlimSwitch(
+    checked: Boolean,
+    accent: Color,
+    offThumb: Color = Color(0xFF9AA0A6),
+    modifier: Modifier = Modifier
+) {
+    val trackW = 38.dp
+    val trackH = 14.dp
+    val thumb = 22.dp
+    val x by androidx.compose.animation.core.animateDpAsState(
+        if (checked) trackW - thumb + 2.dp else (-2).dp,
+        androidx.compose.animation.core.tween(120),
+        label = "slimSwitchThumb"
+    )
+    Box(
+        modifier = modifier.size(width = trackW + 4.dp, height = thumb),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Box(
+            Modifier
+                .padding(horizontal = 2.dp)
+                .size(width = trackW, height = trackH)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(if (checked) accent.copy(alpha = 0.38f) else Color.Gray.copy(alpha = 0.35f))
+        )
+        Box(
+            Modifier
+                .offset(x = x + 2.dp)
+                .size(thumb)
+                .clip(androidx.compose.foundation.shape.CircleShape)
+                .background(if (checked) accent else offThumb)
+        )
+    }
 }
