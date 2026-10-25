@@ -77,7 +77,8 @@ fun TvGuidePanel(
     val listState = rememberLazyListState()
     LaunchedEffect(selectedRow) {
         // keep the focused channel as the 5th row, like TiviMate
-        listState.animateScrollToItem((selectedRow - 4).coerceAtLeast(0))
+        // followTarget: single steps animate, a held key jumps (restarting an animation per key press stutters)
+        listState.followTarget((selectedRow - 4).coerceAtLeast(0), jump = false)
     }
 
     Box(modifier = modifier.fillMaxSize().background(Color(0xFF101418).copy(alpha = 0.5f))) {
@@ -185,10 +186,9 @@ private fun GuideRow(
                 Spacer(Modifier.width((4 * k).dp))
                 Box(Modifier.size(width = (76 * k).dp, height = (58 * k).dp), contentAlignment = Alignment.Center) {
                     if (!channel.logoUrl.isNullOrBlank()) {
-                        AsyncImage(
-                            model = channel.logoUrl,
+                        ChannelLogo(
+                            url = channel.logoUrl,
                             contentDescription = channel.name,
-                            contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -264,10 +264,9 @@ private fun GuideRow(
                         contentAlignment = Alignment.Center
                     ) {
                         if (!channel.logoUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = channel.logoUrl,
+                            ChannelLogo(
+                                url = channel.logoUrl,
                                 contentDescription = channel.name,
-                                contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
