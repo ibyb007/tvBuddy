@@ -229,7 +229,8 @@ fun TvPlayerOverlay(
 
     val guideFrom = floorToHour(now) - 3 * HOUR_MS
     val guideTo = floorToHour(now) + 24 * HOUR_MS
-    fun guideSlots(ch: ChannelEntity): List<EpgSlot> = slotsOf(ch, guideFrom, guideTo)
+    val guideCache = remember(byEpgId, guideFrom) { HashMap<Long, List<EpgSlot>>() }
+    fun guideSlots(ch: ChannelEntity): List<EpgSlot> = guideCache.getOrPut(ch.id) { slotsOf(ch, guideFrom, guideTo) }
 
     // Recently played channels, most recent first (falls back to the full list)
     val strip = recentChannels.filter { it.id !in hiddenIds }.take(10)
@@ -1072,9 +1073,15 @@ internal fun Badge(text: String) {
  * anything bigger (list replaced, group switched, page just opened) jumps instantly so the list never
  * visibly "flies" to its position. Does nothing when the list is already there.
  */
+private val lastFollowMs = java.util.WeakHashMap<androidx.compose.foundation.lazy.LazyListState, Long>()
+
 internal suspend fun androidx.compose.foundation.lazy.LazyListState.followTarget(target: Int, jump: Boolean) {
     if (firstVisibleItemIndex == target && firstVisibleItemScrollOffset == 0) return
-    if (jump) scrollToItem(target) else animateScrollToItem(target)
+    // a held D-pad key fires every ~40 ms: restarting a scroll animation each time stutters, so follow instantly then
+    val t = android.os.SystemClock.uptimeMillis()
+    val rapid = t - (lastFollowMs[this] ?: 0L) < 160L
+    lastFollowMs[this] = t
+    if (jump || rapid) scrollToItem(target) else animateScrollToItem(target)
 }
 
 @Composable
