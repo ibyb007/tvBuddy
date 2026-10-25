@@ -57,6 +57,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -98,7 +99,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.window.Dialog
 import androidx.media3.exoplayer.ExoPlayer
-import coil.compose.AsyncImage
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.player.AspectMode
@@ -246,8 +246,8 @@ fun TvBrowseScreen(
     channels: List<ChannelEntity>,
     sections: List<TvGroupSection>,
     selection: TvGroupSelection,
-    allPrograms: List<ProgramEntity>,
-    epgPrograms: List<ProgramEntity>,
+    /** programmes per lower-case EPG channel id, grouped + sorted off the main thread by the view model */
+    epgByChannel: Map<String, List<ProgramEntity>>,
     favoriteOnlyGroups: Set<String>,
     nameSortedGroups: Set<String>,
     searchQuery: String,
@@ -309,7 +309,8 @@ fun TvBrowseScreen(
     val collapsed = remember { mutableStateListOf<Long>() }
 
     // ---------------- group tree ----------------
-    val rows = remember(sections, collapsed.toList()) { buildRows(sections, collapsed.toSet()) }
+    // derivedStateOf: rebuilt only when the sections or the collapsed set change, not on every D-pad press
+    val rows by remember(sections) { derivedStateOf { buildRows(sections, collapsed.toSet()) } }
     val appliedIndex = remember(rows, selection) { indexOfSelection(rows, selection) }
 
     LaunchedEffect(level) {
@@ -334,18 +335,30 @@ fun TvBrowseScreen(
     // ---------------- EPG ----------------
     val windowStart = remember { floorToHour(System.currentTimeMillis()) }
     val windowEnd = windowStart + 30 * HOUR_MS
-    val byEpgId = remember(epgPrograms, allPrograms) {
-        (if (epgPrograms.isNotEmpty()) epgPrograms else allPrograms)
-            .groupBy { it.epgChannelId.lowercase() }
-            .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
-    }
+    // (the per-channel grouping of the whole guide used to run here, on the main thread, inside composition)
     // one stable function object per EPG snapshot (a new ::reference every recomposition made BrowseContent unskippable)
-    val programsOfFn = remember(byEpgId) { { ch: ChannelEntity -> EpgMatcher.programsOf(ch, byEpgId) } }
+    val programsOfFn = remember(epgByChannel) { { ch: ChannelEntity -> EpgMatcher.programsOf(ch, epgByChannel) } }
     fun programsOf(ch: ChannelEntity): List<ProgramEntity> = programsOfFn(ch)
-    // slots are rebuilt only once per channel and EPG snapshot, not on every key press
-    val slotCache = remember(byEpgId, windowStart) { HashMap<Long, List<EpgSlot>>() }
-    fun slotsFor(ch: ChannelEntity): List<EpgSlot> =
-        slotCache.getOrPut(ch.id) { buildSlots(programsOf(ch), windowStart, windowEnd) }
+    // slots are rebuilt only once per channel and EPG snapshot, not on every key press; the same function
+    // object is handed to the rows so they reuse these lists instead of building their own copy
+    val slotsFn = remember(epgByChannel, windowStart) {
+        val cache = HashMap<Long, List<EpgSlot>>()
+        val end = windowStart + 30 * HOUR_MS
+        val f: (ChannelEntity) -> List<EpgSlot> = { ch ->
+            cache.getOrPut(ch.id) { buildSlots(EpgMatcher.programsOf(ch, epgByChannel), windowStart, end) }
+        }
+        f
+    }
+    fun slotsFor(ch: ChannelEntity): List<EpgSlot> = slotsFn(ch)
+    // overlay page (plain channel list): the programme airing now, from a 3 h window cached per hour
+    val hourNow = floorToHour(now)
+    val nowSlotsFn = remember(epgByChannel, hourNow) {
+        val cache = HashMap<Long, List<EpgSlot>>()
+        val f: (ChannelEntity) -> List<EpgSlot> = { ch ->
+            cache.getOrPut(ch.id) { buildSlots(EpgMatcher.programsOf(ch, epgByChannel), hourNow, hourNow + 3 * HOUR_MS) }
+        }
+        f
+    }
 
     // ---------------- grid focus ----------------
     val channelIds = remember(channels) { channels.map { it.id } }
@@ -605,8 +618,7 @@ fun TvBrowseScreen(
                     showSchedule = false,                       // plain channel list, video stays visible on the right
                     highlightSelected = level == TvBrowseLevel.GUIDE,
                     slotNowFor = { ch ->
-                        val h = floorToHour(now)
-                        val slots = buildSlots(programsOf(ch), h, h + 3 * HOUR_MS)
+                        val slots = nowSlotsFn(ch)
                         slots.firstOrNull { it.contains(now) } ?: slots.first()
                     },
                     scheduleFor = { ch -> slotsFor(ch) }
@@ -626,7 +638,7 @@ fun TvBrowseScreen(
                 now = now,
                 searchQuery = searchQuery,
                 numbering = numbering,
-                programsOf = programsOfFn,
+                slotsOf = slotsFn,
                 onPreviewBounds = onPreviewBounds
             )
         }
@@ -691,7 +703,7 @@ private fun BrowseContent(
     now: Long,
     searchQuery: String,
     numbering: Map<Long, Int>,
-    programsOf: (ChannelEntity) -> List<ProgramEntity>,
+    slotsOf: (ChannelEntity) -> List<EpgSlot>,
     onPreviewBounds: (Rect) -> Unit
 ) {
     val dpPerMs = (BROWSE_HALF_HOUR_PX * k) / HALF_HOUR_MS
@@ -775,9 +787,12 @@ private fun BrowseContent(
 
             // ----- time axis -----
             Box(Modifier.fillMaxWidth().height((BROWSE_HEADER_PX * k).dp)) {
-                Text(
+                val dateLabel = remember(now / 60_000L) {
                     SimpleDateFormat("EEE, d MMM, ", Locale.getDefault()).format(Date(now)) +
-                        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(now)).lowercase(Locale.getDefault()),
+                        SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(now)).lowercase(Locale.getDefault())
+                }
+                Text(
+                    dateLabel,
                     color = DateBlue,
                     fontSize = (30 * k).sp,
                     fontWeight = FontWeight.Medium,
@@ -831,9 +846,7 @@ private fun BrowseContent(
                             number = numbering[ch.id] ?: (i + 1),
                             selected = i == selectedRow,
                             playing = ch.id == playingChannel?.id,
-                            programs = programsOf(ch),
-                            windowStart = windowStart,
-                            windowEnd = windowEnd,
+                            slots = slotsOf(ch),
                             cursorMs = if (i == selectedRow) cursorMs else 0L,
                             originMs = originMs,
                             dpPerMs = dpPerMs
@@ -872,14 +885,11 @@ private fun BrowseRow(
     number: Int,
     selected: Boolean,
     playing: Boolean,
-    programs: List<ProgramEntity>,
-    windowStart: Long,
-    windowEnd: Long,
+    slots: List<EpgSlot>,
     cursorMs: Long,
     originMs: Long,
     dpPerMs: Float
 ) {
-    val slots = remember(programs, windowStart, windowEnd) { buildSlots(programs, windowStart, windowEnd) }
     val selIdx = if (selected) slots.indexAt(cursorMs) else -1
 
     Row(
@@ -900,10 +910,9 @@ private fun BrowseRow(
             Spacer(Modifier.width((12 * k).dp))
             Box(Modifier.size(width = (100 * k).dp, height = (60 * k).dp), contentAlignment = Alignment.Center) {
                 if (!channel.logoUrl.isNullOrBlank()) {
-                    AsyncImage(
-                        model = channel.logoUrl,
+                    ChannelLogo(
+                        url = channel.logoUrl,
                         contentDescription = channel.name,
-                        contentScale = ContentScale.Fit,
                         modifier = Modifier.fillMaxSize()
                     )
                 }
@@ -1160,48 +1169,64 @@ private fun GroupsPanel(
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = (24 * k).dp)
         ) {
             itemsIndexed(rows) { i, row ->
-                val isFocus = focused && i == focusIndex
-                // While the panel has focus only the focused pill is shown; the grid follows it live, so a
-                // second "applied" pill would just lag behind and look like two focuses.
-                val isApplied = !focused && i == appliedIndex && row.kind != RowKind.HEADER
-                val isHeader = row.kind == RowKind.HEADER
-                val fg = if (isFocus) Color.Black else Color.White
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = (32 * k).dp, end = (24 * k).dp, top = (2 * k).dp, bottom = (2 * k).dp)
-                        .height((74 * k).dp)
-                        .clip(RoundedCornerShape((14 * k).dp))
-                        .background(
-                            when {
-                                isFocus -> PillFocused
-                                isApplied -> PillApplied
-                                else -> Color.Transparent
-                            }
-                        )
-                        .padding(start = (if (isHeader) 24 else 48).times(k).dp, end = (20 * k).dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        row.title,
-                        color = fg,
-                        fontSize = (if (isHeader) 33 else 32).times(k).sp,
-                        fontWeight = if (isHeader) FontWeight.Medium else FontWeight.Normal,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    if (isHeader) {
-                        val isCollapsed = sectionKey(row.playlistId) in collapsed
-                        Icon(
-                            if (isCollapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
-                            contentDescription = null,
-                            tint = fg.copy(alpha = 0.8f),
-                            modifier = Modifier.size((36 * k).dp)
-                        )
-                    }
-                }
+                // Booleans instead of the focus index: moving focus only changes the two rows involved, so
+                // Compose skips the ~12 other visible rows (they used to be recomposed on every D-pad press).
+                GroupRowItem(
+                    k = k,
+                    row = row,
+                    isFocus = focused && i == focusIndex,
+                    // While the panel has focus only the focused pill is shown; the grid follows it live, so a
+                    // second "applied" pill would just lag behind and look like two focuses.
+                    isApplied = !focused && i == appliedIndex && row.kind != RowKind.HEADER,
+                    isCollapsed = row.kind == RowKind.HEADER && sectionKey(row.playlistId) in collapsed
+                )
             }
+        }
+    }
+}
+
+@Composable
+private fun GroupRowItem(
+    k: Float,
+    row: GroupRow,
+    isFocus: Boolean,
+    isApplied: Boolean,
+    isCollapsed: Boolean
+) {
+    val isHeader = row.kind == RowKind.HEADER
+    val fg = if (isFocus) Color.Black else Color.White
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = (32 * k).dp, end = (24 * k).dp, top = (2 * k).dp, bottom = (2 * k).dp)
+            .height((74 * k).dp)
+            .clip(RoundedCornerShape((14 * k).dp))
+            .background(
+                when {
+                    isFocus -> PillFocused
+                    isApplied -> PillApplied
+                    else -> Color.Transparent
+                }
+            )
+            .padding(start = (if (isHeader) 24 else 48).times(k).dp, end = (20 * k).dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            row.title,
+            color = fg,
+            fontSize = (if (isHeader) 33 else 32).times(k).sp,
+            fontWeight = if (isHeader) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (isHeader) {
+            Icon(
+                if (isCollapsed) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowUp,
+                contentDescription = null,
+                tint = fg.copy(alpha = 0.8f),
+                modifier = Modifier.size((36 * k).dp)
+            )
         }
     }
 }
