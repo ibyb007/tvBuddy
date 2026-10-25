@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
@@ -178,6 +179,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val epgWindowPrograms: StateFlow<List<ProgramEntity>> =
         repository.epgWindowPrograms.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /**
+     * The guide grouped per (lower-case) EPG channel id, each list sorted by start time. This used to be computed
+     * inside composition on the main thread (twice: TV page and player overlay) - with a big guide that froze the
+     * UI for a moment whenever a screen opened or the EPG refreshed. Now it is built once, on a background thread,
+     * and shared. conflate(): while a rebuild runs, only the newest guide snapshot is kept.
+     */
+    val epgByChannel: StateFlow<Map<String, List<ProgramEntity>>> =
+        combine(epgWindowPrograms, allCurrentPrograms) { window, current ->
+            (if (window.isNotEmpty()) window else current)
+                .groupBy { it.epgChannelId.lowercase() }
+                .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
+        }
+            .conflate()
+            .flowOn(kotlinx.coroutines.Dispatchers.Default)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
+
     init {
         prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
         viewModelScope.launch {
@@ -296,7 +313,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         nameSorted: Set<String>
     ): List<ChannelEntity> {
         val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
-        val hiddenGroupKeys = groups.filter { !it.isVisible }.map { "${it.playlistId}_${it.groupTitle}" }.toSet()
+        // playlist id -> hidden group titles: a set lookup per channel instead of building a "id_title" string
+        // for every channel of the playlist on every group switch (tens of thousands of allocations)
+        val hiddenByPlaylist: Map<Long, Set<String>> = groups.filter { !it.isVisible }
+            .groupBy({ it.playlistId }, { it.groupTitle })
+            .mapValues { (_, titles) -> titles.toHashSet() }
 
         // A selection that points at a playlist that no longer exists behaves like "all playlists"
         val sel = selection.let { s ->
@@ -306,7 +327,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         val filtered = channels.filter { channel ->
             if (activePlaylistIds != null && channel.playlistId !in activePlaylistIds) return@filter false
-            if ("${channel.playlistId}_${channel.groupTitle}" in hiddenGroupKeys) return@filter false
+            if (hiddenByPlaylist[channel.playlistId]?.contains(channel.groupTitle) == true) return@filter false
             if (sel.playlistId != null && channel.playlistId != sel.playlistId) return@filter false
             when (sel.kind) {
                 TvGroupKind.ALL -> true
