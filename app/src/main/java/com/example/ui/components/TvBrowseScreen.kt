@@ -1250,16 +1250,7 @@ private fun OptionsPanel(k: Float, row: GroupRow, items: List<OptionItem>, selec
                     }
                 }
                 item.toggle?.let { on ->
-                    Switch(
-                        checked = on,
-                        onCheckedChange = null,
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = BrowseBlue,
-                            checkedTrackColor = BrowseBlue.copy(alpha = 0.4f),
-                            uncheckedThumbColor = Color(0xFF9AA0A6),
-                            uncheckedTrackColor = Color(0xFF3C4043)
-                        )
-                    )
+                    com.example.ui.dialogs.SlimSwitch(checked = on, accent = BrowseBlue)
                 }
             }
         }
