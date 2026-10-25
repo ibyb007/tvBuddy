@@ -67,6 +67,8 @@ import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.DarkSurfaceElevated
 import com.example.ui.theme.DarkSurfaceVariant
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 
 private val Muted = Color(0xFF94A3B8)
 private val Hint = Color(0xFF64748B)
@@ -731,7 +733,9 @@ private fun PlaylistField(
 ) {
     var focused by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(10.dp)
-    Column(modifier = modifier) {
+    val bringIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    Column(modifier = modifier.bringIntoViewRequester(bringIntoView)) {
         Text(label, fontSize = 12.sp, color = if (focused) AccentCyan else Muted, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(3.dp))
         BasicTextField(
@@ -748,7 +752,16 @@ private fun PlaylistField(
             ),
             modifier = Modifier
                 .fillMaxWidth()
-                .onFocusChanged { focused = it.isFocused }
+                .onFocusChanged {
+                    focused = it.isFocused
+                    if (it.isFocused) {
+                        // the card shrinks when the keyboard opens: scroll so the field (and its label) stay above it
+                        scope.launch {
+                            delay(150); bringIntoView.bringIntoView()
+                            delay(450); bringIntoView.bringIntoView()
+                        }
+                    }
+                }
                 .clip(shape)
                 .background(DarkSurfaceVariant)
                 .border(if (focused) 2.dp else 1.dp, if (focused) AccentCyan else Line, shape)
