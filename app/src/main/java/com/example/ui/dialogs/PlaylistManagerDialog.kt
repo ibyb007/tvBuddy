@@ -54,6 +54,8 @@ import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import kotlinx.coroutines.flow.collectLatest
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -246,7 +248,7 @@ private fun SettingsHost(phone: Boolean, onDismiss: () -> Unit, content: @Compos
     }
 }
 
-private val TiviDrawerBg = Color(0xEB181B20)
+private val TiviDrawerBg = Color(0xFF181B20)
 private val TiviModalBg = Color(0xFF1E2229)
 private val TiviFocusBg = Color(0xFFE8EAED)
 private val TiviFocusText = Color(0xFF14161A)
@@ -369,14 +371,17 @@ fun PlaylistManagerDialog(
         // If focus gets lost while the drawer is in use (e.g. the focused row was removed), put it back
         // on a row instead of leaving the drawer with nothing focused.
         val windowFocused = LocalWindowInfo.current.isWindowFocused
-        LaunchedEffect(focusMemory.hasFocus, currentEntry, textEditDialogState != null, windowFocused) {
-            if (!focusMemory.hasFocus && focusMemory.settled && windowFocused &&
-                textEditDialogState == null && currentRoute !is TiviSettingsRoute.AddEpgSourceUrl
-            ) {
-                delay(300)
-                if (!focusMemory.hasFocus) {
-                    if (!focusManager.moveFocus(FocusDirection.Enter)) {
-                        focusManager.moveFocus(FocusDirection.Down)
+        // hasFocus is read inside snapshotFlow: every D-pad step toggles it, and as an effect key it recomposed the whole drawer
+        LaunchedEffect(currentEntry, textEditDialogState != null, windowFocused) {
+            snapshotFlow { focusMemory.hasFocus }.collectLatest { has ->
+                if (!has && focusMemory.settled && windowFocused &&
+                    textEditDialogState == null && currentRoute !is TiviSettingsRoute.AddEpgSourceUrl
+                ) {
+                    delay(300)
+                    if (!focusMemory.hasFocus) {
+                        if (!focusManager.moveFocus(FocusDirection.Enter)) {
+                            focusManager.moveFocus(FocusDirection.Down)
+                        }
                     }
                 }
             }
@@ -937,15 +942,33 @@ private fun PlaylistsSubMenu(
                         "Channels: ${pl.channelCount}, movies: ${pl.movieCount}, shows: ${pl.showCount}"
                     else "Channels: ${pl.channelCount}",
                     leadingIcon = { focused ->
+                        val phone = LocalPhoneSettings.current
+                        val accent = if (phone) com.example.ui.theme.AccentCyan else TiviAccentBlue
                         if (pl.isActive) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Enabled",
-                                tint = if (focused) TiviFocusText else TiviAccentBlue,
-                                modifier = Modifier.size(20.dp)
-                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(androidx.compose.foundation.shape.CircleShape)
+                                    .background(accent),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Check,
+                                    contentDescription = "Active",
+                                    tint = Color(0xFF0A0E17),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                         } else {
-                            Spacer(modifier = Modifier.size(20.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .border(
+                                        2.dp,
+                                        if (focused) TiviFocusText.copy(alpha = 0.7f) else TiviSecondaryText,
+                                        androidx.compose.foundation.shape.CircleShape
+                                    )
+                            )
                         }
                     },
                     onClick = { onSelectPlaylist(pl) }
