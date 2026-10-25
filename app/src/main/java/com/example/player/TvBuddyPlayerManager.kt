@@ -248,6 +248,7 @@ class TvBuddyPlayerManager(
                         _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
                         _isPlaying.value = (playbackState == Player.STATE_READY && playWhenReady)
                         if (playbackState == Player.STATE_READY) {
+                            if (_audioBoostProfile.value != AudioBoostProfile.OFF) applyAudioBoost()
                             _errorMessage.value = null
                             // only forget earlier failures once the stream has stayed up for a while
                             mainHandler.removeCallbacks(resetRetryRunnable)
@@ -258,7 +259,10 @@ class TvBuddyPlayerManager(
                     override fun onIsPlayingChanged(playing: Boolean) {
                         _isPlaying.value = playing
                         // Safety net: on some devices the audio session id is only final once playback starts.
-                        if (playing && _audioBoostProfile.value != AudioBoostProfile.OFF && !audioBoost.isActive) {
+                        // Always re-apply (not only when no effect exists): after a relaunch the effect built in
+                        // createPlayer() can be bound to an audio session that is replaced once the track is created,
+                        // so it looked "active" while doing nothing until the profile was changed by hand.
+                        if (playing && _audioBoostProfile.value != AudioBoostProfile.OFF) {
                             applyAudioBoost()
                         }
                     }
