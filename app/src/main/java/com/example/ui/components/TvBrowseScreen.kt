@@ -68,6 +68,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
@@ -338,9 +339,13 @@ fun TvBrowseScreen(
             .groupBy { it.epgChannelId.lowercase() }
             .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
     }
-    fun programsOf(ch: ChannelEntity): List<ProgramEntity> =
-        EpgMatcher.programsOf(ch, byEpgId)
-    fun slotsFor(ch: ChannelEntity): List<EpgSlot> = buildSlots(programsOf(ch), windowStart, windowEnd)
+    // one stable function object per EPG snapshot (a new ::reference every recomposition made BrowseContent unskippable)
+    val programsOfFn = remember(byEpgId) { { ch: ChannelEntity -> EpgMatcher.programsOf(ch, byEpgId) } }
+    fun programsOf(ch: ChannelEntity): List<ProgramEntity> = programsOfFn(ch)
+    // slots are rebuilt only once per channel and EPG snapshot, not on every key press
+    val slotCache = remember(byEpgId, windowStart) { HashMap<Long, List<EpgSlot>>() }
+    fun slotsFor(ch: ChannelEntity): List<EpgSlot> =
+        slotCache.getOrPut(ch.id) { buildSlots(programsOf(ch), windowStart, windowEnd) }
 
     // ---------------- grid focus ----------------
     val channelIds = remember(channels) { channels.map { it.id } }
@@ -535,7 +540,7 @@ fun TvBrowseScreen(
     }
 
     // ---------------- layout ----------------
-    val railWidth by animateDpAsState(
+    val railWidthState = animateDpAsState(
         targetValue = when (level) {
             TvBrowseLevel.GUIDE -> 0.dp
             TvBrowseLevel.GROUPS -> if (overlayMode) 0.dp else (RAIL_COLLAPSED_PX * k).dp   // no nav rail on the overlay page
@@ -544,7 +549,7 @@ fun TvBrowseScreen(
         animationSpec = tween(220),
         label = "railWidth"
     )
-    val groupsWidth by animateDpAsState(
+    val groupsWidthState = animateDpAsState(
         targetValue = if (level == TvBrowseLevel.GUIDE) 0.dp else (GROUPS_PX * k).dp,
         animationSpec = tween(220),
         label = "groupsWidth"
@@ -585,7 +590,8 @@ fun TvBrowseScreen(
         // ---- content: preview + EPG; gets pushed to the right (and clipped) when the panels slide in ----
         Box(
             modifier = Modifier
-                .offset(x = railWidth + groupsWidth)
+                // layout-phase offset: the slide animation no longer recomposes the whole page every frame
+                .offset { androidx.compose.ui.unit.IntOffset((railWidthState.value + groupsWidthState.value).roundToPx(), 0) }
                 .requiredWidth(screenWidthDp.dp)
                 .fillMaxHeight()
         ) {
@@ -620,7 +626,7 @@ fun TvBrowseScreen(
                 now = now,
                 searchQuery = searchQuery,
                 numbering = numbering,
-                programsOf = ::programsOf,
+                programsOf = programsOfFn,
                 onPreviewBounds = onPreviewBounds
             )
         }
@@ -628,7 +634,8 @@ fun TvBrowseScreen(
         // ---- rail + groups panel ----
         Row(modifier = Modifier.fillMaxHeight()) {
             RailPanel(
-                width = railWidth,
+                width = 0.dp,
+                widthProvider = { railWidthState.value },
                 k = k,
                 expanded = level == TvBrowseLevel.RAIL,
                 focused = level == TvBrowseLevel.RAIL,
@@ -637,7 +644,8 @@ fun TvBrowseScreen(
                 bgAlpha = if (overlayMode) 0.92f else 1f
             )
             GroupsPanel(
-                width = groupsWidth,
+                width = 0.dp,
+                widthProvider = { groupsWidthState.value },
                 k = k,
                 rows = rows,
                 collapsed = collapsed,
@@ -826,7 +834,7 @@ private fun BrowseContent(
                             programs = programsOf(ch),
                             windowStart = windowStart,
                             windowEnd = windowEnd,
-                            cursorMs = cursorMs,
+                            cursorMs = if (i == selectedRow) cursorMs else 0L,
                             originMs = originMs,
                             dpPerMs = dpPerMs
                         )
@@ -987,6 +995,7 @@ internal fun buildRailEntries(hasMovies: Boolean, hasShows: Boolean): List<RailE
 internal fun RailPanel(
     width: androidx.compose.ui.unit.Dp,
     k: Float,
+    widthProvider: (() -> androidx.compose.ui.unit.Dp)? = null,
     expanded: Boolean,
     focused: Boolean,
     selectedIndex: Int,
@@ -996,8 +1005,7 @@ internal fun RailPanel(
     currentId: RailId = RailId.TV
 ) {
     Box(
-        modifier = Modifier
-            .width(width)
+        modifier = (if (widthProvider != null) Modifier.layoutWidth(widthProvider) else Modifier.width(width))
             .fillMaxHeight()
             .clipToBounds()
             .background(RailBg.copy(alpha = bgAlpha))
@@ -1128,6 +1136,7 @@ private fun RailItem(
 private fun GroupsPanel(
     width: androidx.compose.ui.unit.Dp,
     k: Float,
+    widthProvider: (() -> androidx.compose.ui.unit.Dp)? = null,
     rows: List<GroupRow>,
     collapsed: List<Long>,
     focusIndex: Int,
@@ -1140,8 +1149,7 @@ private fun GroupsPanel(
         if (focused) listState.followTarget((focusIndex - 3).coerceAtLeast(0), jump = false)
     }
     Box(
-        modifier = Modifier
-            .width(width)
+        modifier = (if (widthProvider != null) Modifier.layoutWidth(widthProvider) else Modifier.width(width))
             .fillMaxHeight()
             .clipToBounds()
             .background(GroupsBg.copy(alpha = bgAlpha))
@@ -1302,3 +1310,11 @@ fun TvSearchDialog(
         }
     }
 }
+
+/** Width that is read while measuring, so animating it only re-lays out the panel (no recomposition). */
+internal fun Modifier.layoutWidth(provider: () -> androidx.compose.ui.unit.Dp): Modifier =
+    this.layout { measurable, constraints ->
+        val w = provider().roundToPx().coerceAtLeast(0)
+        val placeable = measurable.measure(constraints.copy(minWidth = w, maxWidth = w))
+        layout(w, placeable.height) { placeable.place(0, 0) }
+    }
