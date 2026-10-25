@@ -145,6 +145,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Keys of groups whose channels are sorted by name instead of playlist order. */
     private val _nameSortedGroups = MutableStateFlow(prefs.getStringSet(KEY_GROUP_NAME_SORT, emptySet()).orEmpty().toSet())
+
+    // Playlists the user collapsed in the TV groups panel (key = playlist id, -1 = "All playlists"); remembered across launches
+    private val _collapsedSections = MutableStateFlow(
+        prefs.getStringSet(KEY_COLLAPSED_SECTIONS, emptySet()).orEmpty().mapNotNull { it.toLongOrNull() }.toSet()
+    )
+    val collapsedSections: StateFlow<Set<Long>> = _collapsedSections.asStateFlow()
+
+    fun setSectionCollapsed(key: Long, collapsed: Boolean) {
+        val cur = _collapsedSections.value
+        val next = if (collapsed) cur + key else cur - key
+        if (next == cur) return
+        _collapsedSections.value = next
+        prefs.edit().putStringSet(KEY_COLLAPSED_SECTIONS, next.map { it.toString() }.toSet()).apply()
+    }
     val nameSortedGroups: StateFlow<Set<String>> = _nameSortedGroups.asStateFlow()
 
     private val _globalSpoof = MutableStateFlow(SpoofProfile(SpoofPreset.TIVIMATE))
@@ -240,6 +254,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: list.firstOrNull { !pendingResumeUrl.isNullOrBlank() && it.streamUrl == pendingResumeUrl }
         val target = find(channels) ?: find(rawChannels.value) ?: return
         playChannel(target)
+        // the groups panel must open on the group this channel plays from, not on whatever was browsed last
+        selectTvGroup(_playContext.value)
     }
 
     /** Groups of each active playlist for the TV groups panel (hidden groups left out). */
@@ -408,7 +424,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Opening the TV page from playback starts on the group the playing channel belongs to. */
     fun syncSelectionToPlayContext() {
-        if (currentChannel.value != null) selectTvGroup(_playContext.value)
+        if (currentChannel.value == null) return
+        val ctx = _playContext.value
+        // the playlist the channel plays from is always shown expanded when the page opens (collapsed ones stay collapsed)
+        setSectionCollapsed(ctx.playlistId ?: -1L, false)
+        selectTvGroup(ctx)
     }
 
     private fun loadPlayContext(): TvGroupSelection {
@@ -1165,5 +1185,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val KEY_CTX_GROUP = "tv_ctx_group"
         const val KEY_GROUP_FAV_ONLY = "tv_group_fav_only"
         const val KEY_GROUP_NAME_SORT = "tv_group_name_sort"
+        const val KEY_COLLAPSED_SECTIONS = "tv_collapsed_sections"
     }
 }
