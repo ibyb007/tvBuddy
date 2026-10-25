@@ -137,8 +137,8 @@ fun TvPlayerOverlay(
     videoQuality: com.example.player.VideoQuality = com.example.player.VideoQuality.AUTO,
     currentProgram: ProgramEntity? = null,
     channelsList: List<ChannelEntity>,
-    allPrograms: List<ProgramEntity> = emptyList(),
-    epgPrograms: List<ProgramEntity> = emptyList(),
+    /** programmes per lower-case EPG channel id, grouped + sorted off the main thread by the view model */
+    epgByChannel: Map<String, List<ProgramEntity>> = emptyMap(),
     recentChannels: List<ChannelEntity> = emptyList(),
     playlists: List<PlaylistEntity> = emptyList(),
     onAddPlaylist: () -> Unit = {},
@@ -203,26 +203,28 @@ fun TvPlayerOverlay(
     val now by produceNow()
 
     // Schedule per channel (window query when available, otherwise just the "now" programs)
-    val byEpgId = remember(epgPrograms, allPrograms) {
-        (if (epgPrograms.isNotEmpty()) epgPrograms else allPrograms)
-            .groupBy { it.epgChannelId.lowercase() }
-            .mapValues { (_, v) -> v.sortedBy { it.startTimeMs } }
-    }
+    // (the grouping itself used to run here on the main thread every time the overlay was composed)
+    val byEpgId = epgByChannel
     fun programsOf(ch: ChannelEntity): List<ProgramEntity> =
         EpgMatcher.programsOf(ch, byEpgId)
 
     /** Slots for a channel; gaps without EPG data become hour-long "No information" slots. */
     fun slotsOf(ch: ChannelEntity, from: Long, to: Long): List<EpgSlot> = buildSlots(programsOf(ch), from, to)
 
+    // 3 h window per channel, built once per EPG snapshot and hour (every row of the channel list asks for it
+    // on every key press; before, each ask rebuilt the slots from scratch)
+    val hourNow = floorToHour(now)
+    val nearCache = remember(byEpgId, hourNow) { HashMap<Long, List<EpgSlot>>() }
+    fun nearSlots(ch: ChannelEntity): List<EpgSlot> =
+        nearCache.getOrPut(ch.id) { slotsOf(ch, hourNow, hourNow + 3 * HOUR_MS) }
+
     fun slotNow(ch: ChannelEntity): EpgSlot {
-        val h = floorToHour(now)
-        val slots = slotsOf(ch, h, h + 3 * HOUR_MS)
+        val slots = nearSlots(ch)
         return slots.firstOrNull { it.contains(now) } ?: slots.first()
     }
 
     fun slotNext(ch: ChannelEntity): EpgSlot? {
-        val h = floorToHour(now)
-        val slots = slotsOf(ch, h, h + 3 * HOUR_MS)
+        val slots = nearSlots(ch)
         val i = slots.indexOfFirst { it.contains(now) }
         return slots.getOrNull(i + 1)
     }
@@ -811,10 +813,9 @@ private fun InfoBanner(
                     contentAlignment = Alignment.Center
                 ) {
                     if (!channel.logoUrl.isNullOrBlank()) {
-                        AsyncImage(
-                            model = channel.logoUrl,
+                        ChannelLogo(
+                            url = channel.logoUrl,
                             contentDescription = channel.name,
-                            contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize().padding(6.dp)
                         )
                     } else {
@@ -982,10 +983,9 @@ private fun InfoBanner(
                 ) {
                     Box(Modifier.height(48.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         if (!ch.logoUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = ch.logoUrl,
+                            ChannelLogo(
+                                url = ch.logoUrl,
                                 contentDescription = ch.name,
-                                contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
@@ -1134,75 +1134,17 @@ internal fun ChannelListPanel(
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
                 itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
-                    val isSel = highlightSelected && i == selectedIndex
-                    val slot = slotNowFor(ch)
-                    val fg = if (isSel) Color.Black else Color.White
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = (16 * k).dp, vertical = (4 * k).dp)
-                            .height((117 * k).dp)
-                            .clip(RoundedCornerShape((14 * k).dp))
-                            .background(if (isSel) TvSelected else Color.Transparent)
-                            .padding(horizontal = (24 * k).dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Box(Modifier.size(width = (96 * k).dp, height = (72 * k).dp), contentAlignment = Alignment.Center) {
-                            if (!ch.logoUrl.isNullOrBlank()) {
-                                AsyncImage(
-                                    model = ch.logoUrl,
-                                    contentDescription = ch.name,
-                                    contentScale = ContentScale.Fit,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            } else {
-                                Text(
-                                    ch.name.take(2).uppercase(),
-                                    color = fg,
-                                    fontSize = (28 * k).sp,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                        Spacer(Modifier.width((24 * k).dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            val num = numbering[ch.id] ?: (i + 1)
-                            Text(
-                                "$num  ${ch.name}",
-                                color = fg,
-                                fontSize = (28 * k).sp,
-                                fontWeight = FontWeight.Medium,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Text(
-                                slot.title,
-                                color = fg.copy(alpha = 0.65f),
-                                fontSize = (26 * k).sp,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height((8 * k).dp))
-                            Box(
-                                Modifier.fillMaxWidth().height((4 * k).dp)
-                                    .background(fg.copy(alpha = 0.25f))
-                            ) {
-                                Box(
-                                    Modifier.fillMaxWidth(slot.progress(now)).height((4 * k).dp)
-                                        .background(fg)
-                                )
-                            }
-                        }
-                        if (ch.id == playingId) {
-                            Spacer(Modifier.width((8 * k).dp))
-                            Icon(
-                                Icons.Default.PlayArrow,
-                                contentDescription = "Playing",
-                                tint = fg,
-                                modifier = Modifier.size((40 * k).dp)
-                            )
-                        }
-                    }
+                    // own composable with plain value parameters: a key press changes only the old and the new
+                    // selected row, the other visible rows are skipped instead of being recomposed
+                    ChannelListRow(
+                        k = k,
+                        channel = ch,
+                        number = numbering[ch.id] ?: (i + 1),
+                        isSel = highlightSelected && i == selectedIndex,
+                        playing = ch.id == playingId,
+                        slot = slotNowFor(ch),
+                        now = now
+                    )
                 }
             }
         }
@@ -1226,10 +1168,9 @@ internal fun ChannelListPanel(
                 ) {
                     Box(Modifier.size(width = (96 * k).dp, height = (72 * k).dp), contentAlignment = Alignment.Center) {
                         if (!selected.logoUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = selected.logoUrl,
+                            ChannelLogo(
+                                url = selected.logoUrl,
                                 contentDescription = selected.name,
-                                contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize()
                             )
                         } else {
@@ -1332,6 +1273,83 @@ internal fun ChannelListPanel(
 }
 
 
+@Composable
+private fun ChannelListRow(
+    k: Float,
+    channel: ChannelEntity,
+    number: Int,
+    isSel: Boolean,
+    playing: Boolean,
+    slot: EpgSlot,
+    now: Long
+) {
+    val fg = if (isSel) Color.Black else Color.White
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = (16 * k).dp, vertical = (4 * k).dp)
+            .height((117 * k).dp)
+            .clip(RoundedCornerShape((14 * k).dp))
+            .background(if (isSel) TvSelected else Color.Transparent)
+            .padding(horizontal = (24 * k).dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(width = (96 * k).dp, height = (72 * k).dp), contentAlignment = Alignment.Center) {
+            if (!channel.logoUrl.isNullOrBlank()) {
+                ChannelLogo(
+                    url = channel.logoUrl,
+                    contentDescription = channel.name,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Text(
+                    channel.name.take(2).uppercase(),
+                    color = fg,
+                    fontSize = (28 * k).sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+        Spacer(Modifier.width((24 * k).dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "$number  ${channel.name}",
+                color = fg,
+                fontSize = (28 * k).sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                slot.title,
+                color = fg.copy(alpha = 0.65f),
+                fontSize = (26 * k).sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.height((8 * k).dp))
+            Box(
+                Modifier.fillMaxWidth().height((4 * k).dp)
+                    .background(fg.copy(alpha = 0.25f))
+            ) {
+                Box(
+                    Modifier.fillMaxWidth(slot.progress(now)).height((4 * k).dp)
+                        .background(fg)
+                )
+            }
+        }
+        if (playing) {
+            Spacer(Modifier.width((8 * k).dp))
+            Icon(
+                Icons.Default.PlayArrow,
+                contentDescription = "Playing",
+                tint = fg,
+                modifier = Modifier.size((40 * k).dp)
+            )
+        }
+    }
+}
+
 /** "English, Stereo, 0.20 Mbps" - language, channel layout and bitrate read from the stream itself. */
 internal fun audioTrackText(t: TrackInfo): String {
     val lang = t.language.takeIf { it.isNotBlank() && it != "und" }
@@ -1354,7 +1372,7 @@ internal fun audioTrackText(t: TrackInfo): String {
 internal fun AudioTracksPanel(tracks: List<TrackInfo>, focusIndex: Int) {
     val k = rememberUiScale()
     val listState = rememberLazyListState()
-    LaunchedEffect(focusIndex) { listState.animateScrollToItem((focusIndex - 4).coerceAtLeast(0)) }
+    LaunchedEffect(focusIndex) { listState.followTarget((focusIndex - 4).coerceAtLeast(0), jump = false) }
     val anySelected = tracks.any { it.isSelected }
     val rows = listOf<TrackInfo?>(null) + tracks          // null = Off
     Column(
