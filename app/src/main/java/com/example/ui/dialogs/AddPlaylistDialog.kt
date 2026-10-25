@@ -70,6 +70,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 
+/** Tells the dialog when one of its text fields has focus (the TV keyboard covers the lower half of the screen). */
+private val LocalOnFieldFocus = androidx.compose.runtime.compositionLocalOf<(Boolean) -> Unit> { {} }
+
 private val Muted = Color(0xFF94A3B8)
 private val Hint = Color(0xFF64748B)
 private val Line = Color(0xFF334155)
@@ -160,6 +163,16 @@ fun AddPlaylistDialog(
     val shape = RoundedCornerShape(if (tv) 16.dp else 20.dp)
 
     val processing = importState is ImportUiState.Processing
+
+    // TV: the on-screen keyboard is a panel over the lower ~half of the screen and does not resize the window.
+    // While a field is being edited the card moves to the top and shrinks to the free area above the keyboard.
+    var focusedFields by remember { mutableIntStateOf(0) }
+    var typing by remember { mutableStateOf(false) }
+    LaunchedEffect(focusedFields > 0) {
+        if (focusedFields > 0) typing = true else { delay(400); typing = false }   // no flicker when hopping between fields
+    }
+    val compactForKeyboard = tv && typing
+    val onFieldFocus: (Boolean) -> Unit = { gained -> focusedFields = (focusedFields + if (gained) 1 else -1).coerceAtLeast(0) }
     Dialog(
         // BACK / outside taps do nothing while the portal is being processed
         onDismissRequest = { if (!processing) onDismiss() },
@@ -168,11 +181,13 @@ fun AddPlaylistDialog(
         // safeDrawingPadding = status / navigation bars + on-screen keyboard: the card shrinks above the keyboard
         Box(
             modifier = Modifier.fillMaxSize().safeDrawingPadding(),
-            contentAlignment = Alignment.Center
+            contentAlignment = if (compactForKeyboard) Alignment.TopCenter else Alignment.Center
         ) {
+        androidx.compose.runtime.CompositionLocalProvider(LocalOnFieldFocus provides onFieldFocus) {
         Surface(
             modifier = (if (tv) Modifier.width(520.dp) else Modifier.fillMaxWidth(0.92f))
-                .heightIn(max = (screenHeightDp * 0.94f).dp)
+                .padding(top = if (compactForKeyboard) 8.dp else 0.dp)
+                .heightIn(max = (screenHeightDp * (if (compactForKeyboard) 0.5f else 0.94f)).dp)
                 .clip(shape)
                 .border(1.dp, Line, shape),
             color = DarkBackground
@@ -560,6 +575,7 @@ fun AddPlaylistDialog(
             }
         }
         }
+        }
     }
 }
 
@@ -736,6 +752,9 @@ private fun PlaylistField(
     val shape = RoundedCornerShape(10.dp)
     val bringIntoView = remember { androidx.compose.foundation.relocation.BringIntoViewRequester() }
     val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val onFieldFocus = LocalOnFieldFocus.current
+    var reported by remember { mutableStateOf(false) }
+    androidx.compose.runtime.DisposableEffect(Unit) { onDispose { if (reported) onFieldFocus(false) } }
     Column(modifier = modifier.bringIntoViewRequester(bringIntoView)) {
         Text(label, fontSize = 12.sp, color = if (focused) AccentCyan else Muted, fontWeight = FontWeight.Medium)
         Spacer(Modifier.height(3.dp))
@@ -755,11 +774,12 @@ private fun PlaylistField(
                 .fillMaxWidth()
                 .onFocusChanged {
                     focused = it.isFocused
+                    if (it.isFocused != reported) { reported = it.isFocused; onFieldFocus(it.isFocused) }
                     if (it.isFocused) {
                         // the card shrinks when the keyboard opens: scroll so the field (and its label) stay above it
                         scope.launch {
-                            delay(150); bringIntoView.bringIntoView()
-                            delay(450); bringIntoView.bringIntoView()
+                            delay(200); bringIntoView.bringIntoView()
+                            delay(500); bringIntoView.bringIntoView()
                         }
                     }
                 }
