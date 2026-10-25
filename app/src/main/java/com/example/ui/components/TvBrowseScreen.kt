@@ -246,6 +246,11 @@ fun TvBrowseScreen(
     channels: List<ChannelEntity>,
     sections: List<TvGroupSection>,
     selection: TvGroupSelection,
+    /** the group the playing channel was started from: the groups panel opens focused on it */
+    playContext: TvGroupSelection = TvGroupSelection(),
+    /** playlists the user collapsed (remembered by the view model across launches) */
+    collapsedSections: Set<Long> = emptySet(),
+    onSetSectionCollapsed: (Long, Boolean) -> Unit = { _, _ -> },
     /** programmes per lower-case EPG channel id, grouped + sorted off the main thread by the view model */
     epgByChannel: Map<String, List<ProgramEntity>>,
     favoriteOnlyGroups: Set<String>,
@@ -291,7 +296,12 @@ fun TvBrowseScreen(
     var level by remember { mutableStateOf(initialLevel) }
     // start on the applied group so the groups list opens already positioned (no scroll on open)
     var groupFocus by remember {
-        mutableIntStateOf(indexOfSelection(buildRows(sections, emptySet()), selection).coerceAtLeast(0))
+        // a playing channel decides: its group, with its playlist expanded (the view model expands it for real a
+        // frame later; the stale selection / collapsed state of the previous visit must not decide the focus)
+        val playing = playingChannel != null
+        val initCollapsed = if (playing) collapsedSections - sectionKey(playContext.playlistId) else collapsedSections
+        val initSelection = if (playing) playContext else selection
+        mutableIntStateOf(indexOfSelection(buildRows(sections, initCollapsed), initSelection).coerceAtLeast(0))
     }
     // true once the user has moved focus between groups; then the channel list shows channels from the
     // first one instead of jumping to the playing channel
@@ -306,15 +316,16 @@ fun TvBrowseScreen(
     var optionsIndex by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
     var lastBackAt by remember { mutableLongStateOf(0L) }
-    val collapsed = remember { mutableStateListOf<Long>() }
 
     // ---------------- group tree ----------------
-    // derivedStateOf: rebuilt only when the sections or the collapsed set change, not on every D-pad press
-    val rows by remember(sections) { derivedStateOf { buildRows(sections, collapsed.toSet()) } }
+    // rebuilt only when the sections or the collapsed set change, not on every D-pad press
+    val rows = remember(sections, collapsedSections) { buildRows(sections, collapsedSections) }
     val appliedIndex = remember(rows, selection) { indexOfSelection(rows, selection) }
 
-    LaunchedEffect(level) {
-        if (level == TvBrowseLevel.GROUPS) groupFocus = appliedIndex.coerceAtLeast(0)
+    // Keyed by appliedIndex too: right after the page opens the applied group still changes once (the view model
+    // moves it to the playing channel's group), and the focus has to follow until the user moves it himself.
+    LaunchedEffect(level, appliedIndex) {
+        if (level == TvBrowseLevel.GROUPS) { if (!browsedGroups) groupFocus = appliedIndex.coerceAtLeast(0) }
         else browsedGroups = false
     }
     LaunchedEffect(optionsRow != null) { onOptionsVisible(optionsRow != null) }
@@ -464,7 +475,7 @@ fun TvBrowseScreen(
                 val row = rows.getOrNull(groupFocus) ?: return
                 if (row.kind == RowKind.HEADER) {
                     val key = sectionKey(row.playlistId)
-                    if (key in collapsed) collapsed.remove(key) else collapsed.add(key)
+                    onSetSectionCollapsed(key, key !in collapsedSections)
                 } else {
                     row.toSelection()?.let(onSelectGroup)
                     level = TvBrowseLevel.GUIDE
@@ -660,7 +671,7 @@ fun TvBrowseScreen(
                 widthProvider = { groupsWidthState.value },
                 k = k,
                 rows = rows,
-                collapsed = collapsed,
+                collapsed = collapsedSections,
                 focusIndex = groupFocus,
                 appliedIndex = appliedIndex,
                 focused = level == TvBrowseLevel.GROUPS,
@@ -1147,7 +1158,7 @@ private fun GroupsPanel(
     k: Float,
     widthProvider: (() -> androidx.compose.ui.unit.Dp)? = null,
     rows: List<GroupRow>,
-    collapsed: List<Long>,
+    collapsed: Set<Long>,
     focusIndex: Int,
     appliedIndex: Int,
     focused: Boolean,
