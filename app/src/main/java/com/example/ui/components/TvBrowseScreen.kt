@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -142,6 +143,9 @@ private const val CONTENT_PAD_PX = 32f
 private const val CHANNEL_COL_END_PX = 543f      // x where the programme cells start (same as TvGuidePanel)
 private const val BROWSE_HALF_HOUR_PX = 320f
 private const val BROWSE_ROW_PX = 78f
+private const val GROUP_ROW_PX = 78f             // 74 pill + 2 + 2 padding of a group row
+private const val GROUP_PIN_ROWS = 3            // blank rows above the list = the focused row sits on the 4th line
+private const val GROUP_TRAIL_ROWS = 10         // blank rows below, so the last row can reach that line too
 private const val BROWSE_HEADER_PX = 78f
 private const val PREVIEW_W_PX = 640f
 private const val PREVIEW_H_PX = 360f
@@ -322,10 +326,15 @@ fun TvBrowseScreen(
     val rows = remember(sections, collapsedSections) { buildRows(sections, collapsedSections) }
     val appliedIndex = remember(rows, selection) { indexOfSelection(rows, selection) }
 
-    // Keyed by appliedIndex too: right after the page opens the applied group still changes once (the view model
-    // moves it to the playing channel's group), and the focus has to follow until the user moves it himself.
-    LaunchedEffect(level, appliedIndex) {
-        if (level == TvBrowseLevel.GROUPS) { if (!browsedGroups) groupFocus = appliedIndex.coerceAtLeast(0) }
+    // When the page opens over a playing channel, `selection` still holds the group browsed last time for a
+    // moment (the view model moves it to the playing channel's group a frame later). Until that happened the
+    // playing channel's group is the home row, otherwise the focus first went to the stale group and then jumped.
+    var openSynced by remember { mutableStateOf(playingChannel == null || selection == playContext) }
+    LaunchedEffect(selection) { if (selection == playContext) openSynced = true }
+    LaunchedEffect(Unit) { delay(400); openSynced = true }       // safety net: never stay "unsynced"
+    val homeIndex = if (openSynced) appliedIndex else indexOfSelection(rows, playContext)
+    LaunchedEffect(level, homeIndex) {
+        if (level == TvBrowseLevel.GROUPS) { if (!browsedGroups) groupFocus = homeIndex.coerceAtLeast(0) }
         else browsedGroups = false
     }
     LaunchedEffect(optionsRow != null) { onOptionsVisible(optionsRow != null) }
@@ -532,8 +541,16 @@ fun TvBrowseScreen(
                 else -> return false
             }
             TvBrowseLevel.GROUPS -> when (key) {
-                Key.DirectionUp -> { browsedGroups = true; groupFocus = (groupFocus - 1).coerceAtLeast(0) }
-                Key.DirectionDown -> { browsedGroups = true; groupFocus = (groupFocus + 1).coerceAtMost((rows.size - 1).coerceAtLeast(0)) }
+                // UP on the first row jumps to the last one and DOWN on the last row to the first (a held key stops at the ends)
+                Key.DirectionUp -> {
+                    browsedGroups = true
+                    groupFocus = if (groupFocus <= 0) { if (isRepeat) 0 else (rows.size - 1).coerceAtLeast(0) } else groupFocus - 1
+                }
+                Key.DirectionDown -> {
+                    browsedGroups = true
+                    val last = (rows.size - 1).coerceAtLeast(0)
+                    groupFocus = if (groupFocus >= last) { if (isRepeat) last else 0 } else groupFocus + 1
+                }
                 Key.DirectionRight -> if (!isRepeat) {
                     if (!browsedGroups) {
                         // opened with BACK/LEFT twice and nothing browsed: RIGHT returns to the playing channel
@@ -1164,9 +1181,13 @@ private fun GroupsPanel(
     focused: Boolean,
     bgAlpha: Float = 1f
 ) {
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (focusIndex - 3).coerceAtLeast(0))
+    // The focused row stays pinned at the 4th row while the list moves under it. Empty spacer items before the
+    // first and after the last row let even the first / last rows reach that spot (the list "comes down" when
+    // scrolling up and goes up when scrolling down, like TiviMate). Item index = row index + GROUP_PIN_ROWS,
+    // so scrolling the list to `focusIndex` puts the focused row on the pinned line.
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = focusIndex.coerceAtLeast(0))
     LaunchedEffect(focusIndex, focused) {
-        if (focused) listState.followTarget((focusIndex - 3).coerceAtLeast(0), jump = false)
+        if (focused) listState.followTarget(focusIndex.coerceAtLeast(0), jump = false)
     }
     Box(
         modifier = (if (widthProvider != null) Modifier.layoutWidth(widthProvider) else Modifier.width(width))
@@ -1179,6 +1200,7 @@ private fun GroupsPanel(
             modifier = Modifier.requiredWidth((GROUPS_PX * k).dp).fillMaxHeight(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = (24 * k).dp)
         ) {
+            items(GROUP_PIN_ROWS) { Spacer(Modifier.fillMaxWidth().height((GROUP_ROW_PX * k).dp)) }
             itemsIndexed(rows) { i, row ->
                 // Booleans instead of the focus index: moving focus only changes the two rows involved, so
                 // Compose skips the ~12 other visible rows (they used to be recomposed on every D-pad press).
@@ -1192,6 +1214,7 @@ private fun GroupsPanel(
                     isCollapsed = row.kind == RowKind.HEADER && sectionKey(row.playlistId) in collapsed
                 )
             }
+            items(GROUP_TRAIL_ROWS) { Spacer(Modifier.fillMaxWidth().height((GROUP_ROW_PX * k).dp)) }
         }
     }
 }
