@@ -145,6 +145,8 @@ fun HomeScreen(
     val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
     val favOnlyGroups by viewModel.favOnlyGroups.collectAsStateWithLifecycle()
     val nameSortedGroups by viewModel.nameSortedGroups.collectAsStateWithLifecycle()
+    val collapsedSections by viewModel.collapsedSections.collectAsStateWithLifecycle()
+    val playContext by viewModel.playContext.collectAsStateWithLifecycle()
     val mobilePlaylistId by viewModel.mobilePlaylistId.collectAsStateWithLifecycle()
     val navbarOpacity by viewModel.navbarOpacity.collectAsStateWithLifecycle()
 
@@ -405,6 +407,9 @@ fun HomeScreen(
                     channels = channels,
                     sections = tvGroupSections,
                     selection = tvSelection,
+                    playContext = playContext,
+                    collapsedSections = collapsedSections,
+                    onSetSectionCollapsed = { key, c -> viewModel.setSectionCollapsed(key, c) },
                     epgByChannel = epgByChannel,
                     favoriteOnlyGroups = favOnlyGroups,
                     nameSortedGroups = nameSortedGroups,
