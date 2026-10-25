@@ -134,16 +134,12 @@ fun HomeScreen(
     val allCurrentPrograms by viewModel.allCurrentPrograms.collectAsStateWithLifecycle()
     val recentChannels by viewModel.recentChannels.collectAsStateWithLifecycle()
     val allChannelGroups by viewModel.allChannelGroups.collectAsStateWithLifecycle()
-    val importState by viewModel.importState.collectAsStateWithLifecycle()
+    // rarely change and are backed by lazy database flows: collected up front so the settings page opens with data
     val allEpgSources by viewModel.allEpgSources.collectAsStateWithLifecycle()
     val allPlaylistEpgCrossRefs by viewModel.allPlaylistEpgCrossRefs.collectAsStateWithLifecycle()
     val epgSettings by viewModel.epgSettings.collectAsStateWithLifecycle()
     val playlistsSorting by viewModel.playlistsSorting.collectAsStateWithLifecycle()
-    val updateStates by viewModel.updateStates.collectAsStateWithLifecycle()
-    val playbackLogEnabled by viewModel.playbackLogEnabled.collectAsStateWithLifecycle()
     val audioBoostProfile by viewModel.audioBoostProfile.collectAsStateWithLifecycle()
-    val warpState by viewModel.warpState.collectAsStateWithLifecycle()
-    val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
     var spoofPlaylistId by remember { mutableStateOf<Long?>(null) }
     val tvSelection by viewModel.tvSelection.collectAsStateWithLifecycle()
     val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
@@ -161,8 +157,6 @@ fun HomeScreen(
     val streamInfo by viewModel.streamInfo.collectAsStateWithLifecycle()
     val aspectMode by viewModel.aspectMode.collectAsStateWithLifecycle()
     val videoQuality by viewModel.videoQuality.collectAsStateWithLifecycle()
-    val availableQualities by viewModel.availableQualities.collectAsStateWithLifecycle()
-    val videoTracks by viewModel.videoTracks.collectAsStateWithLifecycle()
     val audioTracks by viewModel.audioTracks.collectAsStateWithLifecycle()
     val subtitleTracks by viewModel.subtitleTracks.collectAsStateWithLifecycle()
 
@@ -397,7 +391,7 @@ fun HomeScreen(
         // TV Fullscreen Leanback Mode (TiviMate-style)
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
             val player = viewModel.playerManager.getPlayer()
-            val epgWindowPrograms by viewModel.epgWindowPrograms.collectAsStateWithLifecycle()
+            val epgByChannel by viewModel.epgByChannel.collectAsStateWithLifecycle()
             val browseLevel = tvBrowse
             // where the TV page's preview window currently is (written by TvBrowseScreen, read only in layout)
             val previewBounds = remember { mutableStateOf<Rect?>(null) }
@@ -411,8 +405,7 @@ fun HomeScreen(
                     channels = channels,
                     sections = tvGroupSections,
                     selection = tvSelection,
-                    allPrograms = allCurrentPrograms,
-                    epgPrograms = epgWindowPrograms,
+                    epgByChannel = epgByChannel,
                     favoriteOnlyGroups = favOnlyGroups,
                     nameSortedGroups = nameSortedGroups,
                     searchQuery = searchQuery,
@@ -564,8 +557,7 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
-                    allPrograms = allCurrentPrograms,
-                    epgPrograms = epgWindowPrograms,
+                    epgByChannel = epgByChannel,
                     recentChannels = recentChannels,
                     onRemoveRecent = { viewModel.removeFromHistory(it) },
                     onClearRecent = { viewModel.clearHistory() },
@@ -1044,6 +1036,7 @@ fun HomeScreen(
 
     // Dialogs
     if (showAddDialog) {
+        val importState by viewModel.importState.collectAsStateWithLifecycle()
         AddPlaylistDialog(
             isTvMode = isTvMode,
             onDismiss = {
@@ -1089,6 +1082,7 @@ fun HomeScreen(
     }
 
     if (showQualityDialog) {
+        val videoTracks by viewModel.videoTracks.collectAsStateWithLifecycle()
         QualityPickerDialog(
             videoTracks = videoTracks,
             onSelectTrack = { viewModel.selectVideoTrack(it) },
@@ -1123,6 +1117,12 @@ fun HomeScreen(
     }
 
     if (showPlaylistManager) {
+        // These flows change while playing (log lines, WARP state, EPG updates). Collected here, only while the
+        // settings page is open, they no longer recompose the whole home screen during playback.
+        val updateStates by viewModel.updateStates.collectAsStateWithLifecycle()
+        val playbackLogEnabled by viewModel.playbackLogEnabled.collectAsStateWithLifecycle()
+        val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
+        val warpState by viewModel.warpState.collectAsStateWithLifecycle()
         PlaylistManagerDialog(
             playlists = playlists,
             onDismiss = { showPlaylistManager = false },
