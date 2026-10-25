@@ -271,8 +271,8 @@ fun TvVodPlayerOverlay(
             VodPanel.MENU -> {
                 val n = menuItems().size
                 when (key) {
-                    Key.DirectionLeft -> menuIndex = (menuIndex - 1).coerceAtLeast(0)
-                    Key.DirectionRight -> menuIndex = (menuIndex + 1).coerceAtMost(n - 1)
+                    Key.DirectionLeft -> if (n > 0) menuIndex = (menuIndex - 1 + n) % n
+                    Key.DirectionRight -> if (n > 0) menuIndex = (menuIndex + 1) % n
                     Key.DirectionUp -> if (repeat == 0) panel = VodPanel.INFO
                     Key.DirectionDown -> {}
                     else -> return false
