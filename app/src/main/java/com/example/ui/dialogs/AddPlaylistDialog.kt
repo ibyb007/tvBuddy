@@ -718,6 +718,7 @@ private fun SubmitButton(
 }
 
 /** Compact labelled text field (label above, placeholder inside) with a focus-highlighted border. */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun PlaylistField(
     label: String,
