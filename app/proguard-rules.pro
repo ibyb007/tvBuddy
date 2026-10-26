@@ -22,3 +22,16 @@
 
 # FFmpeg audio decoder is instantiated by reflection from DefaultRenderersFactory
 -keep class androidx.media3.decoder.ffmpeg.** { *; }
+
+# ---- tvBuddy release (R8) ----
+# Names are not obfuscated: the saving comes from removing unused code, and readable crash traces are worth more.
+-dontobfuscate
+
+# Software audio decoder (E-AC3 / AC3 / DTS / TrueHD): created by name via reflection and called from native code
+-keep class androidx.media3.decoder.** { *; }
+-keep class org.jellyfin.media3.** { *; }
+-keepclasseswithmembernames class * { native <methods>; }
+
+# ExoPlayer looks up optional renderers by name
+-dontwarn androidx.media3.decoder.**
+-dontwarn org.jellyfin.media3.**
