@@ -218,10 +218,15 @@ object WarpManager {
         val log = StringBuffer()
         Thread {
             try {
+                var lines = 0
                 proc.inputStream.bufferedReader().forEachLine { line ->
-                    Log.d(TAG, line)
+                    // The tunnel keeps writing to stdout for as long as it runs (one line per connection / event).
+                    // Keeping every line in memory and in logcat made the app slower and slower over a session
+                    // (growing heap -> more GC pauses). Only the start-up output is logged, and only a short tail is kept.
+                    if (lines++ < 60) Log.d(TAG, line)
                     log.append(line).append('\n')
-                    if (line.contains("listening on", true) || line.contains("HTTP proxy", true)) listening.set(true)
+                    if (log.length > 4000) log.delete(0, log.length - 2000)
+                    if (!listening.get() && (line.contains("listening on", true) || line.contains("HTTP proxy", true))) listening.set(true)
                 }
             } catch (_: Exception) {}
         }.apply { isDaemon = true }.start()
