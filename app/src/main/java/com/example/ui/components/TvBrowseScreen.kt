@@ -143,8 +143,6 @@ private const val CONTENT_PAD_PX = 32f
 private const val CHANNEL_COL_END_PX = 543f      // x where the programme cells start (same as TvGuidePanel)
 private const val BROWSE_HALF_HOUR_PX = 320f
 private const val BROWSE_ROW_PX = 78f
-private const val BROWSE_PIN_ROWS = 3           // blank rows above the channels: the selected row sits on the 4th line
-private const val BROWSE_TRAIL_ROWS = 6         // blank rows below, so the last channel can reach that line too
 private const val GROUP_ROW_PX = 78f             // 74 pill + 2 + 2 padding of a group row
 private const val GROUP_PIN_ROWS = 3            // blank rows above the list = the focused row sits on the 4th line
 private const val GROUP_TRAIL_ROWS = 10         // blank rows below, so the last row can reach that line too
@@ -738,15 +736,15 @@ private fun BrowseContent(
 ) {
     val dpPerMs = (BROWSE_HALF_HOUR_PX * k) / HALF_HOUR_MS
     // opens already positioned on the selected row; later jumps (group switch) are instant, single steps animate
-    // Spacer rows before / after the channels (see GroupsPanel): the selected row stays pinned on the 4th line and the
-    // list slides under it, also at both ends of the list. Item index = channel index + BROWSE_PIN_ROWS.
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = selectedRow.coerceAtLeast(0))
+    // The selected row is kept on the 4th line while the list can scroll; at both ends the list stops and the focus
+    // moves to the real first / last row (no blank filler rows).
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (selectedRow - LIST_PIN_ROWS).coerceAtLeast(0))
     val prevRow = remember { intArrayOf(selectedRow, channels.size) }
     LaunchedEffect(selectedRow, channels.size) {
         val jump = kotlin.math.abs(selectedRow - prevRow[0]) > 2 || prevRow[1] != channels.size
         prevRow[0] = selectedRow
         prevRow[1] = channels.size
-        listState.followTarget(selectedRow.coerceAtLeast(0), jump)
+        listState.followPinned(selectedRow.coerceAtLeast(0), jump)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -871,7 +869,6 @@ private fun BrowseContent(
                 }
             } else {
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                    items(BROWSE_PIN_ROWS) { Spacer(Modifier.fillMaxWidth().height((BROWSE_ROW_PX * k).dp)) }
                     itemsIndexed(channels, key = { _, c -> c.id }) { i, ch ->
                         BrowseRow(
                             k = k,
@@ -885,7 +882,6 @@ private fun BrowseContent(
                             dpPerMs = dpPerMs
                         )
                     }
-                    items(BROWSE_TRAIL_ROWS) { Spacer(Modifier.fillMaxWidth().height((BROWSE_ROW_PX * k).dp)) }
                 }
             }
         }
