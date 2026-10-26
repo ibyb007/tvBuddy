@@ -1120,13 +1120,14 @@ internal fun ChannelListPanel(
 ) {
     val k = rememberUiScale()
     // opens already positioned on the selected row (no scroll animation when the panel appears)
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (selectedIndex - 3).coerceAtLeast(0))
+    // 3 spacer rows before / 6 after the channels keep the selected row pinned on the 4th line (list slides under it)
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = selectedIndex.coerceAtLeast(0))
     val prevIndex = remember { intArrayOf(selectedIndex, channelsList.size) }
     LaunchedEffect(selectedIndex, channelsList.size) {
         val jump = kotlin.math.abs(selectedIndex - prevIndex[0]) > 2 || prevIndex[1] != channelsList.size
         prevIndex[0] = selectedIndex
         prevIndex[1] = channelsList.size
-        listState.followTarget((selectedIndex - 3).coerceAtLeast(0), jump)
+        listState.followTarget(selectedIndex.coerceAtLeast(0), jump)
     }
     val selected = channelsList.getOrNull(selectedIndex)
     val schedule = remember(selected?.id, now / 60_000L) { selected?.let(scheduleFor) ?: emptyList() }
@@ -1151,6 +1152,7 @@ internal fun ChannelListPanel(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = (32 * k).dp, vertical = (20 * k).dp)
             )
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                items(3) { Spacer(Modifier.fillMaxWidth().height((125 * k).dp)) }
                 itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
                     // own composable with plain value parameters: a key press changes only the old and the new
                     // selected row, the other visible rows are skipped instead of being recomposed
@@ -1164,6 +1166,7 @@ internal fun ChannelListPanel(
                         now = now
                     )
                 }
+                items(6) { Spacer(Modifier.fillMaxWidth().height((125 * k).dp)) }
             }
         }
 
