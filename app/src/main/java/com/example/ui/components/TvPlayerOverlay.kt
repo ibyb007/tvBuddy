@@ -62,6 +62,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -1102,6 +1103,32 @@ internal suspend fun androidx.compose.foundation.lazy.LazyListState.followTarget
     )
 }
 
+/** Rows kept above the focused one (focused row sits on the 4th line, like TiviMate). */
+internal const val LIST_PIN_ROWS = 3
+
+/**
+ * Pinned-focus scrolling without blank filler rows: the list tries to keep [selected] on line [pinRows] + 1.
+ * Near the start / end the list simply cannot scroll any further, so the focus moves to the real first / last row
+ * instead of leaving an empty gap.
+ */
+internal suspend fun androidx.compose.foundation.lazy.LazyListState.followPinned(
+    selected: Int,
+    jump: Boolean,
+    pinRows: Int = LIST_PIN_ROWS
+) {
+    val target = (selected - pinRows).coerceAtLeast(0)
+    if (!jump) {
+        val itemPx = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 0
+        if (itemPx > 0) {
+            val distance = (target - firstVisibleItemIndex) * itemPx - firstVisibleItemScrollOffset
+            if (distance == 0) return
+            if (distance > 0 && !canScrollForward) return      // already at the end
+            if (distance < 0 && !canScrollBackward) return     // already at the start
+        }
+    }
+    followTarget(target, jump)
+}
+
 @Composable
 internal fun rememberUiScale(): Float = LocalConfiguration.current.screenHeightDp / 1080f
 
@@ -1121,14 +1148,18 @@ internal fun ChannelListPanel(
     val k = rememberUiScale()
     // opens already positioned on the selected row (no scroll animation when the panel appears)
     // 3 spacer rows before / 6 after the channels keep the selected row pinned on the 4th line (list slides under it)
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = selectedIndex.coerceAtLeast(0))
+    val listState = rememberLazyListState(
+        initialFirstVisibleItemIndex = (selectedIndex - LIST_PIN_ROWS).coerceAtLeast(0)
+    )
     val prevIndex = remember { intArrayOf(selectedIndex, channelsList.size) }
     LaunchedEffect(selectedIndex, channelsList.size) {
         val jump = kotlin.math.abs(selectedIndex - prevIndex[0]) > 2 || prevIndex[1] != channelsList.size
         prevIndex[0] = selectedIndex
         prevIndex[1] = channelsList.size
-        listState.followTarget(selectedIndex.coerceAtLeast(0), jump)
+        listState.followPinned(selectedIndex.coerceAtLeast(0), jump)
     }
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    var listHeightPx by remember { mutableIntStateOf(0) }
     val selected = channelsList.getOrNull(selectedIndex)
     val schedule = remember(selected?.id, now / 60_000L) { selected?.let(scheduleFor) ?: emptyList() }
     val currentIdx = schedule.indexOfFirst { it.contains(now) }.coerceAtLeast(0)
@@ -1151,22 +1182,52 @@ internal fun ChannelListPanel(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.fillMaxWidth().padding(horizontal = (32 * k).dp, vertical = (20 * k).dp)
             )
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                items(3) { Spacer(Modifier.fillMaxWidth().height((125 * k).dp)) }
-                itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
-                    // own composable with plain value parameters: a key press changes only the old and the new
-                    // selected row, the other visible rows are skipped instead of being recomposed
-                    ChannelListRow(
-                        k = k,
-                        channel = ch,
-                        number = numbering[ch.id] ?: (i + 1),
-                        isSel = highlightSelected && i == selectedIndex,
-                        playing = ch.id == playingId,
-                        slot = slotNowFor(ch),
-                        now = now
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .onSizeChanged { listHeightPx = it.height }
+            ) {
+                // Focus bar: a separate layer that is NOT part of any row. Rows slide underneath it, so while the list
+                // scrolls the bar stays put (no "jump one row, then glide back"). It only travels where the list
+                // cannot scroll any more (first / last rows).
+                if (highlightSelected && listHeightPx > 0 && channelsList.isNotEmpty()) {
+                    val rowPx = 125f * k * density
+                    val maxScroll = (channelsList.size * rowPx - listHeightPx).coerceAtLeast(0f)
+                    val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
+                    val restTop = selectedIndex * rowPx - restScroll
+                    val barTop = androidx.compose.animation.core.animateFloatAsState(
+                        targetValue = restTop,
+                        animationSpec = androidx.compose.animation.core.tween(
+                            durationMillis = 110,
+                            easing = androidx.compose.animation.core.LinearOutSlowInEasing
+                        ),
+                        label = "focusBar"
+                    )
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = (16 * k).dp)
+                            .height((117 * k).dp)
+                            .offset { androidx.compose.ui.unit.IntOffset(0, (barTop.value + 4f * k * density).toInt()) }
+                            .clip(RoundedCornerShape((14 * k).dp))
+                            .background(TvSelected)
                     )
                 }
-                items(6) { Spacer(Modifier.fillMaxWidth().height((125 * k).dp)) }
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    itemsIndexed(channelsList, key = { _, c -> c.id }) { i, ch ->
+                        // own composable with plain value parameters: a key press changes only the old and the new
+                        // selected row, the other visible rows are skipped instead of being recomposed
+                        ChannelListRow(
+                            k = k,
+                            channel = ch,
+                            number = numbering[ch.id] ?: (i + 1),
+                            isSel = highlightSelected && i == selectedIndex,
+                            playing = ch.id == playingId,
+                            slot = slotNowFor(ch),
+                            now = now
+                        )
+                    }
+                }
             }
         }
 
@@ -1304,14 +1365,17 @@ private fun ChannelListRow(
     slot: EpgSlot,
     now: Long
 ) {
-    val fg = if (isSel) Color.Black else Color.White
+    // the focus bar is drawn by the list (see ChannelListPanel); the row only fades its text colour as the bar passes
+    val fg by androidx.compose.animation.animateColorAsState(
+        targetValue = if (isSel) Color.Black else Color.White,
+        animationSpec = androidx.compose.animation.core.tween(90),
+        label = "rowFg"
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = (16 * k).dp, vertical = (4 * k).dp)
             .height((117 * k).dp)
-            .clip(RoundedCornerShape((14 * k).dp))
-            .background(if (isSel) TvSelected else Color.Transparent)
             .padding(horizontal = (24 * k).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
