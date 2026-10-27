@@ -63,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -1106,10 +1107,18 @@ internal suspend fun androidx.compose.foundation.lazy.LazyListState.followTarget
 /** Rows kept above the focused one (focused row sits on the 4th line, like TiviMate). */
 internal const val LIST_PIN_ROWS = 3
 
+/** Time constant of the list follow (ms): smaller = snappier. ~45 ms settles a single step in about 150 ms. */
+private const val FOLLOW_TAU_MS = 45f
+
 /**
  * Pinned-focus scrolling without blank filler rows: the list tries to keep [selected] on line [pinRows] + 1.
  * Near the start / end the list simply cannot scroll any further, so the focus moves to the real first / last row
  * instead of leaving an empty gap.
+ *
+ * The list is moved every frame by a fraction of the remaining distance (exponential follow). The speed therefore
+ * adapts by itself: a single press eases in quickly, and a held key (any repeat rate) keeps the list only about
+ * one row behind the focus instead of queueing up fixed-length animations. Restarting for a new target continues
+ * from the current position, so there are no speed discontinuities.
  */
 internal suspend fun androidx.compose.foundation.lazy.LazyListState.followPinned(
     selected: Int,
@@ -1117,16 +1126,73 @@ internal suspend fun androidx.compose.foundation.lazy.LazyListState.followPinned
     pinRows: Int = LIST_PIN_ROWS
 ) {
     val target = (selected - pinRows).coerceAtLeast(0)
-    if (!jump) {
-        val itemPx = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 0
-        if (itemPx > 0) {
-            val distance = (target - firstVisibleItemIndex) * itemPx - firstVisibleItemScrollOffset
-            if (distance == 0) return
-            if (distance > 0 && !canScrollForward) return      // already at the end
-            if (distance < 0 && !canScrollBackward) return     // already at the start
-        }
+    val itemPx = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 0
+    if (jump || itemPx <= 0 || kotlin.math.abs(target - firstVisibleItemIndex) > 8) {
+        scrollToItem(target)
+        return
     }
-    followTarget(target, jump)
+    val minStep = itemPx * 0.05f
+    var last = 0L
+    while (true) {
+        val remaining = ((target - firstVisibleItemIndex) * itemPx - firstVisibleItemScrollOffset).toFloat()
+        if (kotlin.math.abs(remaining) < 1f) return
+        if (remaining > 0f && !canScrollForward) return      // already at the end
+        if (remaining < 0f && !canScrollBackward) return     // already at the start
+        val now = androidx.compose.runtime.withFrameNanos { it }
+        val dt = if (last == 0L) 16f else ((now - last) / 1_000_000f).coerceIn(1f, 50f)
+        last = now
+        var step = remaining * (1f - kotlin.math.exp(-dt / FOLLOW_TAU_MS))
+        if (kotlin.math.abs(step) < minStep) step = kotlin.math.sign(remaining) * minOf(kotlin.math.abs(remaining), minStep)
+        scrollBy(step)
+    }
+}
+
+/**
+ * Focus bar drawn as its own layer behind a pinned-focus list (see [followPinned]). Rows slide under it, so while
+ * the list scrolls the bar stays put; it only travels where the list cannot scroll any further (first / last rows).
+ * Place it before the LazyColumn inside the same Box.
+ */
+@Composable
+internal fun PinnedFocusBar(
+    selectedIndex: Int,
+    itemCount: Int,
+    rowPx: Float,
+    viewportPx: Int,
+    contentTopPx: Float,
+    contentBottomPx: Float,
+    insetPx: Float,
+    barHeight: androidx.compose.ui.unit.Dp,
+    startPad: androidx.compose.ui.unit.Dp,
+    endPad: androidx.compose.ui.unit.Dp,
+    corner: androidx.compose.ui.unit.Dp,
+    color: Color
+) {
+    if (viewportPx <= 0 || itemCount <= 0) return
+    val maxScroll = (contentTopPx + itemCount * rowPx + contentBottomPx - viewportPx).coerceAtLeast(0f)
+    val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
+    val restTop = contentTopPx + selectedIndex * rowPx - restScroll
+    // big moves (wrap-around, group switch) snap instead of sliding across the whole list
+    val prevTop = remember { floatArrayOf(restTop) }
+    val snap = kotlin.math.abs(restTop - prevTop[0]) > rowPx * 2.5f
+    androidx.compose.runtime.SideEffect { prevTop[0] = restTop }
+    val barTop = androidx.compose.animation.core.animateFloatAsState(
+        targetValue = restTop,
+        animationSpec = if (snap) androidx.compose.animation.core.snap()
+        else androidx.compose.animation.core.tween(
+            durationMillis = 90,
+            easing = androidx.compose.animation.core.LinearOutSlowInEasing
+        ),
+        label = "focusBar"
+    )
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = startPad, end = endPad)
+            .height(barHeight)
+            .offset { androidx.compose.ui.unit.IntOffset(0, (barTop.value + insetPx).toInt()) }
+            .clip(RoundedCornerShape(corner))
+            .background(color)
+    )
 }
 
 @Composable
@@ -1160,7 +1226,14 @@ internal fun ChannelListPanel(
     }
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     var listHeightPx by remember { mutableIntStateOf(0) }
-    val selected = channelsList.getOrNull(selectedIndex)
+    // The schedule + detail columns follow the selection ~100 ms after the last key press: while a key is held they
+    // would otherwise rebuild on every step and steal frames from the list scroll.
+    var settledIndex by remember { mutableIntStateOf(selectedIndex) }
+    LaunchedEffect(selectedIndex, channelsList.size) {
+        kotlinx.coroutines.delay(100)
+        settledIndex = selectedIndex
+    }
+    val selected = channelsList.getOrNull(settledIndex)
     val schedule = remember(selected?.id, now / 60_000L) { selected?.let(scheduleFor) ?: emptyList() }
     val currentIdx = schedule.indexOfFirst { it.contains(now) }.coerceAtLeast(0)
     val currentSlot = schedule.getOrNull(currentIdx)
@@ -1187,30 +1260,21 @@ internal fun ChannelListPanel(
                     .fillMaxSize()
                     .onSizeChanged { listHeightPx = it.height }
             ) {
-                // Focus bar: a separate layer that is NOT part of any row. Rows slide underneath it, so while the list
-                // scrolls the bar stays put (no "jump one row, then glide back"). It only travels where the list
-                // cannot scroll any more (first / last rows).
-                if (highlightSelected && listHeightPx > 0 && channelsList.isNotEmpty()) {
-                    val rowPx = 125f * k * density
-                    val maxScroll = (channelsList.size * rowPx - listHeightPx).coerceAtLeast(0f)
-                    val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
-                    val restTop = selectedIndex * rowPx - restScroll
-                    val barTop = androidx.compose.animation.core.animateFloatAsState(
-                        targetValue = restTop,
-                        animationSpec = androidx.compose.animation.core.tween(
-                            durationMillis = 110,
-                            easing = androidx.compose.animation.core.LinearOutSlowInEasing
-                        ),
-                        label = "focusBar"
-                    )
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = (16 * k).dp)
-                            .height((117 * k).dp)
-                            .offset { androidx.compose.ui.unit.IntOffset(0, (barTop.value + 4f * k * density).toInt()) }
-                            .clip(RoundedCornerShape((14 * k).dp))
-                            .background(TvSelected)
+                // Focus bar: a separate layer, not part of any row (rows slide under it, see PinnedFocusBar)
+                if (highlightSelected) {
+                    PinnedFocusBar(
+                        selectedIndex = selectedIndex,
+                        itemCount = channelsList.size,
+                        rowPx = 125f * k * density,
+                        viewportPx = listHeightPx,
+                        contentTopPx = 0f,
+                        contentBottomPx = 0f,
+                        insetPx = 4f * k * density,
+                        barHeight = (117 * k).dp,
+                        startPad = (16 * k).dp,
+                        endPad = (16 * k).dp,
+                        corner = (14 * k).dp,
+                        color = TvSelected
                     )
                 }
                 LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
@@ -1262,7 +1326,7 @@ internal fun ChannelListPanel(
                     Spacer(Modifier.width((16 * k).dp))
                     Column {
                         Text(
-                            "${numbering[selected.id] ?: (selectedIndex + 1)}  ${selected.name}",
+                            "${numbering[selected.id] ?: (settledIndex + 1)}  ${selected.name}",
                             color = Color.White,
                             fontSize = (32 * k).sp,
                             fontWeight = FontWeight.Medium,
