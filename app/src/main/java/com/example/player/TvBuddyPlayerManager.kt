@@ -608,6 +608,7 @@ class TvBuddyPlayerManager(
             "START",
             "Channel '${channel.name}' (id=${channel.id}, playlist=${channel.playlistId}) url=${PlaybackLog.redactUrl(channel.streamUrl)} " +
                 "drm=${channel.drmType} spoof=${globalSpoof.preset.displayName} userAgent=$userAgent " +
+                "warp=[${com.example.data.network.WarpManager.describe()}] " +
                 "headers=${headers.keys.joinToString()} forcedType=${forcedType?.let { PlaybackLog.contentTypeName(it) } ?: "auto"}"
         )
 
