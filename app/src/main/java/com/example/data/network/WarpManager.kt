@@ -80,6 +80,12 @@ object WarpManager {
         if (enabled) startAsync()
     }
 
+    /** One-line status for the playback log: tells whether a stream request really went through the tunnel. */
+    fun describe(): String {
+        val st = _state.value
+        return "enabled=${st.enabled},phase=${st.phase},routing=${proxyPort != null}"
+    }
+
     fun isSupported(): Boolean =
         initialised && File(appContext.applicationInfo.nativeLibraryDir, "libusque.so").exists()
 
