@@ -86,6 +86,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -144,8 +145,6 @@ private const val CHANNEL_COL_END_PX = 543f      // x where the programme cells 
 private const val BROWSE_HALF_HOUR_PX = 320f
 private const val BROWSE_ROW_PX = 78f
 private const val GROUP_ROW_PX = 78f             // 74 pill + 2 + 2 padding of a group row
-private const val GROUP_PIN_ROWS = 3            // blank rows above the list = the focused row sits on the 4th line
-private const val GROUP_TRAIL_ROWS = 10         // blank rows below, so the last row can reach that line too
 private const val BROWSE_HEADER_PX = 78f
 private const val PREVIEW_W_PX = 640f
 private const val PREVIEW_H_PX = 360f
@@ -1183,26 +1182,48 @@ private fun GroupsPanel(
     focused: Boolean,
     bgAlpha: Float = 1f
 ) {
-    // The focused row stays pinned at the 4th row while the list moves under it. Empty spacer items before the
-    // first and after the last row let even the first / last rows reach that spot (the list "comes down" when
-    // scrolling up and goes up when scrolling down, like TiviMate). Item index = row index + GROUP_PIN_ROWS,
-    // so scrolling the list to `focusIndex` puts the focused row on the pinned line.
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = focusIndex.coerceAtLeast(0))
-    LaunchedEffect(focusIndex, focused) {
-        if (focused) listState.followTarget(focusIndex.coerceAtLeast(0), jump = false)
+    // Same behaviour as the channel list: the focused row is kept on the 4th line while the list can scroll, there are
+    // no blank filler rows (near the ends the focus simply moves to the real first / last row), and the focus pill is
+    // a separate layer so the rows slide under it.
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = (focusIndex - LIST_PIN_ROWS).coerceAtLeast(0))
+    var listHeightPx by remember { mutableIntStateOf(0) }
+    val prevFocus = remember { intArrayOf(focusIndex, rows.size) }
+    LaunchedEffect(focusIndex, focused, rows.size) {
+        if (!focused) return@LaunchedEffect
+        val jump = kotlin.math.abs(focusIndex - prevFocus[0]) > 2 || prevFocus[1] != rows.size
+        prevFocus[0] = focusIndex
+        prevFocus[1] = rows.size
+        listState.followPinned(focusIndex.coerceAtLeast(0), jump)
     }
     Box(
         modifier = (if (widthProvider != null) Modifier.layoutWidth(widthProvider) else Modifier.width(width))
             .fillMaxHeight()
             .clipToBounds()
             .background(GroupsBg.copy(alpha = bgAlpha))
+            .onSizeChanged { listHeightPx = it.height }
     ) {
+        if (focused) {
+            PinnedFocusBar(
+                selectedIndex = focusIndex,
+                itemCount = rows.size,
+                rowPx = GROUP_ROW_PX * k * density,
+                viewportPx = listHeightPx,
+                contentTopPx = 24f * k * density,
+                contentBottomPx = 24f * k * density,
+                insetPx = 2f * k * density,
+                barHeight = (74 * k).dp,
+                startPad = (32 * k).dp,
+                endPad = (24 * k).dp,
+                corner = (14 * k).dp,
+                color = PillFocused
+            )
+        }
         LazyColumn(
             state = listState,
             modifier = Modifier.requiredWidth((GROUPS_PX * k).dp).fillMaxHeight(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = (24 * k).dp)
         ) {
-            items(GROUP_PIN_ROWS) { Spacer(Modifier.fillMaxWidth().height((GROUP_ROW_PX * k).dp)) }
             itemsIndexed(rows) { i, row ->
                 // Booleans instead of the focus index: moving focus only changes the two rows involved, so
                 // Compose skips the ~12 other visible rows (they used to be recomposed on every D-pad press).
@@ -1216,7 +1237,6 @@ private fun GroupsPanel(
                     isCollapsed = row.kind == RowKind.HEADER && sectionKey(row.playlistId) in collapsed
                 )
             }
-            items(GROUP_TRAIL_ROWS) { Spacer(Modifier.fillMaxWidth().height((GROUP_ROW_PX * k).dp)) }
         }
     }
 }
@@ -1230,20 +1250,19 @@ private fun GroupRowItem(
     isCollapsed: Boolean
 ) {
     val isHeader = row.kind == RowKind.HEADER
-    val fg = if (isFocus) Color.Black else Color.White
+    // the focus pill is drawn by the list (PinnedFocusBar); the row only fades its text colour as the pill passes
+    val fg by androidx.compose.animation.animateColorAsState(
+        targetValue = if (isFocus) Color.Black else Color.White,
+        animationSpec = androidx.compose.animation.core.tween(90),
+        label = "groupFg"
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = (32 * k).dp, end = (24 * k).dp, top = (2 * k).dp, bottom = (2 * k).dp)
             .height((74 * k).dp)
             .clip(RoundedCornerShape((14 * k).dp))
-            .background(
-                when {
-                    isFocus -> PillFocused
-                    isApplied -> PillApplied
-                    else -> Color.Transparent
-                }
-            )
+            .background(if (isApplied) PillApplied else Color.Transparent)
             .padding(start = (if (isHeader) 24 else 48).times(k).dp, end = (20 * k).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
