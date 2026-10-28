@@ -1188,6 +1188,15 @@ private fun GroupsPanel(
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = (focusIndex - LIST_PIN_ROWS).coerceAtLeast(0))
     var listHeightPx by remember { mutableIntStateOf(0) }
+    val barTop = rememberPinnedBarTop(
+        selectedIndex = focusIndex,
+        itemCount = rows.size,
+        rowPx = GROUP_ROW_PX * k * density,
+        viewportPx = listHeightPx,
+        contentTopPx = 24f * k * density,
+        contentBottomPx = 24f * k * density
+    )
+    val underBar by rememberRowUnderBar(listState, barTop, 74f * k * density, 2f * k * density, focused)
     val prevFocus = remember { intArrayOf(focusIndex, rows.size) }
     LaunchedEffect(focusIndex, focused, rows.size) {
         if (!focused) return@LaunchedEffect
@@ -1203,14 +1212,9 @@ private fun GroupsPanel(
             .background(GroupsBg.copy(alpha = bgAlpha))
             .onSizeChanged { listHeightPx = it.height }
     ) {
-        if (focused) {
+        if (focused && listHeightPx > 0) {
             PinnedFocusBar(
-                selectedIndex = focusIndex,
-                itemCount = rows.size,
-                rowPx = GROUP_ROW_PX * k * density,
-                viewportPx = listHeightPx,
-                contentTopPx = 24f * k * density,
-                contentBottomPx = 24f * k * density,
+                barTop = barTop,
                 insetPx = 2f * k * density,
                 barHeight = (74 * k).dp,
                 startPad = (32 * k).dp,
@@ -1230,7 +1234,7 @@ private fun GroupsPanel(
                 GroupRowItem(
                     k = k,
                     row = row,
-                    isFocus = focused && i == focusIndex,
+                    isFocus = focused && i == underBar,
                     // While the panel has focus only the focused pill is shown; the grid follows it live, so a
                     // second "applied" pill would just lag behind and look like two focuses.
                     isApplied = !focused && i == appliedIndex && row.kind != RowKind.HEADER,
@@ -1250,12 +1254,8 @@ private fun GroupRowItem(
     isCollapsed: Boolean
 ) {
     val isHeader = row.kind == RowKind.HEADER
-    // the focus pill is drawn by the list (PinnedFocusBar); the row only fades its text colour as the pill passes
-    val fg by androidx.compose.animation.animateColorAsState(
-        targetValue = if (isFocus) Color.Black else Color.White,
-        animationSpec = androidx.compose.animation.core.tween(90),
-        label = "groupFg"
-    )
+    // isFocus = this row is under the focus pill (the pill itself is drawn by the list, see GroupsPanel)
+    val fg = if (isFocus) Color.Black else Color.White
     Row(
         modifier = Modifier
             .fillMaxWidth()
