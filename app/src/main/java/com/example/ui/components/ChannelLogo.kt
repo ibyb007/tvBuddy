@@ -6,6 +6,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import coil.imageLoader
 import coil.request.ImageRequest
 
 // One decode size for every channel logo in the app. Coil keys its memory cache on the target size, so a logo that
@@ -34,5 +35,13 @@ fun ChannelLogo(
         contentDescription = contentDescription,
         contentScale = ContentScale.Fit,
         modifier = modifier
+    )
+}
+
+/** Warms Coil's memory cache with exactly the request [ChannelLogo] will make for [url] (same size, no cross-fade). */
+internal fun prefetchChannelLogo(context: android.content.Context, url: String?) {
+    if (url.isNullOrBlank()) return
+    context.imageLoader.enqueue(
+        ImageRequest.Builder(context).data(url).size(LOGO_W_PX, LOGO_H_PX).crossfade(false).build()
     )
 }
