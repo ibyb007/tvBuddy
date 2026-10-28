@@ -1164,16 +1164,17 @@ internal fun rememberPinnedBarTop(
     val maxScroll = (contentTopPx + itemCount * rowPx + contentBottomPx - viewportPx).coerceAtLeast(0f)
     val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
     val restTop = contentTopPx + selectedIndex * rowPx - restScroll
-    // one Animatable for the lifetime of the list (rows keep reading the same State); the first real viewport size
-    // snaps the bar to its final place so it never slides in from a first guess made with viewport = 0
+    // One Animatable for the lifetime of the list. Until the viewport size is known and the bar has been snapped to its
+    // place, the returned value is simply the computed rest position, so the bar is never drawn for even one frame at
+    // a first guess (made with viewport = 0) and then jumps.
+    val latestRest = androidx.compose.runtime.rememberUpdatedState(restTop)
     val anim = remember { androidx.compose.animation.core.Animatable(restTop) }
-    val seenViewport = remember { booleanArrayOf(false) }
+    val settled = remember { mutableStateOf(false) }
     LaunchedEffect(restTop, viewportPx > 0) {
-        if (viewportPx <= 0) {
+        if (viewportPx <= 0) return@LaunchedEffect
+        if (!settled.value) {
             anim.snapTo(restTop)
-        } else if (!seenViewport[0]) {
-            seenViewport[0] = true
-            anim.snapTo(restTop)
+            settled.value = true
         } else if (kotlin.math.abs(restTop - anim.value) > rowPx * 2.5f) {
             anim.snapTo(restTop)
         } else {
@@ -1183,7 +1184,7 @@ internal fun rememberPinnedBarTop(
             )
         }
     }
-    return anim.asState()
+    return remember { androidx.compose.runtime.derivedStateOf { if (settled.value) anim.value else latestRest.value } }
 }
 
 /**
