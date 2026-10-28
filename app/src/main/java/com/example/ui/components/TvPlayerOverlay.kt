@@ -1148,18 +1148,60 @@ internal suspend fun androidx.compose.foundation.lazy.LazyListState.followPinned
 }
 
 /**
- * Focus bar drawn as its own layer behind a pinned-focus list (see [followPinned]). Rows slide under it, so while
- * the list scrolls the bar stays put; it only travels where the list cannot scroll any further (first / last rows).
- * Place it before the LazyColumn inside the same Box.
+ * Y position (px, list coordinates) of the focus bar of a pinned-focus list: the row sits on line [LIST_PIN_ROWS] + 1
+ * while the list can scroll, and the bar travels over the real first / last rows where it cannot. Animated for the
+ * small steps; big moves (wrap-around, group switch) snap.
  */
 @Composable
-internal fun PinnedFocusBar(
+internal fun rememberPinnedBarTop(
     selectedIndex: Int,
     itemCount: Int,
     rowPx: Float,
     viewportPx: Int,
     contentTopPx: Float,
-    contentBottomPx: Float,
+    contentBottomPx: Float
+): androidx.compose.runtime.State<Float> {
+    val maxScroll = (contentTopPx + itemCount * rowPx + contentBottomPx - viewportPx).coerceAtLeast(0f)
+    val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
+    val restTop = contentTopPx + selectedIndex * rowPx - restScroll
+    // re-created once the viewport is known, so the bar never slides in from a wrong first guess
+    val anim = remember(viewportPx > 0) { androidx.compose.animation.core.Animatable(restTop) }
+    LaunchedEffect(restTop) {
+        if (kotlin.math.abs(restTop - anim.value) > rowPx * 2.5f) anim.snapTo(restTop)
+        else anim.animateTo(
+            restTop,
+            androidx.compose.animation.core.tween(90, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+        )
+    }
+    return anim.asState()
+}
+
+/**
+ * Index of the row that is under the focus bar right now (by geometry, not by selection). Rows use it for their text
+ * colour: the list lags a little behind the bar while it scrolls, so a row that merely is "selected" would show dark
+ * text on the dark background and the row passing under the bar would show white text on the white bar.
+ */
+@Composable
+internal fun rememberRowUnderBar(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    barTop: androidx.compose.runtime.State<Float>,
+    barHeightPx: Float,
+    insetPx: Float,
+    active: Boolean
+): androidx.compose.runtime.State<Int> = remember(listState, active, barHeightPx, insetPx) {
+    androidx.compose.runtime.derivedStateOf {
+        if (!active) -1 else {
+            val center = barTop.value + insetPx + barHeightPx / 2f
+            listState.layoutInfo.visibleItemsInfo
+                .minByOrNull { kotlin.math.abs(it.offset + it.size / 2f - center) }?.index ?: -1
+        }
+    }
+}
+
+/** The focus bar itself: a layer behind the LazyColumn (place it before the list inside the same Box). */
+@Composable
+internal fun PinnedFocusBar(
+    barTop: androidx.compose.runtime.State<Float>,
     insetPx: Float,
     barHeight: androidx.compose.ui.unit.Dp,
     startPad: androidx.compose.ui.unit.Dp,
@@ -1167,23 +1209,6 @@ internal fun PinnedFocusBar(
     corner: androidx.compose.ui.unit.Dp,
     color: Color
 ) {
-    if (viewportPx <= 0 || itemCount <= 0) return
-    val maxScroll = (contentTopPx + itemCount * rowPx + contentBottomPx - viewportPx).coerceAtLeast(0f)
-    val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
-    val restTop = contentTopPx + selectedIndex * rowPx - restScroll
-    // big moves (wrap-around, group switch) snap instead of sliding across the whole list
-    val prevTop = remember { floatArrayOf(restTop) }
-    val snap = kotlin.math.abs(restTop - prevTop[0]) > rowPx * 2.5f
-    androidx.compose.runtime.SideEffect { prevTop[0] = restTop }
-    val barTop = androidx.compose.animation.core.animateFloatAsState(
-        targetValue = restTop,
-        animationSpec = if (snap) androidx.compose.animation.core.snap()
-        else androidx.compose.animation.core.tween(
-            durationMillis = 90,
-            easing = androidx.compose.animation.core.LinearOutSlowInEasing
-        ),
-        label = "focusBar"
-    )
     Box(
         Modifier
             .fillMaxWidth()
@@ -1226,12 +1251,28 @@ internal fun ChannelListPanel(
     }
     val density = androidx.compose.ui.platform.LocalDensity.current.density
     var listHeightPx by remember { mutableIntStateOf(0) }
+    val barTop = rememberPinnedBarTop(
+        selectedIndex = selectedIndex,
+        itemCount = channelsList.size,
+        rowPx = 125f * k * density,
+        viewportPx = listHeightPx,
+        contentTopPx = 0f,
+        contentBottomPx = 0f
+    )
+    val underBar by rememberRowUnderBar(listState, barTop, 117f * k * density, 4f * k * density, highlightSelected)
     // The schedule + detail columns follow the selection ~100 ms after the last key press: while a key is held they
     // would otherwise rebuild on every step and steal frames from the list scroll.
     var settledIndex by remember { mutableIntStateOf(selectedIndex) }
     LaunchedEffect(selectedIndex, channelsList.size) {
         kotlinx.coroutines.delay(100)
         settledIndex = selectedIndex
+    }
+    val appContext = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(settledIndex, channelsList) {
+        // decode the logos around the cursor ahead of time, so fast scrolling never shows blank logo slots
+        for (i in (settledIndex - 8).coerceAtLeast(0)..(settledIndex + 24).coerceAtMost(channelsList.size - 1)) {
+            prefetchChannelLogo(appContext, channelsList[i].logoUrl)
+        }
     }
     val selected = channelsList.getOrNull(settledIndex)
     val schedule = remember(selected?.id, now / 60_000L) { selected?.let(scheduleFor) ?: emptyList() }
@@ -1261,14 +1302,9 @@ internal fun ChannelListPanel(
                     .onSizeChanged { listHeightPx = it.height }
             ) {
                 // Focus bar: a separate layer, not part of any row (rows slide under it, see PinnedFocusBar)
-                if (highlightSelected) {
+                if (highlightSelected && listHeightPx > 0) {
                     PinnedFocusBar(
-                        selectedIndex = selectedIndex,
-                        itemCount = channelsList.size,
-                        rowPx = 125f * k * density,
-                        viewportPx = listHeightPx,
-                        contentTopPx = 0f,
-                        contentBottomPx = 0f,
+                        barTop = barTop,
                         insetPx = 4f * k * density,
                         barHeight = (117 * k).dp,
                         startPad = (16 * k).dp,
@@ -1285,7 +1321,7 @@ internal fun ChannelListPanel(
                             k = k,
                             channel = ch,
                             number = numbering[ch.id] ?: (i + 1),
-                            isSel = highlightSelected && i == selectedIndex,
+                            isSel = i == underBar,
                             playing = ch.id == playingId,
                             slot = slotNowFor(ch),
                             now = now
@@ -1429,12 +1465,8 @@ private fun ChannelListRow(
     slot: EpgSlot,
     now: Long
 ) {
-    // the focus bar is drawn by the list (see ChannelListPanel); the row only fades its text colour as the bar passes
-    val fg by androidx.compose.animation.animateColorAsState(
-        targetValue = if (isSel) Color.Black else Color.White,
-        animationSpec = androidx.compose.animation.core.tween(90),
-        label = "rowFg"
-    )
+    // isSel = this row is under the focus bar (the bar itself is drawn by the list, see ChannelListPanel)
+    val fg = if (isSel) Color.Black else Color.White
     Row(
         modifier = Modifier
             .fillMaxWidth()
