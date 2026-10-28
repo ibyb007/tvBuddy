@@ -1164,14 +1164,24 @@ internal fun rememberPinnedBarTop(
     val maxScroll = (contentTopPx + itemCount * rowPx + contentBottomPx - viewportPx).coerceAtLeast(0f)
     val restScroll = ((selectedIndex - LIST_PIN_ROWS) * rowPx).coerceIn(0f, maxScroll)
     val restTop = contentTopPx + selectedIndex * rowPx - restScroll
-    // re-created once the viewport is known, so the bar never slides in from a wrong first guess
-    val anim = remember(viewportPx > 0) { androidx.compose.animation.core.Animatable(restTop) }
-    LaunchedEffect(restTop) {
-        if (kotlin.math.abs(restTop - anim.value) > rowPx * 2.5f) anim.snapTo(restTop)
-        else anim.animateTo(
-            restTop,
-            androidx.compose.animation.core.tween(90, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
-        )
+    // one Animatable for the lifetime of the list (rows keep reading the same State); the first real viewport size
+    // snaps the bar to its final place so it never slides in from a first guess made with viewport = 0
+    val anim = remember { androidx.compose.animation.core.Animatable(restTop) }
+    val seenViewport = remember { booleanArrayOf(false) }
+    LaunchedEffect(restTop, viewportPx > 0) {
+        if (viewportPx <= 0) {
+            anim.snapTo(restTop)
+        } else if (!seenViewport[0]) {
+            seenViewport[0] = true
+            anim.snapTo(restTop)
+        } else if (kotlin.math.abs(restTop - anim.value) > rowPx * 2.5f) {
+            anim.snapTo(restTop)
+        } else {
+            anim.animateTo(
+                restTop,
+                androidx.compose.animation.core.tween(90, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
+            )
+        }
     }
     return anim.asState()
 }
@@ -1475,7 +1485,14 @@ private fun ChannelListRow(
             .padding(horizontal = (24 * k).dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(width = (96 * k).dp, height = (72 * k).dp), contentAlignment = Alignment.Center) {
+        // white / light logos vanish on the white focus bar, so the focused row gives its logo a dark backing
+        Box(
+            Modifier
+                .size(width = (96 * k).dp, height = (72 * k).dp)
+                .clip(RoundedCornerShape((10 * k).dp))
+                .background(if (isSel) Color(0xFF2B3038) else Color.Transparent),
+            contentAlignment = Alignment.Center
+        ) {
             if (!channel.logoUrl.isNullOrBlank()) {
                 ChannelLogo(
                     url = channel.logoUrl,
