@@ -920,6 +920,7 @@ private fun BrowseRow(
     dpPerMs: Float
 ) {
     val selIdx = if (selected) slots.indexAt(cursorMs) else -1
+    val nameColor = if (selected) BrowseBlue else Color.White   // focused row: number + name turn blue
 
     Row(
         modifier = Modifier
@@ -934,7 +935,7 @@ private fun BrowseRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(Modifier.width((54 * k).dp), contentAlignment = Alignment.Center) {
-                Text(number.toString(), color = Color.White, fontSize = (30 * k).sp, maxLines = 1)
+                Text(number.toString(), color = nameColor, fontSize = (30 * k).sp, maxLines = 1)
             }
             Spacer(Modifier.width((12 * k).dp))
             Box(Modifier.size(width = (100 * k).dp, height = (60 * k).dp), contentAlignment = Alignment.Center) {
@@ -949,7 +950,7 @@ private fun BrowseRow(
             Spacer(Modifier.width((16 * k).dp))
             Text(
                 channel.name,
-                color = Color.White,
+                color = nameColor,
                 fontSize = (30 * k).sp,
                 fontWeight = FontWeight.Medium,
                 maxLines = 1,
