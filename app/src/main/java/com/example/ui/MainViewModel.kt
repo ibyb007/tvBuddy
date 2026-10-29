@@ -604,9 +604,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var previousEntry: Pair<ChannelEntity, TvGroupSelection>? = null
     private var currentEntryContext: TvGroupSelection = _playContext.value
 
+    /** The previous channel saved by the last session, so RIGHT also works right after a relaunch. */
+    private fun loadPersistedPrevious(): Pair<ChannelEntity, TvGroupSelection>? {
+        val id = prefs.getLong(KEY_PREV_ID, -1L)
+        val url = prefs.getString(KEY_PREV_URL, null)
+        if (id < 0L && url.isNullOrBlank()) return null
+        val channel = rawChannels.value.firstOrNull { it.id == id }
+            ?: rawChannels.value.firstOrNull { !url.isNullOrBlank() && it.streamUrl == url }
+            ?: return null
+        val kind = runCatching { TvGroupKind.valueOf(prefs.getString(KEY_PREV_KIND, null) ?: "ALL") }.getOrDefault(TvGroupKind.ALL)
+        val pl = prefs.getLong(KEY_PREV_PLAYLIST, -1L).takeIf { it >= 0L }
+        return channel to TvGroupSelection(pl, kind, prefs.getString(KEY_PREV_GROUP, null))
+    }
+
+    private fun persistPrevious(channel: ChannelEntity, ctx: TvGroupSelection) {
+        prefs.edit()
+            .putLong(KEY_PREV_ID, channel.id)
+            .putString(KEY_PREV_URL, channel.streamUrl)
+            .putLong(KEY_PREV_PLAYLIST, ctx.playlistId ?: -1L)
+            .putString(KEY_PREV_KIND, ctx.kind.name)
+            .putString(KEY_PREV_GROUP, ctx.groupTitle)
+            .apply()
+    }
+
     /** RIGHT key: back to the last played channel, in whatever group / playlist it was. */
     fun recallPreviousChannel() {
-        val (channel, ctx) = previousEntry ?: return
+        val (channel, ctx) = previousEntry ?: loadPersistedPrevious() ?: return
         setPlayContext(ctx)
         playChannel(channel)
     }
@@ -639,7 +662,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // movies must not overwrite "previous channel" or the channel resumed at the next launch
         if (channel.contentType == ContentType.TV) {
             currentChannel.value?.let { cur ->
-                if (cur.id != channel.id && cur.contentType == ContentType.TV) previousEntry = cur to currentEntryContext
+                if (cur.id != channel.id && cur.contentType == ContentType.TV) {
+                    previousEntry = cur to currentEntryContext
+                    persistPrevious(cur, currentEntryContext)
+                }
             }
             currentEntryContext = _playContext.value
             lastTvChannel = channel
@@ -1177,6 +1203,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val KEY_RESUME_ID = "resume_channel_id"
         const val KEY_RESUME_URL = "resume_stream_url"
+        const val KEY_PREV_ID = "prev_channel_id"
+        const val KEY_PREV_URL = "prev_stream_url"
+        const val KEY_PREV_PLAYLIST = "prev_ctx_playlist"
+        const val KEY_PREV_KIND = "prev_ctx_kind"
+        const val KEY_PREV_GROUP = "prev_ctx_group"
         const val KEY_SEL_PLAYLIST = "tv_sel_playlist"
         const val KEY_SEL_KIND = "tv_sel_kind"
         const val KEY_SEL_GROUP = "tv_sel_group"
