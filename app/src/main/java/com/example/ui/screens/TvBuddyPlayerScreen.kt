@@ -226,8 +226,13 @@ fun TvBuddyPlayerScreen(
                 if (isInPipMode || panel != null) return@pointerInput
                 var kind = SwipeKind.VOLUME
                 var level = 0f
+                var active = false
+                // keep clear of the system back-gesture zones at both screen edges
+                val edgeGuard = 40.dp.toPx()
                 detectVerticalDragGestures(
                     onDragStart = { offset ->
+                        active = offset.x > edgeGuard && offset.x < size.width - edgeGuard
+                        if (!active) return@detectVerticalDragGestures
                         kind = if (offset.x > size.width / 2f) SwipeKind.VOLUME else SwipeKind.BRIGHTNESS
                         level = when (kind) {
                             SwipeKind.VOLUME -> {
@@ -239,9 +244,10 @@ fun TvBuddyPlayerScreen(
                         gestureKind = kind
                         gestureLevel = level
                     },
-                    onDragEnd = { gestureTick++ },
-                    onDragCancel = { gestureTick++ },
+                    onDragEnd = { if (active) gestureTick++; active = false },
+                    onDragCancel = { if (active) gestureTick++; active = false },
                     onVerticalDrag = { change, dragAmount ->
+                        if (!active) return@detectVerticalDragGestures
                         change.consume()
                         // a full-height swipe moves the level ~100%
                         level = (level - dragAmount / size.height * 1.2f).coerceIn(0f, 1f)
