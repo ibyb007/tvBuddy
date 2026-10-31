@@ -133,13 +133,64 @@ class TvBuddyPlayerManager(
         return next
     }
 
-    private fun applyAudioBoost() {
+    private fun applyAudioBoost(rebuild: Boolean = false) {
         val p = exoPlayer ?: return
         try {
-            audioBoost.apply(p.audioSessionId, _audioBoostProfile.value)
+            if (rebuild) audioBoost.rebuild(p.audioSessionId, _audioBoostProfile.value)
+            else audioBoost.apply(p.audioSessionId, _audioBoostProfile.value)
         } catch (t: Throwable) {
             PlaybackLog.info("AUDIO", "Audio boost failed: ${t.message}")
         }
+    }
+
+    /**
+     * After a (re)start the effects have to be created once the AudioTrack is running, otherwise they stay silent until
+     * the boost mode is changed by hand. Rebuild right away and again shortly after, because on some devices the track
+     * is only attached to the session a moment after playback reports "playing".
+     */
+    private val boostRebuildRunnable = Runnable {
+        if (_audioBoostProfile.value != AudioBoostProfile.OFF) applyAudioBoost(rebuild = true)
+    }
+
+    private fun scheduleBoostRebuild() {
+        if (_audioBoostProfile.value == AudioBoostProfile.OFF) return
+        mainHandler.removeCallbacks(boostRebuildRunnable)
+        applyAudioBoost(rebuild = true)
+        mainHandler.postDelayed(boostRebuildRunnable, 700L)
+        mainHandler.postDelayed(boostRebuildRunnable, 2500L)
+    }
+
+    /** True until the effects were rebuilt once for the current player / audio session (see [scheduleBoostRebuild]). */
+    private var boostNeedsRebuild = true
+
+    // ---- Loading watchdog: a stream that never gets ready is retried / reported instead of loading forever ----
+    private val stallRunnable = Runnable {
+        val p = exoPlayer ?: return@Runnable
+        val ch = lastChannel
+        // live TV only: a movie that buffers for a long time while seeking must never be restarted from the beginning
+        if (p.playbackState != Player.STATE_BUFFERING || ch == null || suspendedForBackground ||
+            ch.contentType != com.example.data.model.ContentType.TV) return@Runnable
+        PlaybackLog.warn("STALL", "Still loading after ${STALL_TIMEOUT_MS / 1000}s")
+        if (retryCount < MAX_RETRIES) {
+            retryCount++
+            mainHandler.removeCallbacks(retryRunnable)
+            retryPending = true
+            mainHandler.postDelayed(retryRunnable, 500L)
+        } else {
+            try { p.stop() } catch (_: Throwable) {}
+            _isBuffering.value = false
+            _isPlaying.value = false
+            _errorMessage.value = "Playback Error: the stream did not start. Please try again or select another channel."
+        }
+    }
+
+    private fun startStallWatchdog() {
+        mainHandler.removeCallbacks(stallRunnable)
+        mainHandler.postDelayed(stallRunnable, STALL_TIMEOUT_MS)
+    }
+
+    private fun cancelStallWatchdog() {
+        mainHandler.removeCallbacks(stallRunnable)
     }
 
     private val _isPlaying = MutableStateFlow(false)
@@ -247,8 +298,12 @@ class TvBuddyPlayerManager(
                         PlaybackLog.info("STATE", PlaybackLog.stateName(playbackState) + " (playWhenReady=$playWhenReady)")
                         _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
                         _isPlaying.value = (playbackState == Player.STATE_READY && playWhenReady)
+                        if (playbackState == Player.STATE_BUFFERING) startStallWatchdog() else cancelStallWatchdog()
                         if (playbackState == Player.STATE_READY) {
-                            if (_audioBoostProfile.value != AudioBoostProfile.OFF) applyAudioBoost()
+                            if (_audioBoostProfile.value != AudioBoostProfile.OFF) {
+                                if (boostNeedsRebuild) { boostNeedsRebuild = false; scheduleBoostRebuild() }
+                                else applyAudioBoost()
+                            }
                             _errorMessage.value = null
                             // only forget earlier failures once the stream has stayed up for a while
                             mainHandler.removeCallbacks(resetRetryRunnable)
@@ -263,15 +318,29 @@ class TvBuddyPlayerManager(
                         // createPlayer() can be bound to an audio session that is replaced once the track is created,
                         // so it looked "active" while doing nothing until the profile was changed by hand.
                         if (playing && _audioBoostProfile.value != AudioBoostProfile.OFF) {
-                            applyAudioBoost()
+                            if (boostNeedsRebuild) { boostNeedsRebuild = false; scheduleBoostRebuild() }
+                            else applyAudioBoost()
                         }
                     }
 
                     override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                        audioBoost.apply(audioSessionId, _audioBoostProfile.value)
+                        boostNeedsRebuild = true
+                        try { audioBoost.rebuild(audioSessionId, _audioBoostProfile.value) } catch (_: Throwable) {}
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
+                        try {
+                            handlePlayerError(error)
+                        } catch (t: Throwable) {
+                            PlaybackLog.error("FAILED", "Error handler failed: ${t.message}")
+                            _isBuffering.value = false
+                            _isPlaying.value = false
+                            _errorMessage.value = "Playback Error: ${error.errorCodeName}"
+                        }
+                    }
+
+                    private fun handlePlayerError(error: PlaybackException) {
+                        cancelStallWatchdog()
                         mainHandler.removeCallbacks(resetRetryRunnable)
                         if (PlaybackLog.isEnabled) {
                             PlaybackLog.error(
@@ -495,6 +564,7 @@ class TvBuddyPlayerManager(
         retryPending = false
         mainHandler.removeCallbacks(retryRunnable)
         mainHandler.removeCallbacks(resetRetryRunnable)
+        mainHandler.removeCallbacks(stallRunnable)
     }
 
     /** True while the current channel is playing, buffering or about to be retried automatically. */
@@ -546,6 +616,7 @@ class TvBuddyPlayerManager(
         suspendedForBackground = false
         val channel = lastChannel ?: return
         retryCount = 0
+        boostNeedsRebuild = true
         startPlayback(channel, lastSpoof)
     }
 
@@ -556,6 +627,7 @@ class TvBuddyPlayerManager(
         const val MAX_RETRIES = 5
         const val RETRY_STEP_MS = 1_500L
         const val STABLE_PLAY_MS = 10_000L
+        const val STALL_TIMEOUT_MS = 30_000L
         const val FPS_SAMPLE_MS = 2000L
         const val KEY_AUDIO_BOOST = "audio_boost_profile"
         val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 50f, 59.94f, 60f)
@@ -576,7 +648,27 @@ class TvBuddyPlayerManager(
         startPlayback(channel, globalSpoof)
     }
 
+    /**
+     * Never lets an exception escape: this runs from key handlers and from posted retries on the main thread, where an
+     * uncaught exception would close the whole app. A stream that cannot even be set up is reported like any failure.
+     */
     private fun startPlayback(
+        channel: ChannelEntity,
+        globalSpoof: SpoofProfile
+    ) {
+        try {
+            startPlaybackUnsafe(channel, globalSpoof)
+        } catch (t: Throwable) {
+            PlaybackLog.error("FAILED", "Could not start '${channel.name}': ${t.javaClass.simpleName}: ${t.message}")
+            try { exoPlayer?.stop() } catch (_: Throwable) {}
+            retryPending = false
+            _isBuffering.value = false
+            _isPlaying.value = false
+            _errorMessage.value = "Playback Error: could not open this stream (${t.message ?: t.javaClass.simpleName})."
+        }
+    }
+
+    private fun startPlaybackUnsafe(
         channel: ChannelEntity,
         globalSpoof: SpoofProfile
     ) {
@@ -968,6 +1060,8 @@ class TvBuddyPlayerManager(
     fun release() {
         cancelRetry()
         mainHandler.removeCallbacks(fpsRunnable)
+        mainHandler.removeCallbacks(boostRebuildRunnable)
+        mainHandler.removeCallbacks(stallRunnable)
         exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
