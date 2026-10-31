@@ -1107,50 +1107,28 @@ internal suspend fun androidx.compose.foundation.lazy.LazyListState.followTarget
 /** Rows kept above the focused one (focused row sits on the 4th line, like TiviMate). */
 internal const val LIST_PIN_ROWS = 3
 
-/** Time constant of the list follow (ms): smaller = snappier. ~45 ms settles a single step in about 150 ms. */
-private const val FOLLOW_TAU_MS = 45f
-
 /**
- * Pinned-focus scrolling without blank filler rows: the list tries to keep [selected] on line [pinRows] + 1.
- * Near the start / end the list simply cannot scroll any further, so the focus moves to the real first / last row
- * instead of leaving an empty gap.
+ * Pinned-focus scrolling without blank filler rows: the list keeps [selected] on line [pinRows] + 1. Near the start / end
+ * the list simply cannot scroll any further, so the focus moves to the real first / last row instead of leaving a gap.
  *
- * The list is moved every frame by a fraction of the remaining distance (exponential follow). The speed therefore
- * adapts by itself: a single press eases in quickly, and a held key (any repeat rate) keeps the list only about
- * one row behind the focus instead of queueing up fixed-length animations. Restarting for a new target continues
- * from the current position, so there are no speed discontinuities.
+ * The list moves INSTANTLY on every key press (same feel as the focus jump in the playlist settings), so a held key
+ * walks through a long channel / group list at the full key-repeat speed instead of gliding one animation behind.
+ * [jump] is kept for the callers; every move is an instant one now.
  */
+@Suppress("UNUSED_PARAMETER")
 internal suspend fun androidx.compose.foundation.lazy.LazyListState.followPinned(
     selected: Int,
     jump: Boolean,
     pinRows: Int = LIST_PIN_ROWS
 ) {
     val target = (selected - pinRows).coerceAtLeast(0)
-    val itemPx = layoutInfo.visibleItemsInfo.firstOrNull()?.size ?: 0
-    if (jump || itemPx <= 0 || kotlin.math.abs(target - firstVisibleItemIndex) > 8) {
-        scrollToItem(target)
-        return
-    }
-    val minStep = itemPx * 0.05f
-    var last = 0L
-    while (true) {
-        val remaining = ((target - firstVisibleItemIndex) * itemPx - firstVisibleItemScrollOffset).toFloat()
-        if (kotlin.math.abs(remaining) < 1f) return
-        if (remaining > 0f && !canScrollForward) return      // already at the end
-        if (remaining < 0f && !canScrollBackward) return     // already at the start
-        val now = androidx.compose.runtime.withFrameNanos { it }
-        val dt = if (last == 0L) 16f else ((now - last) / 1_000_000f).coerceIn(1f, 50f)
-        last = now
-        var step = remaining * (1f - kotlin.math.exp(-dt / FOLLOW_TAU_MS))
-        if (kotlin.math.abs(step) < minStep) step = kotlin.math.sign(remaining) * minOf(kotlin.math.abs(remaining), minStep)
-        scrollBy(step)
-    }
+    if (firstVisibleItemIndex == target && firstVisibleItemScrollOffset == 0) return
+    scrollToItem(target)
 }
 
 /**
  * Y position (px, list coordinates) of the focus bar of a pinned-focus list: the row sits on line [LIST_PIN_ROWS] + 1
- * while the list can scroll, and the bar travels over the real first / last rows where it cannot. Animated for the
- * small steps; big moves (wrap-around, group switch) snap.
+ * while the list can scroll, and the bar travels over the real first / last rows where it cannot. Every move snaps.
  */
 @Composable
 internal fun rememberPinnedBarTop(
@@ -1175,13 +1153,9 @@ internal fun rememberPinnedBarTop(
         if (!settled.value) {
             anim.snapTo(restTop)
             settled.value = true
-        } else if (kotlin.math.abs(restTop - anim.value) > rowPx * 2.5f) {
-            anim.snapTo(restTop)
         } else {
-            anim.animateTo(
-                restTop,
-                androidx.compose.animation.core.tween(90, easing = androidx.compose.animation.core.LinearOutSlowInEasing)
-            )
+            // instant focus jump (no glide), like the focus in the playlist settings
+            anim.snapTo(restTop)
         }
     }
     return remember { androidx.compose.runtime.derivedStateOf { if (settled.value) anim.value else latestRest.value } }
