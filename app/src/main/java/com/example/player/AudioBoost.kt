@@ -74,6 +74,19 @@ internal class AudioBoostEngine {
         applyLoudness(audioSessionId, profile.gainDb)
     }
 
+    /**
+     * Throws the old effects away and builds them again on [audioSessionId]. Effects created before the AudioTrack of
+     * the session exists (which is always the case right after the app was started) can end up bound to nothing:
+     * they report "enabled" but do not change the sound until they are rebuilt. Call this once audio is really playing.
+     */
+    fun rebuild(audioSessionId: Int, profile: AudioBoostProfile) {
+        if (audioSessionId <= 0) return
+        release()
+        dynamicsSession = -1
+        loudnessSession = -1
+        apply(audioSessionId, profile)
+    }
+
     private fun applyLoudness(session: Int, gainDb: Float) {
         try {
             if (loudness != null && loudnessSession != session) {
