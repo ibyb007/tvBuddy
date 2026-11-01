@@ -10,6 +10,9 @@ import com.example.data.local.entity.PlaylistEpgCrossRef
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.data.model.ContentType
+import com.example.data.model.EpisodeIds
+import com.example.data.model.VodEpisode
+import com.example.data.model.VodSeason
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
 import com.example.data.model.toSpoofProfile
@@ -657,8 +660,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** The live channel that was on before a movie was started: the TV button of the movie player returns to it. */
     private var lastTvChannel: ChannelEntity? = null
 
-    fun playChannel(channel: ChannelEntity) {
+    fun playChannel(channel: ChannelEntity, recordHistory: Boolean = true) {
         stopVodProgress()   // save where the previous movie was left, before the player moves on
+        // anything but an episode ends the "next / previous episode" context
+        if (!EpisodeIds.isEpisode(channel.id)) _episodeContext.value = null
         // movies must not overwrite "previous channel" or the channel resumed at the next launch
         if (channel.contentType == ContentType.TV) {
             currentChannel.value?.let { cur ->
@@ -676,7 +681,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             channel,
             allPlaylists.value.firstOrNull { it.id == channel.playlistId }?.toSpoofProfile() ?: _globalSpoof.value
         )
-        viewModelScope.launch { repository.recordHistory(channel) }
+        if (recordHistory) viewModelScope.launch { repository.recordHistory(channel) }
         // Xtream / Stalker: ask the portal for this channel's guide when no imported XMLTV covers it
         if (channel.contentType == ContentType.TV) viewModelScope.launch { repository.ensureChannelEpg(channel) }
         startVodProgress(channel)
@@ -1146,7 +1151,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun toggleVodFavorite(channel: ChannelEntity) {
-        viewModelScope.launch { repository.toggleFavorite(channel.id, channel.isFavorite) }
+        // an episode that is playing stands for its show
+        val id = EpisodeIds.showIdOf(channel.id) ?: channel.id
+        viewModelScope.launch { repository.toggleFavorite(id, channel.isFavorite) }
     }
 
     /** Opens a movie in the player (Stalker movies first get their real link from the portal). */
@@ -1157,12 +1164,112 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 onSuccess = {
                     playChannel(it)
                     if (startMs <= 0L) prefs.edit().remove(posKey(channel.id)).apply()
-                    else launch {
-                        // jump to the resume point as soon as the stream knows its length
-                        var waited = 0
-                        while (playerManager.durationMs() <= 0L && waited < 40) { kotlinx.coroutines.delay(500); waited++ }
-                        kotlinx.coroutines.delay(300)
-                        playerManager.seekToMs(startMs)
+                    else seekWhenReady(startMs)
+                },
+                onFailure = {
+                    android.widget.Toast.makeText(app, it.localizedMessage ?: "Can't play this", android.widget.Toast.LENGTH_LONG).show()
+                }
+            )
+        }
+    }
+
+    // ---- Shows: seasons, episodes, next / previous episode ----
+
+    /** Where the player is inside a show (null while no episode plays). */
+    data class EpisodeContext(val show: ChannelEntity, val seasons: List<VodSeason>, val season: Int, val number: Int) {
+        val flat: List<VodEpisode> get() = seasons.flatMap { it.episodes }
+        private val index: Int get() = flat.indexOfFirst { it.season == season && it.number == number }
+        val previous: VodEpisode? get() = flat.getOrNull(index - 1)?.takeIf { index > 0 }
+        val next: VodEpisode? get() = flat.getOrNull(index + 1)
+    }
+
+    private val _episodeContext = MutableStateFlow<EpisodeContext?>(null)
+    val episodeContext: StateFlow<EpisodeContext?> = _episodeContext.asStateFlow()
+
+    /** Seasons with episodes of a show (empty when the provider has none). */
+    suspend fun loadSeasons(show: ChannelEntity): List<VodSeason> =
+        repository.loadSeasons(show).getOrElse {
+            android.widget.Toast.makeText(getApplication<Application>(), it.localizedMessage ?: "Can't load the episodes", android.widget.Toast.LENGTH_LONG).show()
+            emptyList()
+        }
+
+    private fun lastEpisodeKey(showId: Long) = "show_last_ep_$showId"
+
+    /** The episode of a show that was started last, as (season, number). */
+    fun lastEpisode(show: ChannelEntity): Pair<Int, Int>? =
+        prefs.getString(lastEpisodeKey(show.id), null)?.split(":")?.takeIf { it.size == 2 }?.let { p ->
+            val s = p[0].toIntOrNull(); val n = p[1].toIntOrNull()
+            if (s != null && n != null) s to n else null
+        }
+
+    /** Where an episode was left (0 = not started / finished). */
+    fun episodeResumeMs(show: ChannelEntity, ep: VodEpisode): Long =
+        prefs.getLong(posKey(EpisodeIds.of(show.id, ep.season, ep.number)), 0L)
+
+    private fun seekWhenReady(startMs: Long) {
+        viewModelScope.launch {
+            // jump to the resume point as soon as the stream knows its length
+            var waited = 0
+            while (playerManager.durationMs() <= 0L && waited < 40) { kotlinx.coroutines.delay(500); waited++ }
+            kotlinx.coroutines.delay(300)
+            playerManager.seekToMs(startMs)
+        }
+    }
+
+    /** Plays one episode; [seasons] is the list the next / previous episode buttons walk through. */
+    fun playEpisode(show: ChannelEntity, seasons: List<VodSeason>, ep: VodEpisode, startMs: Long = 0L) {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            repository.resolveEpisode(show, ep).fold(
+                onSuccess = { playable ->
+                    prefs.edit().putString(lastEpisodeKey(show.id), "${ep.season}:${ep.number}").apply()
+                    playChannel(playable, recordHistory = false)
+                    _episodeContext.value = EpisodeContext(show, seasons, ep.season, ep.number)
+                    // the show (not the episode) is what the History group lists
+                    launch { repository.recordHistory(show) }
+                    if (startMs <= 0L) prefs.edit().remove(posKey(playable.id)).apply() else seekWhenReady(startMs)
+                },
+                onFailure = {
+                    android.widget.Toast.makeText(app, it.localizedMessage ?: "Can't play this", android.widget.Toast.LENGTH_LONG).show()
+                }
+            )
+        }
+    }
+
+    fun playNextEpisode() {
+        val c = _episodeContext.value ?: return
+        c.next?.let { playEpisode(c.show, c.seasons, it) }
+    }
+
+    fun playPreviousEpisode() {
+        val c = _episodeContext.value ?: return
+        c.previous?.let { playEpisode(c.show, c.seasons, it) }
+    }
+
+    /** "Press OK to retry" of the VOD player: movies reopen, an episode reopens itself. */
+    fun retryVod(channel: ChannelEntity) {
+        val c = _episodeContext.value
+        val ep = c?.flat?.firstOrNull { it.season == c.season && it.number == c.number }
+        if (c != null && ep != null && EpisodeIds.isEpisode(channel.id)) playEpisode(c.show, c.seasons, ep, vodResumeMs(channel))
+        else playVod(channel)
+    }
+
+    /** Hands one episode to another player app. */
+    fun openEpisodeInExternalPlayer(show: ChannelEntity, ep: VodEpisode) {
+        val app = getApplication<Application>()
+        viewModelScope.launch {
+            repository.resolveEpisode(show, ep).fold(
+                onSuccess = { playable ->
+                    try {
+                        app.startActivity(
+                            android.content.Intent(android.content.Intent.ACTION_VIEW)
+                                .setDataAndType(android.net.Uri.parse(playable.streamUrl), "video/*")
+                                .putExtra("title", playable.name)
+                                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                        repository.recordHistory(show)
+                    } catch (_: Exception) {
+                        android.widget.Toast.makeText(app, "No external player installed", android.widget.Toast.LENGTH_SHORT).show()
                     }
                 },
                 onFailure = {
@@ -1198,6 +1305,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun closePlayer() {
         stopVodProgress()
+        _episodeContext.value = null
         playerManager.closePlayer()
     }
     fun pausePlayer() { playerManager.pause() }
