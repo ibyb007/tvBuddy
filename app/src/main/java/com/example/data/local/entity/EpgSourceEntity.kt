@@ -5,6 +5,11 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
+/** [EpgSourceEntity.sourceType] values: a plain XMLTV link, or a guide that belongs to a Stalker / Xtream playlist. */
+const val EPG_TYPE_XMLTV = "XMLTV"
+const val EPG_TYPE_STALKER = "STALKER"
+const val EPG_TYPE_XTREAM = "XTREAM"
+
 @Entity(
     tableName = "epg_sources",
     indices = [Index(value = ["url"], unique = true)]
@@ -14,7 +19,7 @@ data class EpgSourceEntity(
     val id: Long = 0,
     val name: String,
     val url: String,
-    val sourceType: String = "XMLTV", // "XMLTV" or "STALKER"
+    val sourceType: String = EPG_TYPE_XMLTV, // EPG_TYPE_XMLTV / EPG_TYPE_STALKER / EPG_TYPE_XTREAM
     val isDefault: Boolean = false,
     val isEnabled: Boolean = true,
     val lastUpdated: Long = 0L,
