@@ -87,8 +87,10 @@ class ExampleRobolectricTest {
         assertNotNull(patchedVideo.drmInitData)
         val videoInitData = patchedVideo.drmInitData!!
         assertEquals(2, videoInitData.schemeDataCount)
-        assertEquals(C.COMMON_PSSH_UUID, videoInitData[0].uuid)
-        assertEquals(androidx.media3.common.MimeTypes.VIDEO_MP4, videoInitData[0].mimeType)
+        // DrmInitData sorts its scheme data by UUID and that order differs between JDKs: look the entry up, not its index
+        val videoCommon = (0 until videoInitData.schemeDataCount).map { videoInitData[it] }.firstOrNull { it.uuid == C.COMMON_PSSH_UUID }
+        assertNotNull(videoCommon)
+        assertEquals(androidx.media3.common.MimeTypes.VIDEO_MP4, videoCommon!!.mimeType)
 
         // 2. Audio format with audio/mp4a-latm
         val audioFormat = androidx.media3.common.Format.Builder()
@@ -97,8 +99,9 @@ class ExampleRobolectricTest {
         val patchedAudio = sessionManager.patchFormat(audioFormat)
         assertNotNull(patchedAudio.drmInitData)
         val audioInitData = patchedAudio.drmInitData!!
-        assertEquals(C.COMMON_PSSH_UUID, audioInitData[0].uuid)
-        assertEquals(androidx.media3.common.MimeTypes.AUDIO_MP4, audioInitData[0].mimeType)
+        val audioCommon = (0 until audioInitData.schemeDataCount).map { audioInitData[it] }.firstOrNull { it.uuid == C.COMMON_PSSH_UUID }
+        assertNotNull(audioCommon)
+        assertEquals(androidx.media3.common.MimeTypes.AUDIO_MP4, audioCommon!!.mimeType)
 
         // 3. Subtitle format should not be modified
         val subFormat = androidx.media3.common.Format.Builder()
