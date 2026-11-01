@@ -1346,7 +1346,9 @@ private fun OptionsPanel(k: Float, row: GroupRow, items: List<OptionItem>, selec
 fun TvSearchDialog(
     query: String,
     onQueryChange: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    title: String = "Search channels",
+    hint: String = "Channel or group name"
 ) {
     val focusRequester = remember { FocusRequester() }
     Dialog(onDismissRequest = onDismiss) {
@@ -1360,13 +1362,13 @@ fun TvSearchDialog(
             LaunchedEffect(Unit) {
                 try { focusRequester.requestFocus() } catch (_: Exception) {}
             }
-            Text("Search channels", color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Medium)
+            Text(title, color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Medium)
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(
                 value = query,
                 onValueChange = onQueryChange,
                 singleLine = true,
-                placeholder = { Text("Channel or group name") },
+                placeholder = { Text(hint) },
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { onDismiss() }),
                 colors = iptvTextFieldColors(),
