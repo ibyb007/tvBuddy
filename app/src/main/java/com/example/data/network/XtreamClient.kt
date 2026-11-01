@@ -4,7 +4,9 @@ import android.util.JsonReader
 import com.example.data.local.entity.ChannelEntity
 import com.example.data.model.ContentType
 import com.example.data.local.entity.ProgramEntity
+import com.example.data.model.VodEpisode
 import com.example.data.model.VodInfo
+import com.example.data.model.VodSeason
 import com.example.data.epg.EpgMatcher
 import com.example.data.util.LogoUrl
 import android.util.Base64
@@ -257,6 +259,74 @@ class XtreamClient(
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    /**
+     * The seasons and episodes of one show (get_series_info). The `episodes` member is an object keyed by season number,
+     * some panels send an array of arrays instead; both are read. Returns an empty list when the panel has none.
+     */
+    suspend fun fetchSeasons(
+        serverUrl: String,
+        username: String,
+        password: String,
+        seriesId: String,
+        userAgent: String
+    ): List<VodSeason> = withContext(Dispatchers.IO) {
+        val cleanUrl = cleanServerUrl(serverUrl)
+        val url = api(cleanUrl, username, password, "get_series_info") + "&series_id=${enc(seriesId)}"
+        try {
+            val req = Request.Builder().url(url).header("User-Agent", userAgent).build()
+            okHttpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@withContext emptyList()
+                val root = JSONObject(resp.body?.string().orEmpty())
+                val bySeason = LinkedHashMap<Int, MutableList<VodEpisode>>()
+
+                fun addEpisode(o: JSONObject, fallbackSeason: Int, index: Int) {
+                    val id = o.optString("id").ifBlank { return }
+                    val season = o.optString("season").toIntOrNull() ?: fallbackSeason
+                    val number = o.optString("episode_num").toIntOrNull() ?: (index + 1)
+                    val ext = o.optString("container_extension").takeIf { it.isNotBlank() && it != "null" } ?: "mp4"
+                    val info = o.optJSONObject("info")
+                    val minutes = (info?.optString("duration_secs")?.toIntOrNull() ?: 0) / 60
+                    val duration = if (minutes > 0) VodInfo.formatMinutes(minutes)
+                    else info?.optString("duration").orEmpty().takeIf { it.isNotBlank() && it != "null" && !it.startsWith("00:00") }.orEmpty()
+                    bySeason.getOrPut(season) { ArrayList() }.add(
+                        VodEpisode(
+                            id = id,
+                            season = season,
+                            number = number,
+                            title = o.optString("title").takeIf { it != "null" }.orEmpty().trim(),
+                            plot = info?.optString("plot").orEmpty().takeIf { it != "null" }.orEmpty(),
+                            imageUrl = LogoUrl.normalize(info?.optString("movie_image"), cleanUrl).orEmpty(),
+                            duration = duration,
+                            source = "$cleanUrl/series/$username/$password/$id.$ext"
+                        )
+                    )
+                }
+
+                val eps = root.opt("episodes")
+                when (eps) {
+                    is JSONObject -> {
+                        val keys = eps.keys().asSequence().toList()
+                        for (key in keys) {
+                            val arr = eps.optJSONArray(key) ?: continue
+                            for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { addEpisode(it, key.toIntOrNull() ?: 1, i) }
+                        }
+                    }
+                    is org.json.JSONArray -> {
+                        for (si in 0 until eps.length()) {
+                            val arr = eps.optJSONArray(si) ?: continue
+                            for (i in 0 until arr.length()) arr.optJSONObject(i)?.let { addEpisode(it, si + 1, i) }
+                        }
+                    }
+                }
+                bySeason.entries.sortedBy { it.key }.map { (n, list) ->
+                    VodSeason(n, if (n == 0) "Specials" else "Season $n", list.sortedBy { it.number })
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
