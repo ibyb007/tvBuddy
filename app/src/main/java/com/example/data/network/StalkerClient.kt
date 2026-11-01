@@ -5,7 +5,9 @@ import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ProgramEntity
 import com.example.data.util.LogoUrl
 import com.example.data.model.ContentType
+import com.example.data.model.VodEpisode
 import com.example.data.model.VodInfo
+import com.example.data.model.VodSeason
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -858,14 +860,137 @@ class StalkerClient(
         cmd: String,
         token: String,
         userAgent: String,
-        kind: String = "itv"
+        kind: String = "itv",
+        /** Episode number of a show (sent as `series=`); 0 for everything else. */
+        series: Int = 0
     ): String = withContext(Dispatchers.IO) {
         val loadPhp = getLoadPhpUrl(portalUrl)
         val mac = macAddress.trim().uppercase()
-        val url = "$loadPhp?type=$kind&action=create_link&cmd=${enc(cmd)}&mac=$mac"
+        val url = "$loadPhp?type=$kind&action=create_link&cmd=${enc(cmd)}" +
+            (if (series > 0) "&series=$series&forced_storage=undefined&disable_ad=0&download=0" else "") + "&mac=$mac"
         val root = getJson(url, userAgent, mac, token)
         val cmdLink = root?.optJSONObject("js")?.optString("cmd").orEmpty()
         if (cmdLink.isNotBlank()) cleanCmd(cmdLink) else cmd
+    }
+
+    /**
+     * Seasons and episodes of one show. Portals differ, so three shapes are understood:
+     *  - the show lists its seasons (`is_season` / id "show:season"), and each season lists its episodes;
+     *  - an entry carries a `series` array of episode numbers that all play through one command;
+     *  - the show lists its episodes right away.
+     * Returns an empty list when the portal has nothing for this show.
+     */
+    suspend fun fetchSeasons(
+        auth: StalkerAuthResult,
+        params: StalkerParams,
+        userAgent: String,
+        showId: String,
+        showCmd: String
+    ): List<VodSeason> = withContext(Dispatchers.IO) {
+        val loadPhp = auth.portalUrl
+        val mac = params.normalizedMac
+
+        /** Every page of one listing level. */
+        fun listAll(extra: String): List<JSONObject> {
+            val out = ArrayList<JSONObject>()
+            var page = 1
+            var total = Int.MAX_VALUE
+            while (page <= 40 && out.size < total) {
+                val url = "$loadPhp?type=series&action=get_ordered_list&movie_id=${enc(showId)}$extra&p=$page&sortby=added&mac=$mac"
+                val root = getJsonRetry(url, userAgent, mac, auth.token) ?: break
+                val js = root.optJSONObject("js") ?: break
+                val data = js.optJSONArray("data") ?: break
+                if (data.length() == 0) break
+                for (i in 0 until data.length()) data.optJSONObject(i)?.let(out::add)
+                total = js.optInt("total_items", out.size).takeIf { it > 0 } ?: out.size
+                page++
+            }
+            return out
+        }
+
+        fun truthy(o: JSONObject, key: String): Boolean {
+            val v = o.opt(key)
+            return v == true || v == 1 || (v is String && (v == "1" || v.equals("true", true)))
+        }
+
+        fun numbersOf(o: JSONObject): List<Int> {
+            val arr = o.optJSONArray("series") ?: return emptyList()
+            return (0 until arr.length()).mapNotNull { arr.optString(it).toIntOrNull() }
+        }
+
+        fun digitsAfter(text: String, lastOnly: Boolean = true): Int? {
+            val m = Regex("(\\d+)").findAll(text).map { it.value }.toList()
+            return (if (lastOnly) m.lastOrNull() else m.firstOrNull())?.toIntOrNull()
+        }
+
+        fun imageOf(o: JSONObject): String =
+            absolute(loadPhp, listOf("screenshot_uri", "logo", "cover", "pic").map { k -> o.optString(k) }.firstOrNull { v -> v.isNotBlank() && v != "null" }).orEmpty()
+
+        fun episodesOfSeries(o: JSONObject, season: Int): List<VodEpisode> {
+            val cmd = cleanCmd(o.optString("cmd").ifBlank { showCmd })
+            return numbersOf(o).map { n ->
+                VodEpisode(
+                    id = "${o.optString("id")}:$n", season = season, number = n, title = "",
+                    imageUrl = imageOf(o), source = cmd, stalkerSeries = n
+                )
+            }
+        }
+
+        val level1 = listAll("&season_id=0&episode_id=0")
+        if (level1.isEmpty()) return@withContext emptyList()
+
+        val seasons = ArrayList<VodSeason>()
+        var episodesAtTop = ArrayList<VodEpisode>()
+        level1.forEachIndexed { idx, item ->
+            val id = item.optString("id")
+            val name = item.optString("name")
+            val isSeason = truthy(item, "is_season") || (id.contains(':') && !truthy(item, "is_episode") && item.optJSONArray("series") == null)
+            val seasonNo = digitsAfter(name) ?: id.substringAfter(':', "").toIntOrNull() ?: (idx + 1)
+            when {
+                // old style: one entry per season with the episode numbers inside
+                numbersOf(item).isNotEmpty() -> {
+                    val eps = episodesOfSeries(item, seasonNo)
+                    seasons += VodSeason(seasonNo, name.ifBlank { "Season $seasonNo" }, eps)
+                }
+                isSeason -> {
+                    val eps = listAll("&season_id=${enc(id)}&episode_id=0")
+                    val list = ArrayList<VodEpisode>()
+                    eps.forEachIndexed { ei, e ->
+                        val inner = numbersOf(e)
+                        if (inner.isNotEmpty()) {
+                            list += episodesOfSeries(e, seasonNo)
+                        } else {
+                            val number = e.optString("series_number").toIntOrNull()
+                                ?: e.optString("episode_num").toIntOrNull()
+                                ?: digitsAfter(e.optString("name"))
+                                ?: (ei + 1)
+                            list += VodEpisode(
+                                id = e.optString("id").ifBlank { "$id:$number" },
+                                season = seasonNo, number = number,
+                                title = e.optString("name").takeIf { it != "null" }.orEmpty(),
+                                plot = e.optString("description").takeIf { it != "null" }.orEmpty(),
+                                imageUrl = imageOf(e),
+                                source = cleanCmd(e.optString("cmd").ifBlank { item.optString("cmd") }.ifBlank { showCmd })
+                            )
+                        }
+                    }
+                    if (list.isNotEmpty()) seasons += VodSeason(seasonNo, name.ifBlank { "Season $seasonNo" }, list.sortedBy { it.number })
+                }
+                else -> {
+                    // an episode listed straight under the show
+                    val number = item.optString("series_number").toIntOrNull() ?: digitsAfter(name) ?: (idx + 1)
+                    episodesAtTop += VodEpisode(
+                        id = id.ifBlank { "$showId:$number" }, season = 1, number = number,
+                        title = name.takeIf { it != "null" }.orEmpty(),
+                        plot = item.optString("description").takeIf { it != "null" }.orEmpty(),
+                        imageUrl = imageOf(item),
+                        source = cleanCmd(item.optString("cmd").ifBlank { showCmd })
+                    )
+                }
+            }
+        }
+        if (episodesAtTop.isNotEmpty()) seasons += VodSeason(1, "Season 1", episodesAtTop.sortedBy { it.number })
+        seasons.sortedBy { it.number }
     }
 
     private companion object {
