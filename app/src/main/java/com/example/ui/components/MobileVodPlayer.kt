@@ -56,6 +56,8 @@ import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Replay10
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -158,6 +160,9 @@ fun MobileVodPlayer(
     onOpenSubtitles: () -> Unit,
     onRetry: () -> Unit,
     onClose: () -> Unit,
+    /** Episodes of a show: null = no such button (a movie, or the first / last episode). */
+    onPreviousEpisode: (() -> Unit)? = null,
+    onNextEpisode: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
     isInPipMode: Boolean = false,
     isFullscreen: Boolean = false,
@@ -474,9 +479,12 @@ fun MobileVodPlayer(
                 // centre: -10 s, play / pause (spinner while buffering), +10 s
                 Row(
                     modifier = Modifier.align(Alignment.Center),
-                    horizontalArrangement = Arrangement.spacedBy(26.dp),
+                    horizontalArrangement = Arrangement.spacedBy(if (onPreviousEpisode != null || onNextEpisode != null) 14.dp else 26.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    onPreviousEpisode?.let { prev ->
+                        MvRoundButton(Icons.Default.SkipPrevious, 40.dp, 26.dp, "Previous episode") { prev(); controlsTick++ }
+                    }
                     MvRoundButton(Icons.Default.Replay10, 40.dp, 26.dp, "Back 10 seconds") {
                         seekBy(-MV_SEEK_STEP_MS); controlsTick++
                     }
@@ -503,6 +511,9 @@ fun MobileVodPlayer(
                     }
                     MvRoundButton(Icons.Default.Forward10, 40.dp, 26.dp, "Forward 10 seconds") {
                         seekBy(MV_SEEK_STEP_MS); controlsTick++
+                    }
+                    onNextEpisode?.let { next ->
+                        MvRoundButton(Icons.Default.SkipNext, 40.dp, 26.dp, "Next episode") { next(); controlsTick++ }
                     }
                 }
 
