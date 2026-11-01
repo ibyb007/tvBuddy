@@ -73,7 +73,9 @@ import com.example.data.local.entity.ChannelEntity
 import com.example.data.local.entity.ChannelGroupEntity
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.model.ContentType
+import com.example.data.model.VodEpisode
 import com.example.data.model.VodInfo
+import com.example.data.model.VodSeason
 import com.example.ui.theme.AccentCyan
 import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.DarkSurface
@@ -127,6 +129,12 @@ fun MobileVodSection(
     onOpenGroup: (playlistId: Long, groupTitle: String) -> Unit,
     onNeedMoreAll: () -> Unit,
     loading: Boolean,
+    /** Seasons with their episodes of a show (empty when the provider has none). */
+    loadSeasons: suspend (ChannelEntity) -> List<VodSeason> = { emptyList() },
+    onPlayEpisode: (ChannelEntity, List<VodSeason>, VodEpisode, Long) -> Unit = { _, _, _, _ -> },
+    onOpenExternalEpisode: (ChannelEntity, VodEpisode) -> Unit = { _, _ -> },
+    episodeResumeOf: (ChannelEntity, VodEpisode) -> Long = { _, _ -> 0L },
+    lastEpisodeOf: (ChannelEntity) -> Pair<Int, Int>? = { null },
     modifier: Modifier = Modifier,
     /** Space kept free at the bottom for the floating navbar. */
     bottomPadding: androidx.compose.ui.unit.Dp = 0.dp
@@ -230,6 +238,18 @@ fun MobileVodSection(
     var playPending by remember { mutableStateOf(false) }
     LaunchedEffect(playPending) { if (playPending) { delay(15_000); playPending = false } }
     LaunchedEffect(playing?.id) { if (playing != null) playPending = false }
+
+    // seasons + episodes of the opened show
+    var seasons by remember { mutableStateOf<List<VodSeason>>(emptyList()) }
+    var seasonsLoading by remember { mutableStateOf(false) }
+    LaunchedEffect(detailItem?.id) {
+        seasons = emptyList()
+        val show = detailItem ?: return@LaunchedEffect
+        if (isMovies || show.contentType != ContentType.SHOW) return@LaunchedEffect
+        seasonsLoading = true
+        seasons = loadSeasons(show)
+        seasonsLoading = false
+    }
 
     Box(modifier = modifier.fillMaxSize().background(DarkBackground)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -341,6 +361,12 @@ fun MobileVodSection(
                 playPending = playPending,
                 bottomPadding = bottomPadding,
                 onBack = { onDetailChange(null) },
+                seasons = seasons,
+                seasonsLoading = seasonsLoading,
+                lastEpisode = lastEpisodeOf(detailItem),
+                episodeResume = { ep -> episodeResumeOf(detailItem, ep) },
+                onPlayEpisode = { ep, start -> playPending = true; onPlayEpisode(detailItem, seasons, ep, start) },
+                onExternalEpisode = { ep -> onOpenExternalEpisode(detailItem, ep) },
                 onPlay = { start -> playPending = true; onPlay(detailItem, start) },
                 onExternal = { onOpenExternal(detailItem) },
                 onTrailer = { info?.trailer?.takeIf { it.isNotBlank() }?.let(onOpenTrailer) },
@@ -527,9 +553,23 @@ private fun MvDetails(
     onExternal: () -> Unit,
     onTrailer: () -> Unit,
     onToggleMyList: () -> Unit,
-    onRemoveHistory: () -> Unit
+    onRemoveHistory: () -> Unit,
+    seasons: List<VodSeason> = emptyList(),
+    seasonsLoading: Boolean = false,
+    lastEpisode: Pair<Int, Int>? = null,
+    episodeResume: (VodEpisode) -> Long = { 0L },
+    onPlayEpisode: (VodEpisode, Long) -> Unit = { _, _ -> },
+    onExternalEpisode: (VodEpisode) -> Unit = {}
 ) {
     val trailerId = info?.trailer.orEmpty()
+    // shows: the episode the Play button starts (the one watched last, else the first)
+    val flat = remember(seasons) { seasons.flatMap { it.episodes } }
+    val target = flat.firstOrNull { lastEpisode != null && it.season == lastEpisode.first && it.number == lastEpisode.second }
+        ?: flat.firstOrNull()
+    val targetResume = if (target != null) episodeResume(target) else 0L
+    var seasonIndex by remember(item.id, seasons) {
+        mutableIntStateOf(seasons.indexOfFirst { s -> target != null && s.number == target.season }.coerceAtLeast(0))
+    }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -608,8 +648,19 @@ private fun MvDetails(
                         onClick = { if (!playPending) onPlay(resumeMs) }
                     )
                     Spacer(Modifier.height(8.dp))
+                } else if (target != null) {
+                    MvButton(
+                        label = (if (targetResume > 0) "Resume" else "Play") + " S${target.season} E${target.number}" +
+                            (if (targetResume > 0) "  ${mvResumeLabel(targetResume)}" else ""),
+                        icon = Icons.Default.PlayArrow,
+                        primary = true,
+                        busy = playPending,
+                        modifier = Modifier.fillMaxWidth(),
+                        onClick = { if (!playPending) onPlayEpisode(target, targetResume) }
+                    )
+                    Spacer(Modifier.height(8.dp))
                 } else {
-                    Text("Episodes of shows can't be played yet.", color = MvMuted, fontSize = 12.sp)
+                    Text(if (seasonsLoading) "Loading episodes..." else "No episodes found", color = MvMuted, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                 }
                 // secondary actions scroll sideways
@@ -619,6 +670,10 @@ private fun MvDetails(
                 ) {
                     if (isMovies && resumeMs > 0) MvButton("Play from beginning", Icons.Default.Replay) { if (!playPending) onPlay(0L) }
                     if (isMovies) MvButton("External player", Icons.Default.Web, onClick = onExternal)
+                    if (!isMovies && target != null) {
+                        if (targetResume > 0) MvButton("Play from beginning", Icons.Default.Replay) { if (!playPending) onPlayEpisode(target, 0L) }
+                        MvButton("External player", Icons.Default.Web) { onExternalEpisode(target) }
+                    }
                     if (trailerId.isNotBlank()) MvButton("Trailer", Icons.Default.Movie, onClick = onTrailer)
                     MvButton(
                         if (item.isFavorite) "Remove from My list" else "Add to My list",
@@ -626,6 +681,48 @@ private fun MvDetails(
                         onClick = onToggleMyList
                     )
                     if (inHistory) MvButton("Remove from History", Icons.Default.Delete, onClick = onRemoveHistory)
+                }
+
+                // seasons and episodes
+                if (!isMovies && seasons.isNotEmpty()) {
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        seasons.forEachIndexed { i, season ->
+                            val sel = i == seasonIndex
+                            Text(
+                                season.name,
+                                color = if (sel) Color.Black else Color.White,
+                                fontSize = 13.sp,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Medium,
+                                maxLines = 1,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(if (sel) AccentCyan else Color(0xFF1E293B))
+                                    .clickable { seasonIndex = i }
+                                    .padding(horizontal = 14.dp, vertical = 7.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    val current = seasons.getOrNull(seasonIndex.coerceIn(0, seasons.lastIndex))
+                    current?.episodes?.forEach { ep ->
+                        MvEpisodeRow(
+                            ep = ep,
+                            resumeMs = episodeResume(ep),
+                            fallbackImage = info?.backdropUrl.orEmpty().ifBlank { item.logoUrl.orEmpty() },
+                            onClick = { if (!playPending) onPlayEpisode(ep, episodeResume(ep)) }
+                        )
+                    }
+                } else if (!isMovies && seasonsLoading) {
+                    Spacer(Modifier.height(16.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(color = AccentCyan, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading episodes...", color = MvMuted, fontSize = 12.sp)
+                    }
                 }
 
                 // synopsis, cast, director
@@ -647,6 +744,61 @@ private fun MvDetails(
                     if (info.director.isNotBlank()) MvLabelled("Director", info.director)
                 }
                 Spacer(Modifier.height(bottomPadding + 12.dp))
+            }
+        }
+    }
+}
+
+/** One episode of the details page: thumbnail, "E3. Title", duration and a short plot; tap plays it. */
+@Composable
+private fun MvEpisodeRow(ep: VodEpisode, resumeMs: Long, fallbackImage: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(
+            modifier = Modifier
+                .width(128.dp)
+                .aspectRatio(16f / 9f)
+                .clip(RoundedCornerShape(8.dp))
+                .background(MvPosterBg)
+        ) {
+            val image = ep.imageUrl.ifBlank { fallbackImage }
+            if (image.isNotBlank()) {
+                AsyncImage(model = image, contentDescription = ep.label, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            }
+            Icon(
+                Icons.Default.PlayArrow,
+                contentDescription = null,
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.align(Alignment.Center).size(26.dp)
+                    .clip(RoundedCornerShape(13.dp)).background(Color.Black.copy(alpha = 0.45f))
+            )
+            if (resumeMs > 0) {
+                Text(
+                    "Resume",
+                    color = Color.White,
+                    fontSize = 9.sp,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .background(Color(0xFF1E88E5))
+                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(ep.label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (ep.duration.isNotBlank()) Text(ep.duration, color = MvMuted, fontSize = 11.sp)
+            if (ep.plot.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(ep.plot, color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, lineHeight = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
             }
         }
     }
