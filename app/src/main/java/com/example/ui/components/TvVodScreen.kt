@@ -26,6 +26,13 @@ import androidx.compose.material.icons.filled.BookmarkRemove
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.CircleShape
+import com.example.data.model.VodEpisode
+import com.example.data.model.VodSeason
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Web
 import androidx.compose.material3.Icon
@@ -110,8 +117,16 @@ private const val VOD_COLUMNS = 8
 private const val VOD_PANEL_PX = 500f
 private const val RAIL_EXPANDED_VOD_PX = 440f
 
-/** RAIL = expanded nav rail (Movies / Shows highlighted), GROUPS = groups list, GRID = posters. */
-private enum class VodLevel { RAIL, GROUPS, GRID }
+/** RAIL = expanded nav rail (Movies / Shows highlighted), GROUPS = groups list, GRID = posters, TOOLS = the search / sort buttons above the posters. */
+private enum class VodLevel { RAIL, GROUPS, GRID, TOOLS }
+
+/** The sorting panel of the poster grid. */
+private enum class VodSort(val title: String) {
+    PLAYLIST("By order in playlist"),
+    NAME("By name"),
+    RATING("By rating"),
+    ADDED("By last modified time")
+}
 
 private enum class VodRowKind { MY_LIST, HISTORY, ALL, GROUP }
 
@@ -153,6 +168,15 @@ internal fun TvVodScreen(
     onOpenGroup: (playlistId: Long, groupTitle: String) -> Unit = { _, _ -> },
     /** "All movies" / "All shows" was opened or scrolled near its end: fetch the next part. */
     onNeedMoreAll: () -> Unit = {},
+    /** Seasons with their episodes of a show (empty when the provider has none). */
+    loadSeasons: suspend (ChannelEntity) -> List<VodSeason> = { emptyList() },
+    /** Plays one episode, starting at the given position; the list is what the next / previous episode buttons walk through. */
+    onPlayEpisode: (ChannelEntity, List<VodSeason>, VodEpisode, Long) -> Unit = { _, _, _, _ -> },
+    onOpenExternalEpisode: (ChannelEntity, VodEpisode) -> Unit = { _, _ -> },
+    /** Where an episode was left (0 = not started / finished). */
+    episodeResumeOf: (ChannelEntity, VodEpisode) -> Long = { _, _ -> 0L },
+    /** The episode of a show that was started last, as (season, number). */
+    lastEpisodeOf: (ChannelEntity) -> Pair<Int, Int>? = { null },
     /** True while the app is downloading a group / the "All" list. */
     loading: Boolean = false,
     /** A rail entry other than the current page was chosen (TV, Search, Favorites, Settings or the other VOD page). */
@@ -218,24 +242,44 @@ internal fun TvVodScreen(
     var detailId by remember { mutableStateOf(initialDetailId) }
     var detailChoice by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
+    // search + sort buttons above the posters
+    var toolIndex by remember { mutableIntStateOf(0) }          // 0 search, 1 sort
+    var query by remember { mutableStateOf("") }
+    var searchOpen by remember { mutableStateOf(false) }
+    var sortMode by remember { mutableStateOf(VodSort.PLAYLIST) }
+    var sortOpen by remember { mutableStateOf(false) }
+    var sortChoice by remember { mutableIntStateOf(0) }
+    // details of a show: 0 = the action buttons, n = the n-th season row
+    var detailRow by remember { mutableIntStateOf(0) }
+    var seasons by remember { mutableStateOf<List<VodSeason>>(emptyList()) }
+    var seasonsLoading by remember { mutableStateOf(false) }
+    val epFocus = remember { mutableStateMapOf<Int, Int>() }    // season row -> focused episode
 
     val safeGroup = groupFocus.coerceIn(0, (rows.size - 1).coerceAtLeast(0))
     val selectedRow = rows.getOrNull(safeGroup)
-    val gridItems = remember(selectedRow, visibleItems, byGroup, historyItems) {
+    val gridItems = remember(selectedRow, visibleItems, byGroup, historyItems, query, sortMode) {
         val sr = selectedRow
-        when {
+        val base = when {
+            // a search looks through everything that is loaded, whatever group is selected
+            query.isNotBlank() -> visibleItems.filter { it.name.contains(query.trim(), ignoreCase = true) }
             sr == null -> visibleItems
             sr.kind == VodRowKind.MY_LIST -> visibleItems.filter { it.isFavorite }
             sr.kind == VodRowKind.HISTORY -> historyItems.filter { it.playlistId in activeIds }
             sr.kind == VodRowKind.GROUP -> byGroup[sr.playlistId to sr.title].orEmpty()
             else -> visibleItems
         }
+        when (sortMode) {
+            VodSort.PLAYLIST -> base
+            VodSort.NAME -> base.sortedBy { it.name.lowercase() }
+            VodSort.RATING -> base.sortedByDescending { it.rating?.toFloatOrNull() ?: 0f }
+            VodSort.ADDED -> base.sortedByDescending { it.addedAt }
+        }
     }
     val safeGrid = gridIndex.coerceIn(0, (gridItems.size - 1).coerceAtLeast(0))
 
     // TiviMate behaviour: moving into the posters slides the nav rail + groups out to the left, moving back slides them in.
     // Only offsets are animated (read in the layout phase), the poster grid itself never changes size.
-    val slide = animateFloatAsState(if (level == VodLevel.GRID) 1f else 0f, tween(300, easing = FastOutSlowInEasing), label = "vodSlide")
+    val slide = animateFloatAsState(if (level == VodLevel.GRID || level == VodLevel.TOOLS) 1f else 0f, tween(300, easing = FastOutSlowInEasing), label = "vodSlide")
     val railWidth = animateDpAsState(
         if (level == VodLevel.RAIL) (RAIL_EXPANDED_VOD_PX * k).dp else (RAIL_COLLAPSED_PX * k).dp,
         tween(220), label = "vodRail"
@@ -247,6 +291,7 @@ internal fun TvVodScreen(
     // the grid restarts at its first poster whenever another group is focused
     val openGroup by rememberUpdatedState(onOpenGroup)
     val needMoreAll by rememberUpdatedState(onNeedMoreAll)
+    LaunchedEffect(query, sortMode) { gridIndex = 0 }
     LaunchedEffect(selectedRow) {
         gridIndex = 0
         // ... and the group's items come from the portal a moment after the focus settles (skipped while scrolling the list)
@@ -265,8 +310,15 @@ internal fun TvVodScreen(
 
     BackHandler(enabled = true) {
         when {
+            sortOpen -> sortOpen = false
             hideRow != null -> hideRow = null
-            detailId != null -> detailId = null
+            // episodes -> the buttons of the show -> the poster page
+            detailId != null -> if (detailRow > 0) detailRow = 0 else detailId = null
+            level == VodLevel.TOOLS -> {
+                if (query.isNotBlank()) query = ""
+                else level = if (gridItems.isNotEmpty()) VodLevel.GRID else VodLevel.GROUPS
+            }
+            query.isNotBlank() -> query = ""
             level == VodLevel.GRID -> { gridIndex = 0; level = VodLevel.GROUPS }
             // groups -> the expanded rail, still on this Movies / Shows page (not the live TV page)
             level == VodLevel.GROUPS -> level = VodLevel.RAIL
@@ -283,7 +335,7 @@ internal fun TvVodScreen(
 
     val focusRequester = remember { FocusRequester() }
     var hasFocus by remember { mutableStateOf(false) }
-    val suspendedNow by rememberUpdatedState(focusSuspended)
+    val suspendedNow by rememberUpdatedState(focusSuspended || searchOpen)
     LaunchedEffect(Unit) {
         // grab the key focus and keep it (another screen underneath must not take it back)
         while (true) {
@@ -310,6 +362,7 @@ internal fun TvVodScreen(
         if (safeGroup < first || safeGroup > last - 1) listState.scrollToItem((safeGroup - 3).coerceAtLeast(0))
     }
     LaunchedEffect(safeGrid, level, gridItems.size) {
+        if (level == VodLevel.TOOLS) return@LaunchedEffect
         if (level != VodLevel.GRID) {
             // back at the groups: the posters start from their first one again
             if (gridState.firstVisibleItemIndex != 0 || gridState.firstVisibleItemScrollOffset != 0) gridState.scrollToItem(0)
@@ -329,14 +382,42 @@ internal fun TvVodScreen(
         if (top < viewStart || top + cell.size.height > viewEnd) gridState.animateScrollBy((top - viewStart).toFloat(), tween(220, easing = FastOutSlowInEasing))
     }
 
+    // seasons + episodes of the opened show
+    LaunchedEffect(detailItem?.id) {
+        seasons = emptyList(); detailRow = 0; epFocus.clear()
+        val show = detailItem ?: return@LaunchedEffect
+        if (isMovies || show.contentType != ContentType.SHOW) return@LaunchedEffect
+        seasonsLoading = true
+        val loaded = loadSeasons(show)
+        seasons = loaded
+        seasonsLoading = false
+        // the row of the episode watched last starts on that episode
+        lastEpisodeOf(show)?.let { (sn, en) ->
+            val si = loaded.indexOfFirst { it.number == sn }
+            val ei = if (si >= 0) loaded[si].episodes.indexOfFirst { it.number == en } else -1
+            if (si >= 0 && ei >= 0) epFocus[si] = ei
+        }
+    }
+    // the episode the Play button starts: the one watched last, else the first
+    val flatEpisodes = remember(seasons) { seasons.flatMap { it.episodes } }
+    val lastEp = detailItem?.let { lastEpisodeOf(it) }
+    val targetEp = flatEpisodes.firstOrNull { lastEp != null && it.season == lastEp.first && it.number == lastEp.second }
+        ?: flatEpisodes.firstOrNull()
+    val targetResume = if (detailItem != null && targetEp != null) episodeResumeOf(detailItem, targetEp) else 0L
+    val playLabel: String? = targetEp?.let { (if (targetResume > 0) "Resume" else "Play") + " S${it.season} E${it.number}" }
+
     // buttons of the details page (TiviMate): Play / Resume + Play from beginning, external player, trailer, My list, Remove from History
     val resumeMs = detailItem?.let { resumeOf(it) } ?: 0L
     val inHistory = detailItem?.let { d -> historyItems.any { it.id == d.id } } ?: false
     val trailerId = info?.trailer.orEmpty()
-    val detailActions = remember(detailItem?.id, isMovies, resumeMs > 0, inHistory, trailerId.isNotBlank()) {
+    val detailActions = remember(detailItem?.id, isMovies, resumeMs > 0, inHistory, trailerId.isNotBlank(), targetEp?.id, targetResume > 0) {
         buildList {
             if (isMovies) {
                 if (resumeMs > 0) { add(DetailAction.RESUME); add(DetailAction.FROM_START) } else add(DetailAction.PLAY)
+                add(DetailAction.EXTERNAL)
+            } else if (targetEp != null) {
+                add(DetailAction.PLAY)
+                if (targetResume > 0) add(DetailAction.FROM_START)
                 add(DetailAction.EXTERNAL)
             }
             if (trailerId.isNotBlank()) add(DetailAction.TRAILER)
@@ -352,6 +433,11 @@ internal fun TvVodScreen(
     }
 
     fun onShortOk() {
+        if (sortOpen) {
+            sortMode = VodSort.values()[sortChoice.coerceIn(0, VodSort.values().lastIndex)]
+            sortOpen = false
+            return
+        }
         val hide = hideRow
         if (hide != null) {
             if (hideChoice == 1 && hide.kind == VodRowKind.GROUP) onHideGroup(hide.playlistId, hide.title)
@@ -360,10 +446,21 @@ internal fun TvVodScreen(
         }
         val detail = detailItem
         if (detail != null) {
+            if (detailRow > 0) {
+                // an episode of a season row
+                val season = seasons.getOrNull(detailRow - 1)
+                val ep = season?.episodes?.getOrNull(epFocus[detailRow - 1] ?: 0)
+                if (ep != null) onPlayEpisode(detail, seasons, ep, episodeResumeOf(detail, ep))
+                return
+            }
             when (detailActions.getOrNull(safeChoice)) {
-                DetailAction.PLAY, DetailAction.FROM_START -> onPlay(detail, 0L)
+                DetailAction.PLAY ->
+                    if (isMovies) onPlay(detail, 0L) else targetEp?.let { onPlayEpisode(detail, seasons, it, targetResume) }
+                DetailAction.FROM_START ->
+                    if (isMovies) onPlay(detail, 0L) else targetEp?.let { onPlayEpisode(detail, seasons, it, 0L) }
                 DetailAction.RESUME -> onPlay(detail, resumeMs)
-                DetailAction.EXTERNAL -> onOpenExternal(detail)
+                DetailAction.EXTERNAL ->
+                    if (isMovies) onOpenExternal(detail) else targetEp?.let { onOpenExternalEpisode(detail, it) }
                 DetailAction.TRAILER -> onOpenTrailer(trailerId)
                 DetailAction.MY_LIST -> onToggleMyList(detail)
                 DetailAction.REMOVE_HISTORY -> onRemoveHistory(detail)
@@ -378,13 +475,14 @@ internal fun TvVodScreen(
             }
             VodLevel.GROUPS -> if (gridItems.isNotEmpty()) { level = VodLevel.GRID }
             VodLevel.GRID -> gridItems.getOrNull(safeGrid)?.let { openDetails(it) }
+            VodLevel.TOOLS -> if (toolIndex == 0) searchOpen = true else { sortChoice = sortMode.ordinal; sortOpen = true }
         }
     }
 
     fun onLongOk() {
-        if (hideRow != null || detailItem != null) return
+        if (hideRow != null || detailItem != null || sortOpen) return
         when (level) {
-            VodLevel.RAIL -> {}
+            VodLevel.RAIL, VodLevel.TOOLS -> {}
             VodLevel.GROUPS -> {
                 val row = rows.getOrNull(safeGroup) ?: return
                 if (row.kind == VodRowKind.GROUP) { hideChoice = 1; hideRow = row }
@@ -394,6 +492,14 @@ internal fun TvVodScreen(
     }
 
     fun onDirection(key: Key): Boolean {
+        if (sortOpen) {
+            when (key) {
+                Key.DirectionUp -> sortChoice = (sortChoice - 1).coerceAtLeast(0)
+                Key.DirectionDown -> sortChoice = (sortChoice + 1).coerceAtMost(VodSort.values().lastIndex)
+                else -> {}
+            }
+            return true
+        }
         if (hideRow != null) {
             when (key) {
                 Key.DirectionLeft -> hideChoice = 0
@@ -403,10 +509,24 @@ internal fun TvVodScreen(
             return true
         }
         if (detailItem != null) {
-            when (key) {
-                Key.DirectionLeft -> detailChoice = (safeChoice - 1).coerceAtLeast(0)
-                Key.DirectionRight -> detailChoice = (safeChoice + 1).coerceAtMost(detailActions.lastIndex)
-                else -> {}
+            if (detailRow == 0) {
+                when (key) {
+                    Key.DirectionLeft -> detailChoice = (safeChoice - 1).coerceAtLeast(0)
+                    Key.DirectionRight -> detailChoice = (safeChoice + 1).coerceAtMost(detailActions.lastIndex)
+                    Key.DirectionDown -> if (seasons.isNotEmpty()) detailRow = 1
+                    else -> {}
+                }
+            } else {
+                val row = detailRow - 1
+                val count = seasons.getOrNull(row)?.episodes?.size ?: 0
+                val cur = (epFocus[row] ?: 0).coerceIn(0, (count - 1).coerceAtLeast(0))
+                when (key) {
+                    Key.DirectionLeft -> epFocus[row] = (cur - 1).coerceAtLeast(0)
+                    Key.DirectionRight -> epFocus[row] = (cur + 1).coerceAtMost((count - 1).coerceAtLeast(0))
+                    Key.DirectionUp -> detailRow -= 1
+                    Key.DirectionDown -> detailRow = (detailRow + 1).coerceAtMost(seasons.size)
+                    else -> {}
+                }
             }
             return true
         }
@@ -431,8 +551,15 @@ internal fun TvVodScreen(
             VodLevel.GRID -> when (key) {
                 Key.DirectionLeft -> if (safeGrid % VOD_COLUMNS == 0) { gridIndex = 0; level = VodLevel.GROUPS } else gridIndex = safeGrid - 1
                 Key.DirectionRight -> gridIndex = (safeGrid + 1).coerceAtMost(gridItems.lastIndex)
-                Key.DirectionUp -> if (safeGrid - VOD_COLUMNS >= 0) gridIndex = safeGrid - VOD_COLUMNS
+                Key.DirectionUp -> if (safeGrid - VOD_COLUMNS >= 0) gridIndex = safeGrid - VOD_COLUMNS else level = VodLevel.TOOLS
                 Key.DirectionDown -> gridIndex = (safeGrid + VOD_COLUMNS).coerceAtMost(gridItems.lastIndex)
+                else -> {}
+            }
+            // the search / sort buttons above the posters
+            VodLevel.TOOLS -> when (key) {
+                Key.DirectionLeft -> toolIndex = 0
+                Key.DirectionRight -> toolIndex = 1
+                Key.DirectionDown -> if (gridItems.isNotEmpty()) level = VodLevel.GRID
                 else -> {}
             }
         }
@@ -548,6 +675,25 @@ internal fun TvVodScreen(
                         }
                     }
                 }
+                // search + sort buttons, top right
+                Row(
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = (28 * k).dp, end = (40 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy((14 * k).dp)
+                ) {
+                    if (query.isNotBlank()) {
+                        Text(
+                            "\"$query\"",
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = (26 * k).sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.width((300 * k).dp)
+                        )
+                    }
+                    ToolButton(k, Icons.Default.Search, level == VodLevel.TOOLS && toolIndex == 0)
+                    ToolButton(k, Icons.AutoMirrored.Filled.Sort, level == VodLevel.TOOLS && toolIndex == 1)
+                }
             }
 
         Row(
@@ -616,7 +762,66 @@ internal fun TvVodScreen(
 
         // ---- details ----
         detailItem?.let { item ->
-            VodDetails(k, item, info, detailActions, safeChoice, Modifier.fillMaxSize())
+            if (isMovies) VodDetails(k, item, info, detailActions, safeChoice, Modifier.fillMaxSize())
+            else ShowDetails(
+                k, item, info, detailActions, safeChoice, playLabel,
+                seasons, seasonsLoading, detailRow, epFocus,
+                resumeOfEpisode = { ep -> episodeResumeOf(item, ep) },
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        // ---- sorting panel (right side) ----
+        if (sortOpen) {
+            Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f))) {
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .width((560 * k).dp)
+                        .background(VodPanelBg)
+                        .padding(horizontal = (32 * k).dp, vertical = (36 * k).dp)
+                ) {
+                    Text("Sorting", color = Color.White, fontSize = (40 * k).sp, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height((24 * k).dp))
+                    VodSort.values().forEachIndexed { i, mode ->
+                        val focused = i == sortChoice
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height((74 * k).dp)
+                                .clip(RoundedCornerShape((14 * k).dp))
+                                .background(if (focused) VodPillFocused else Color.Transparent)
+                                .padding(horizontal = (20 * k).dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val on = mode == sortMode
+                            val ringColor = if (focused) Color.Black else Color.White
+                            Box(
+                                modifier = Modifier
+                                    .size((30 * k).dp)
+                                    .border((3 * k).dp, ringColor, CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (on) Box(Modifier.size((14 * k).dp).clip(CircleShape).background(ringColor))
+                            }
+                            Spacer(Modifier.width((20 * k).dp))
+                            Text(mode.title, color = if (focused) Color.Black else Color.White, fontSize = (30 * k).sp)
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- search ----
+        if (searchOpen) {
+            TvSearchDialog(
+                query = query,
+                onQueryChange = { query = it },
+                onDismiss = { searchOpen = false },
+                title = if (isMovies) "Search movies" else "Search shows",
+                hint = if (isMovies) "Movie name" else "Show name"
+            )
         }
 
         // ---- hide group? ----
@@ -880,5 +1085,212 @@ private fun ActionButton(k: Float, text: String, icon: ImageVector, focused: Boo
             maxLines = 1,
             softWrap = false
         )
+    }
+}
+
+
+/** Round icon button of the search / sort pair above the posters. */
+@Composable
+private fun ToolButton(k: Float, icon: ImageVector, focused: Boolean) {
+    Box(
+        modifier = Modifier
+            .size((64 * k).dp)
+            .clip(CircleShape)
+            .background(if (focused) VodPillFocused else Color.Transparent),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = null, tint = if (focused) Color.Black else Color.White.copy(alpha = 0.85f), modifier = Modifier.size((36 * k).dp))
+    }
+}
+
+/**
+ * Details page of a show: backdrop, title and synopsis on top; below them the action buttons (Play S1 E1, external
+ * player, trailer, My list) and one row of episodes per season. DOWN walks from the buttons into the seasons.
+ */
+@Composable
+private fun ShowDetails(
+    k: Float,
+    item: ChannelEntity,
+    info: VodInfo?,
+    actions: List<DetailAction>,
+    choice: Int,
+    playLabel: String?,
+    seasons: List<VodSeason>,
+    loading: Boolean,
+    detailRow: Int,
+    epFocus: Map<Int, Int>,
+    resumeOfEpisode: (VodEpisode) -> Long,
+    modifier: Modifier
+) {
+    Box(modifier = modifier.background(VodBg)) {
+        val backdrop = info?.backdropUrl.orEmpty().ifBlank { item.logoUrl.orEmpty() }
+        if (backdrop.isNotBlank()) {
+            AsyncImage(
+                model = backdrop,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                alignment = Alignment.TopEnd,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.horizontalGradient(0f to VodBg.copy(alpha = 0.96f), 0.6f to VodBg.copy(alpha = 0.78f), 1f to VodBg.copy(alpha = 0.35f))
+            )
+        )
+        Box(
+            Modifier.fillMaxSize().background(
+                Brush.verticalGradient(0.45f to Color.Transparent, 0.68f to VodBg.copy(alpha = 0.92f), 1f to VodBg)
+            )
+        )
+        InfoBlock(k, item, info, modifier = Modifier.fillMaxWidth().height((560 * k).dp).padding(start = (16 * k).dp))
+
+        // lower panel: item 0 = the buttons, item n = season n; the focused item is scrolled to the top of the panel
+        val listState = rememberLazyListState()
+        LaunchedEffect(detailRow) { listState.animateScrollToItem(detailRow, 0) }
+        LazyColumn(
+            state = listState,
+            userScrollEnabled = false,
+            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth().height((340 * k).dp)
+        ) {
+            item {
+                Row(
+                    modifier = Modifier
+                        .padding(start = (48 * k).dp, end = (24 * k).dp, top = (6 * k).dp, bottom = (12 * k).dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy((24 * k).dp)
+                ) {
+                    actions.forEachIndexed { i, action ->
+                        val (label, icon) = when (action) {
+                            DetailAction.PLAY -> (playLabel ?: "Play") to Icons.Default.PlayArrow
+                            DetailAction.RESUME -> (playLabel ?: "Resume") to Icons.Default.PlayArrow
+                            DetailAction.FROM_START -> "Play from beginning" to Icons.Default.Replay
+                            DetailAction.EXTERNAL -> "Open in external player" to Icons.Default.Web
+                            DetailAction.TRAILER -> "Trailer" to Icons.Default.Movie
+                            DetailAction.MY_LIST ->
+                                (if (item.isFavorite) "Remove from My list" else "Add to My list") to
+                                    (if (item.isFavorite) Icons.Default.BookmarkRemove else Icons.Default.BookmarkAdd)
+                            DetailAction.REMOVE_HISTORY -> "Remove from History" to Icons.Default.Delete
+                        }
+                        ActionButton(k, label, icon, detailRow == 0 && i == choice)
+                    }
+                }
+            }
+            itemsIndexed(seasons, key = { i, s -> "${s.number}_$i" }) { si, season ->
+                SeasonRow(
+                    k = k,
+                    season = season,
+                    focusedIndex = (epFocus[si] ?: 0).coerceIn(0, (season.episodes.size - 1).coerceAtLeast(0)),
+                    active = detailRow == si + 1,
+                    fallbackImage = backdrop,
+                    resumeOfEpisode = resumeOfEpisode
+                )
+            }
+            if (loading || seasons.isEmpty()) {
+                item {
+                    Text(
+                        text = if (loading) "Loading episodes..." else "No episodes found",
+                        color = Color.White.copy(alpha = 0.6f),
+                        fontSize = (26 * k).sp,
+                        modifier = Modifier.padding(start = (48 * k).dp, top = (10 * k).dp)
+                    )
+                }
+            }
+            // room under the last season, so it can reach the top of the panel
+            item { Spacer(Modifier.height((340 * k).dp)) }
+        }
+    }
+}
+
+@Composable
+private fun SeasonRow(
+    k: Float,
+    season: VodSeason,
+    focusedIndex: Int,
+    active: Boolean,
+    fallbackImage: String,
+    resumeOfEpisode: (VodEpisode) -> Long
+) {
+    val rowState = rememberLazyListState()
+    LaunchedEffect(focusedIndex, active) {
+        if (active) rowState.animateScrollToItem((focusedIndex - 1).coerceAtLeast(0))
+    }
+    Column(modifier = Modifier.fillMaxWidth().padding(top = (10 * k).dp, bottom = (8 * k).dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = (48 * k).dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                season.name,
+                color = if (active) Color.White else Color.White.copy(alpha = 0.7f),
+                fontSize = (26 * k).sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            if (active) {
+                Text("${focusedIndex + 1} / ${season.episodes.size}", color = Color.White.copy(alpha = 0.7f), fontSize = (26 * k).sp)
+            }
+        }
+        Spacer(Modifier.height((8 * k).dp))
+        LazyRow(
+            state = rowState,
+            contentPadding = PaddingValues(horizontal = (48 * k).dp),
+            horizontalArrangement = Arrangement.spacedBy((16 * k).dp)
+        ) {
+            itemsIndexed(season.episodes, key = { i, e -> "${e.id}_$i" }) { i, ep ->
+                EpisodeCard(k, ep, focused = active && i == focusedIndex, resumeMs = resumeOfEpisode(ep), fallbackImage = fallbackImage)
+            }
+        }
+    }
+}
+
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@Composable
+private fun EpisodeCard(k: Float, ep: VodEpisode, focused: Boolean, resumeMs: Long, fallbackImage: String) {
+    Box(
+        modifier = Modifier
+            .width((380 * k).dp)
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape((10 * k).dp))
+            .background(VodPosterBg)
+            .border(
+                width = if (focused) (4 * k).dp else 0.dp,
+                color = if (focused) Color.White else Color.Transparent,
+                shape = RoundedCornerShape((10 * k).dp)
+            )
+    ) {
+        val image = ep.imageUrl.ifBlank { fallbackImage }
+        if (image.isNotBlank()) {
+            AsyncImage(model = image, contentDescription = ep.label, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        }
+        if (resumeMs > 0) {
+            // started but not finished
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding((8 * k).dp)
+                    .clip(RoundedCornerShape((4 * k).dp))
+                    .background(Color(0xFF1E88E5))
+                    .padding(horizontal = (8 * k).dp, vertical = (2 * k).dp)
+            ) { Text("Resume", color = Color.White, fontSize = (18 * k).sp) }
+        }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(if (focused) VodPillFocused else Color.Black.copy(alpha = 0.7f))
+                .padding(horizontal = (12 * k).dp, vertical = (6 * k).dp)
+        ) {
+            Text(
+                ep.label,
+                color = if (focused) Color.Black else Color.White,
+                fontSize = (22 * k).sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = if (focused) TextOverflow.Clip else TextOverflow.Ellipsis,
+                modifier = if (focused) Modifier.basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 600, velocity = (60 * k).dp)
+                else Modifier
+            )
+        }
     }
 }
