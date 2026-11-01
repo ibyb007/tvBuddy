@@ -12,6 +12,9 @@ import kotlinx.coroutines.sync.Mutex
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.HistoryEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
+import com.example.data.local.entity.EPG_TYPE_STALKER
+import com.example.data.local.entity.EPG_TYPE_XMLTV
+import com.example.data.local.entity.EPG_TYPE_XTREAM
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
 import kotlinx.coroutines.flow.flatMapLatest
@@ -103,7 +106,7 @@ class TvBuddyRepository(
     /** Groups of live TV only: movie / show groups never take part in the channel list. */
     val liveChannelGroups: Flow<List<ChannelGroupEntity>> = channelGroupDao.getLiveGroups()
 
-    private fun startPlaylistEpgImport(playlistId: Long, urls: List<String>, userAgent: String) {
+    private fun startPlaylistEpgImport(playlistId: Long, urls: List<String>, userAgent: String, sourceType: String = EPG_TYPE_XMLTV) {
         if (urls.isEmpty()) return
         epgPrefs.edit().putStringSet("urls_$playlistId", urls.toSet()).apply()
         epgScope.launch {
@@ -115,7 +118,7 @@ class TvBuddyRepository(
                     urls.size > 1 -> "$plName EPG ${i + 1}"
                     else -> "$plName EPG"
                 }
-                val srcId = addEpgSource(url, label)
+                val srcId = addEpgSource(url, label, sourceType)
                 togglePlaylistEpgAssignment(playlistId, srcId, true)
             }
             fetchEpgUrls(playlistId, urls, userAgent)
@@ -154,6 +157,7 @@ class TvBuddyRepository(
         try {
             val pl = playlistDao.getPlaylistById(playlistId) ?: throw Exception("Playlist not found")
             if (pl.type != PlaylistType.STALKER) return@withContext Result.success(0)
+            ensureStalkerEpgSource(pl)
             val ua = pl.toSpoofProfile().getUserAgent()
             val auth = stalkerSession(pl)
             if (!auth.success) throw Exception(auth.message)
@@ -316,16 +320,60 @@ class TvBuddyRepository(
     data class ImportResult(val playlistId: Long, val name: String, val counts: ImportCounts)
 
     // ---- EPG Source & Import management ----
-    suspend fun addEpgSource(url: String, name: String = url.substringAfterLast("/").ifBlank { "EPG Source" }): Long = withContext(Dispatchers.IO) {
+    suspend fun addEpgSource(
+        url: String,
+        name: String = url.substringAfterLast("/").ifBlank { "EPG Source" },
+        sourceType: String = EPG_TYPE_XMLTV
+    ): Long = withContext(Dispatchers.IO) {
         val existing = epgSourceDao.getEpgSourceByUrl(url)
-        if (existing != null) return@withContext existing.id
+        if (existing != null) {
+            // a source made earlier as a plain link that really belongs to a portal playlist becomes a portal source
+            if (sourceType != EPG_TYPE_XMLTV && !existing.sourceType.equals(sourceType, ignoreCase = true)) {
+                epgSourceDao.updateEpgSource(existing.copy(sourceType = sourceType, isDefault = false))
+            }
+            return@withContext existing.id
+        }
         val isFirst = epgSourceDao.getAllEpgSources().first().isEmpty()
-        val src = EpgSourceEntity(name = name, url = url, isDefault = isFirst)
+        val src = EpgSourceEntity(name = name, url = url, sourceType = sourceType, isDefault = isFirst && sourceType != EPG_TYPE_STALKER)
         epgSourceDao.insertEpgSource(src)
+    }
+
+    /** The guide of a Stalker portal is delivered by the portal itself; this entry only makes it visible (and deletable) in the sources list. */
+    private suspend fun ensureStalkerEpgSource(pl: PlaylistEntity) {
+        val url = pl.sourceUrl.trim().trimEnd('/')
+        if (url.isBlank()) return
+        val host = try { java.net.URI(url).host } catch (_: Exception) { null }
+        val id = addEpgSource(url, host?.takeIf { it.isNotBlank() } ?: pl.name, EPG_TYPE_STALKER)
+        val assigned = epgSourceDao.getCrossRefsForPlaylist(pl.id).first()
+        if (assigned.none { it.epgSourceId == id }) {
+            epgSourceDao.insertPlaylistEpgCrossRef(PlaylistEpgCrossRef(pl.id, id, priority = assigned.size))
+        }
+    }
+
+    /** Changes name and link of a source. Fails when another source already uses that link. */
+    suspend fun updateEpgSource(id: Long, name: String, url: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            val src = epgSourceDao.getEpgSourceById(id) ?: return@withContext Result.failure(Exception("EPG source not found"))
+            val newUrl = url.trim()
+            val newName = name.trim().ifBlank { src.name }
+            if (newUrl.isBlank()) return@withContext Result.failure(Exception("EPG URL is empty"))
+            val other = epgSourceDao.getEpgSourceByUrl(newUrl)
+            if (other != null && other.id != id) return@withContext Result.failure(Exception("This EPG URL is already added"))
+            epgSourceDao.updateEpgSource(src.copy(name = newName, url = newUrl))
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     suspend fun deleteEpgSource(source: EpgSourceEntity) = withContext(Dispatchers.IO) {
         epgSourceDao.deleteEpgSource(source)
+        // the default must not vanish with its source
+        if (source.isDefault) {
+            epgSourceDao.getAllEpgSources().first()
+                .firstOrNull { !it.sourceType.equals(EPG_TYPE_STALKER, ignoreCase = true) }
+                ?.let { epgSourceDao.setDefaultSource(it.id) }
+        }
     }
 
     suspend fun setDefaultEpgSource(id: Long) = withContext(Dispatchers.IO) {
@@ -612,7 +660,7 @@ class TvBuddyRepository(
                     expiration = formatExpiration(auth.expDate)
                     // playlists added before the panel guide was wired in get it now; the rest follow the 12 h refresh
                     if (pl.includeTv && epgPrefs.getStringSet("urls_${pl.id}", null).isNullOrEmpty()) {
-                        startPlaylistEpgImport(pl.id, listOf(xtreamClient.xmltvUrl(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty())), ua)
+                        startPlaylistEpgImport(pl.id, listOf(xtreamClient.xmltvUrl(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty())), ua, EPG_TYPE_XTREAM)
                     }
                     xtreamClient.fetchChannels(
                         pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, ua,
@@ -1004,7 +1052,7 @@ class TvBuddyRepository(
             val counts = storeImported(playlistId, channels, formatExpiration(auth.expDate))
             // the panel's own XMLTV guide: its ids are the channels' epg_channel_id values
             if (includeTv && counts.tv > 0) {
-                startPlaylistEpgImport(playlistId, listOf(xtreamClient.xmltvUrl(serverUrl, username, password)), spoof.getUserAgent())
+                startPlaylistEpgImport(playlistId, listOf(xtreamClient.xmltvUrl(serverUrl, username, password)), spoof.getUserAgent(), EPG_TYPE_XTREAM)
             }
             Result.success(ImportResult(playlistId, name, counts))
         } catch (e: Exception) {
