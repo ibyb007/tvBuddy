@@ -20,7 +20,10 @@ import com.example.data.local.entity.ProgramEntity
 import kotlinx.coroutines.flow.flatMapLatest
 import com.example.data.model.ContentType
 import com.example.data.model.ImportCounts
+import com.example.data.model.EpisodeIds
+import com.example.data.model.VodEpisode
 import com.example.data.model.VodInfo
+import com.example.data.model.VodSeason
 import com.example.data.model.PlaylistType
 import com.example.data.model.SpoofPreset
 import com.example.data.model.SpoofProfile
@@ -938,11 +941,13 @@ class TvBuddyRepository(
     /**
      * Turns a movie into something the player can open. Xtream movies are direct links already; Stalker movies
      * carry a portal command that has to be exchanged for a real link first. Shows are not playable yet
-     * (their episodes are not fetched).
+     * (play one of their episodes instead, see [resolveEpisode]).
      */
     suspend fun resolvePlayable(channel: ChannelEntity): Result<ChannelEntity> = withContext(Dispatchers.IO) {
         try {
-            if (channel.contentType == ContentType.SHOW) throw Exception("Episodes of shows can't be played yet")
+            // an episode that was resolved already (it carries its real link)
+            if (EpisodeIds.isEpisode(channel.id)) return@withContext Result.success(channel)
+            if (channel.contentType == ContentType.SHOW) throw Exception("Choose an episode to play")
             val pl = playlistDao.getPlaylistById(channel.playlistId) ?: throw Exception("Playlist not found")
             if (pl.type != PlaylistType.STALKER || channel.contentType != ContentType.MOVIE) return@withContext Result.success(channel)
             val ua = pl.toSpoofProfile().getUserAgent()
@@ -951,6 +956,66 @@ class TvBuddyRepository(
             if (!auth.success) throw Exception(auth.message)
             val link = stalkerClient.resolveStreamLink(pl.sourceUrl, params.normalizedMac, channel.streamUrl, auth.token, ua, "vod")
             Result.success(channel.copy(streamUrl = link))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Shows: seasons and episodes (fetched when the details of a show are opened, kept while the app runs)
+    // ---------------------------------------------------------------------------------------------
+
+    private val seasonCache = java.util.concurrent.ConcurrentHashMap<Long, List<VodSeason>>()
+
+    /** Seasons with their episodes. Success with an empty list means the provider has no episodes for this show. */
+    suspend fun loadSeasons(show: ChannelEntity): Result<List<VodSeason>> = withContext(Dispatchers.IO) {
+        seasonCache[show.id]?.let { return@withContext Result.success(it) }
+        try {
+            val pl = playlistDao.getPlaylistById(show.playlistId) ?: throw Exception("Playlist not found")
+            val ua = pl.toSpoofProfile().getUserAgent()
+            val seasons = when (pl.type) {
+                PlaylistType.XTREAM -> xtreamClient.fetchSeasons(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), show.streamId, ua)
+                PlaylistType.STALKER -> {
+                    val auth = stalkerClient.login(pl.sourceUrl, pl.toStalkerParams(), ua)
+                    if (!auth.success) throw Exception(auth.message)
+                    stalkerClient.fetchSeasons(auth, pl.toStalkerParams(), ua, show.streamId, show.streamUrl)
+                }
+                else -> emptyList()
+            }
+            if (seasons.isNotEmpty()) seasonCache[show.id] = seasons
+            Result.success(seasons)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * Turns one episode into something the player can open: a copy of the [show] with an episode id (see [EpisodeIds]),
+     * the title "Show S1 E3" and the real stream link (Stalker episodes get theirs from the portal first).
+     */
+    suspend fun resolveEpisode(show: ChannelEntity, ep: VodEpisode): Result<ChannelEntity> = withContext(Dispatchers.IO) {
+        try {
+            val pl = playlistDao.getPlaylistById(show.playlistId) ?: throw Exception("Playlist not found")
+            val link = if (pl.type == PlaylistType.STALKER) {
+                val ua = pl.toSpoofProfile().getUserAgent()
+                val params = pl.toStalkerParams()
+                val auth = stalkerClient.login(pl.sourceUrl, params, ua)
+                if (!auth.success) throw Exception(auth.message)
+                var l = stalkerClient.resolveStreamLink(pl.sourceUrl, params.normalizedMac, ep.source, auth.token, ua, "vod", ep.stalkerSeries)
+                // some portals only answer create_link for shows under the "series" type
+                if (l == ep.source) l = stalkerClient.resolveStreamLink(pl.sourceUrl, params.normalizedMac, ep.source, auth.token, ua, "series", ep.stalkerSeries)
+                l
+            } else ep.source
+            Result.success(
+                show.copy(
+                    id = EpisodeIds.of(show.id, ep.season, ep.number),
+                    streamId = ep.id,
+                    name = "${show.name} S${ep.season} E${ep.number}",
+                    streamUrl = link,
+                    logoUrl = ep.imageUrl.ifBlank { show.logoUrl },
+                    contentType = ContentType.SHOW
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
