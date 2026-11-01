@@ -834,6 +834,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun updateEpgSource(id: Long, name: String, url: String) {
+        viewModelScope.launch {
+            repository.updateEpgSource(id, name, url)
+                .onSuccess { _uiMessage.value = UiMessage(text = "EPG source updated") }
+                .onFailure { _uiMessage.value = UiMessage(text = it.localizedMessage ?: "Could not update EPG source") }
+        }
+    }
+
     fun setDefaultEpgSource(id: Long) {
         viewModelScope.launch {
             repository.setDefaultEpgSource(id)
@@ -890,8 +898,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (isUpdateRunning(key)) return
         setUpdateState(key, UpdateRowState(running = true))
         viewModelScope.launch {
-            val sources = allEpgSources.value.filter { it.isEnabled }
-            if (sources.isEmpty()) {
+            // portal guides (Stalker) are not XMLTV links: they are refreshed from the portal itself below
+            val sources = allEpgSources.value.filter { it.isEnabled && !it.sourceType.equals(com.example.data.local.entity.EPG_TYPE_STALKER, ignoreCase = true) }
+            val portalPlaylists = repository.allPlaylists.first()
+                .filter { it.isActive && it.type == com.example.data.model.PlaylistType.STALKER && it.includeTv }
+            if (sources.isEmpty() && portalPlaylists.isEmpty()) {
                 setUpdateState(key, UpdateRowState(message = "No EPG sources available to update", isError = true))
                 return@launch
             }
@@ -908,10 +919,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 res.onSuccess { totalCount += it }.onFailure { failed++ }
             }
+            for (pl in portalPlaylists) {
+                repository.refreshPortalEpg(pl.id).onSuccess { totalCount += it }.onFailure { failed++ }
+            }
             _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
             setUpdateState(
                 key,
-                if (failed == sources.size) UpdateRowState(message = "EPG update failed", isError = true)
+                if (failed == sources.size + portalPlaylists.size) UpdateRowState(message = "EPG update failed", isError = true)
                 else UpdateRowState(message = "EPG updated successfully ($totalCount programs)")
             )
         }
