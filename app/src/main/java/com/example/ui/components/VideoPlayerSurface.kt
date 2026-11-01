@@ -28,6 +28,7 @@ import androidx.compose.ui.util.lerp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.ui.CaptionStyleCompat
 import androidx.media3.ui.PlayerView
 import com.example.player.AspectMode
 import kotlin.math.roundToInt
@@ -49,6 +50,20 @@ fun VideoPlayerSurface(
             )
             keepScreenOn = true
             setBackgroundColor(android.graphics.Color.BLACK)
+            // subtitles: plain white text with a dark outline, no box behind them (embedded cue colours / boxes are ignored)
+            subtitleView?.apply {
+                setApplyEmbeddedStyles(false)
+                setStyle(
+                    CaptionStyleCompat(
+                        android.graphics.Color.WHITE,
+                        android.graphics.Color.TRANSPARENT,
+                        android.graphics.Color.TRANSPARENT,
+                        CaptionStyleCompat.EDGE_TYPE_OUTLINE,
+                        android.graphics.Color.BLACK,
+                        null
+                    )
+                )
+            }
         }
     }
 
