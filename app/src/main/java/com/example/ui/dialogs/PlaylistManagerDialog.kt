@@ -38,7 +38,21 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.ContentPaste
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import com.example.data.local.entity.EPG_TYPE_STALKER
+import com.example.data.local.entity.EPG_TYPE_XMLTV
+import com.example.data.local.entity.EPG_TYPE_XTREAM
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
@@ -130,6 +144,9 @@ sealed class TiviSettingsRoute {
     data object Epg : TiviSettingsRoute()
     data object EpgSources : TiviSettingsRoute()
     data object AddEpgSourceUrl : TiviSettingsRoute()
+    /** One EPG source: name, link, default switch, delete (portal sources only get a delete row). */
+    data class EpgSourceDetail(val sourceId: Long) : TiviSettingsRoute()
+    data class EditEpgSourceUrl(val sourceId: Long) : TiviSettingsRoute()
     data object AudioBoost : TiviSettingsRoute()
 }
 
@@ -227,8 +244,42 @@ private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when
     is TiviSettingsRoute.PortalParams ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.EpgSources -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, route)
-    is TiviSettingsRoute.AddEpgSourceUrl ->
+    is TiviSettingsRoute.AddEpgSourceUrl, is TiviSettingsRoute.EpgSourceDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
+    is TiviSettingsRoute.EditEpgSourceUrl ->
+        listOf(
+            TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources,
+            TiviSettingsRoute.EpgSourceDetail(route.sourceId), route
+        )
+}
+
+/**
+ * The portal playlist an EPG source belongs to, or null. A Stalker / Xtream guide cannot be deleted while its playlist
+ * exists. Xtream guides saved before sources carried a type are recognised by their xmltv.php link.
+ */
+private fun portalOriginPlaylist(
+    src: EpgSourceEntity,
+    playlists: List<PlaylistEntity>,
+    refs: List<PlaylistEpgCrossRef>
+): PlaylistEntity? {
+    val assigned = refs.filter { it.epgSourceId == src.id }.mapNotNull { r -> playlists.find { it.id == r.playlistId } }
+    return when {
+        src.sourceType.equals(EPG_TYPE_STALKER, ignoreCase = true) -> assigned.firstOrNull { it.type == PlaylistType.STALKER }
+        src.sourceType.equals(EPG_TYPE_XTREAM, ignoreCase = true) -> assigned.firstOrNull { it.type == PlaylistType.XTREAM }
+        src.url.contains("/xmltv.php?username=") -> assigned.firstOrNull { it.type == PlaylistType.XTREAM }
+        else -> null
+    }
+}
+
+private fun EpgSourceEntity.isPortalType(): Boolean =
+    sourceType.equals(EPG_TYPE_STALKER, ignoreCase = true) || sourceType.equals(EPG_TYPE_XTREAM, ignoreCase = true) ||
+        url.contains("/xmltv.php?username=")
+
+/** What the lists show under a source name; never the full portal link (it can hold the login). */
+private fun EpgSourceEntity.locationLabel(): String = when {
+    sourceType.equals(EPG_TYPE_STALKER, ignoreCase = true) -> "Stalker Portal"
+    sourceType.equals(EPG_TYPE_XTREAM, ignoreCase = true) || url.contains("/xmltv.php?username=") -> "Xtream Codes"
+    else -> url
 }
 
 private val LocalPhoneSettings = compositionLocalOf { false }
@@ -284,6 +335,7 @@ fun PlaylistManagerDialog(
     onAddEpgSource: (String) -> Unit = {},
     onDeleteEpgSource: (EpgSourceEntity) -> Unit = {},
     onSetDefaultEpgSource: (Long) -> Unit = {},
+    onUpdateEpgSource: (Long, String, String) -> Unit = { _, _, _ -> },
     onTogglePlaylistEpgAssignment: (Long, Long, Boolean) -> Unit = { _, _, _ -> },
     onReorderPlaylistEpgPriority: (Long, List<Long>) -> Unit = { _, _ -> },
     epgSettings: EpgGlobalSettingsState = EpgGlobalSettingsState(),
@@ -376,7 +428,8 @@ fun PlaylistManagerDialog(
         LaunchedEffect(currentEntry, textEditDialogState != null, windowFocused) {
             snapshotFlow { focusMemory.hasFocus }.collectLatest { has ->
                 if (!has && focusMemory.settled && windowFocused &&
-                    textEditDialogState == null && currentRoute !is TiviSettingsRoute.AddEpgSourceUrl
+                    textEditDialogState == null && currentRoute !is TiviSettingsRoute.AddEpgSourceUrl &&
+                    currentRoute !is TiviSettingsRoute.EditEpgSourceUrl
                 ) {
                     delay(300)
                     if (!focusMemory.hasFocus) {
@@ -394,12 +447,17 @@ fun PlaylistManagerDialog(
                 .background(Color.Black.copy(alpha = 0.25f))
                 .pointerInput(Unit) { detectTapGestures(onTap = { onDismiss() }) }
         ) {
-            if (currentRoute is TiviSettingsRoute.AddEpgSourceUrl) {
-                // Full-screen TiviMate EPG URL entry screen
+            if (currentRoute is TiviSettingsRoute.AddEpgSourceUrl || currentRoute is TiviSettingsRoute.EditEpgSourceUrl) {
+                // Full-screen EPG URL page: add a source, or change the link of an existing one
+                val editing = (currentRoute as? TiviSettingsRoute.EditEpgSourceUrl)
+                    ?.let { r -> epgSources.find { it.id == r.sourceId } }
                 AddEpgUrlScreen(
+                    initialUrl = editing?.url.orEmpty(),
+                    editing = editing != null,
                     onConfirm = { url ->
                         if (url.isNotBlank()) {
-                            onAddEpgSource(url.trim())
+                            if (editing != null) onUpdateEpgSource(editing.id, editing.name, url.trim())
+                            else onAddEpgSource(url.trim())
                         }
                         navigateBack()
                     },
@@ -669,18 +727,42 @@ fun PlaylistManagerDialog(
                                 sources = epgSources,
                                 usedBy = epgUsedBy,
                                 onAddSource = { navigateTo(TiviSettingsRoute.AddEpgSourceUrl) },
-                                onSelectSource = { src ->
-                                    onSetDefaultEpgSource(src.id)
-                                },
-                                onDeleteSource = onDeleteEpgSource
+                                onSelectSource = { src -> navigateTo(TiviSettingsRoute.EpgSourceDetail(src.id)) }
                             )
+
+                            is TiviSettingsRoute.EpgSourceDetail -> {
+                                val live = epgSources.find { it.id == route.sourceId }
+                                // keep showing the source while the screen slides out after it was deleted
+                                var lastSeen by remember(route.sourceId) { mutableStateOf(live) }
+                                if (live != null) lastSeen = live
+                                val src = live ?: lastSeen
+                                if (src != null) {
+                                    val origin = portalOriginPlaylist(src, playlists, playlistEpgCrossRefs)
+                                    EpgSourceDetailSubMenu(
+                                        source = src,
+                                        portal = src.isPortalType(),
+                                        lockedBy = origin?.name,
+                                        onEditName = {
+                                            textEditDialogState = TextEditPrompt("Source name", src.name) { v ->
+                                                if (v.isNotBlank()) onUpdateEpgSource(src.id, v.trim(), src.url)
+                                            }
+                                        },
+                                        onEditUrl = { navigateTo(TiviSettingsRoute.EditEpgSourceUrl(src.id)) },
+                                        onSetDefault = { onSetDefaultEpgSource(src.id) },
+                                        onDelete = {
+                                            onDeleteEpgSource(src)
+                                            navigateBack()
+                                        }
+                                    )
+                                }
+                            }
 
                             is TiviSettingsRoute.AudioBoost -> AudioBoostSubMenu(
                                 selected = audioBoostProfile,
                                 onSelect = onSelectAudioBoost
                             )
 
-                            is TiviSettingsRoute.AddEpgSourceUrl -> Unit
+                            is TiviSettingsRoute.AddEpgSourceUrl, is TiviSettingsRoute.EditEpgSourceUrl -> Unit
                         }
                     }
                     if (mobileNav != null) {
@@ -1233,7 +1315,8 @@ private fun PlaylistEpgSourcesSubMenu(
         assignedSourceIds.mapNotNull { id -> allSources.find { it.id == id } }
     }
     val unassignedSources = remember(allSources, assignedSourceIds) {
-        allSources.filter { it.id !in assignedSourceIds }
+        // a Stalker / Xtream guide belongs to its own playlist and is not offered to the others
+        allSources.filter { it.id !in assignedSourceIds && !it.isPortalType() }
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1262,7 +1345,7 @@ private fun PlaylistEpgSourcesSubMenu(
                     val label = if (src.isDefault) "Default (${src.name})" else src.name
                     TiviSwitchRow(
                         title = label,
-                        subtitle = src.url,
+                        subtitle = src.locationLabel(),
                         checked = true,
                         onCheckedChange = { checked -> onToggleAssignment(src.id, checked) }
                     )
@@ -1275,7 +1358,7 @@ private fun PlaylistEpgSourcesSubMenu(
                     val label = if (src.isDefault) "Default (${src.name})" else src.name
                     TiviSwitchRow(
                         title = label,
-                        subtitle = src.url,
+                        subtitle = src.locationLabel(),
                         checked = false,
                         onCheckedChange = { checked -> onToggleAssignment(src.id, checked) }
                     )
@@ -1702,8 +1785,7 @@ private fun EpgSourcesSubMenu(
     sources: List<EpgSourceEntity>,
     usedBy: Map<Long, String>,
     onAddSource: () -> Unit,
-    onSelectSource: (EpgSourceEntity) -> Unit,
-    onDeleteSource: (EpgSourceEntity) -> Unit
+    onSelectSource: (EpgSourceEntity) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "EPG sources")
@@ -1713,8 +1795,8 @@ private fun EpgSourcesSubMenu(
         ) {
             items(sources, key = { it.id }) { src ->
                 val titleText = if (src.isDefault) "${src.name} (default)" else src.name
-                val location = if (src.sourceType.equals("STALKER", ignoreCase = true)) "Stalker Portal" else src.url
                 val users = usedBy[src.id].orEmpty()
+                val location = src.locationLabel()
                 val subtitleText = if (users.isBlank()) "Not assigned \u2022 $location" else "Used by $users \u2022 $location"
                 TiviMenuRow(
                     title = titleText,
@@ -1729,19 +1811,6 @@ private fun EpgSourcesSubMenu(
                             )
                         } else {
                             Spacer(modifier = Modifier.size(20.dp))
-                        }
-                    },
-                    trailingContent = { focused ->
-                        IconButton(
-                            onClick = { onDeleteSource(src) },
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Delete source",
-                                tint = if (focused) TiviFocusText else TiviSecondaryText,
-                                modifier = Modifier.size(18.dp)
-                            )
                         }
                     },
                     onClick = { onSelectSource(src) }
@@ -1770,16 +1839,94 @@ private fun EpgSourcesSubMenu(
 }
 
 // ============================================================================
+// 8b. ONE EPG SOURCE (name, link, default, delete)
+// ============================================================================
+
+/**
+ * A link source: name, EPG URL, "Default source" switch and "Delete source".
+ * A source that comes from a Stalker / Xtream playlist ([portal]) only has "Delete source", dimmed and inert for as
+ * long as that playlist exists ([lockedBy] = its name).
+ */
+@Composable
+private fun EpgSourceDetailSubMenu(
+    source: EpgSourceEntity,
+    portal: Boolean,
+    lockedBy: String?,
+    onEditName: () -> Unit,
+    onEditUrl: () -> Unit,
+    onSetDefault: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = if (source.isDefault) "${source.name} (default)" else source.name)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 24.dp)
+        ) {
+            if (!portal) {
+                item {
+                    TiviMenuRow(
+                        title = "Source name",
+                        subtitle = source.name,
+                        onClick = onEditName
+                    )
+                }
+                item {
+                    TiviMenuRow(
+                        title = "EPG URL",
+                        subtitle = source.url,
+                        onClick = onEditUrl
+                    )
+                }
+                item {
+                    TiviSwitchRow(
+                        title = "Default source",
+                        checked = source.isDefault,
+                        // a default always exists: it moves by switching another source on, not by switching this one off
+                        onCheckedChange = { checked -> if (checked && !source.isDefault) onSetDefault() }
+                    )
+                }
+            }
+            item {
+                TiviMenuRow(
+                    title = "Delete source",
+                    subtitle = if (lockedBy != null) "Remove the playlist \"$lockedBy\" first" else null,
+                    locked = lockedBy != null,
+                    onClick = onDelete
+                )
+            }
+        }
+    }
+}
+
+// ============================================================================
 // 9. FULL-SCREEN EPG URL ENTRY ("EPG URL")
 // ============================================================================
 
 @Composable
 private fun AddEpgUrlScreen(
+    initialUrl: String = "",
+    editing: Boolean = false,
     onConfirm: (String) -> Unit,
     onCancel: () -> Unit
 ) {
-    var urlText by remember { mutableStateOf("") }
+    var urlText by remember { mutableStateOf(initialUrl) }
     val clipboardManager = LocalClipboardManager.current
+
+    if (LocalPhoneSettings.current) {
+        PhoneEpgUrlPage(
+            url = urlText,
+            onUrlChange = { urlText = it },
+            editing = editing,
+            onPaste = {
+                val clip = clipboardManager.getText()?.text
+                if (!clip.isNullOrBlank()) urlText = clip.trim()
+            },
+            onConfirm = { onConfirm(urlText) },
+            onCancel = onCancel
+        )
+        return
+    }
 
     Row(
         modifier = Modifier
@@ -1819,13 +1966,15 @@ private fun AddEpgUrlScreen(
                     fontSize = 13.sp,
                     lineHeight = 18.sp
                 )
-                Spacer(modifier = Modifier.height(14.dp))
-                Text(
-                    text = "EPG source should be assigned in the playlist settings.",
-                    color = TiviSecondaryText,
-                    fontSize = 13.sp,
-                    lineHeight = 18.sp
-                )
+                if (!editing) {
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "EPG source should be assigned in the playlist settings.",
+                        color = TiviSecondaryText,
+                        fontSize = 13.sp,
+                        lineHeight = 18.sp
+                    )
+                }
             }
         }
 
@@ -1906,6 +2055,135 @@ private fun AddEpgUrlScreen(
     }
 }
 
+/**
+ * Phone version of the EPG URL page: one column that follows the system bars and the keyboard, a wide multi-line field
+ * (EPG links are long), the keyboard opens by itself, and OK / Cancel sit at the bottom within thumb reach.
+ */
+@Composable
+private fun PhoneEpgUrlPage(
+    url: String,
+    onUrlChange: (String) -> Unit,
+    editing: Boolean,
+    onPaste: () -> Unit,
+    onConfirm: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val requester = remember { FocusRequester() }
+    // opens the keyboard when adding; when editing the link is shown first and the keyboard opens on tap
+    LaunchedEffect(Unit) {
+        if (!editing) {
+            delay(250)
+            try { requester.requestFocus() } catch (_: Exception) {}
+        }
+    }
+    val canConfirm = url.isNotBlank()
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(com.example.ui.theme.DarkBackground)
+            .pointerInput(Unit) { detectTapGestures(onTap = { }) }
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .imePadding()
+            .padding(horizontal = 20.dp, vertical = 12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onCancel) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back",
+                    tint = TiviPrimaryText
+                )
+            }
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = if (editing) "Change EPG URL" else "Add EPG source",
+                color = TiviPrimaryText,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "Enter the link of an XMLTV guide (.xml or .xml.gz).",
+            color = TiviSecondaryText,
+            fontSize = 13.sp,
+            lineHeight = 18.sp
+        )
+        if (!editing) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = "Assign the source to a playlist in the playlist settings.",
+                color = TiviSecondaryText,
+                fontSize = 13.sp,
+                lineHeight = 18.sp
+            )
+        }
+        Spacer(modifier = Modifier.height(18.dp))
+        OutlinedTextField(
+            value = url,
+            onValueChange = onUrlChange,
+            label = { Text("EPG URL") },
+            placeholder = { Text("https://example.com/epg.xml.gz") },
+            minLines = 2,
+            maxLines = 5,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { if (canConfirm) onConfirm() }),
+            trailingIcon = {
+                if (url.isNotEmpty()) {
+                    IconButton(onClick = { onUrlChange("") }) {
+                        Icon(Icons.Default.Clear, contentDescription = "Clear", tint = TiviSecondaryText)
+                    }
+                }
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = TiviPrimaryText,
+                unfocusedTextColor = TiviPrimaryText,
+                focusedBorderColor = com.example.ui.theme.AccentCyan,
+                unfocusedBorderColor = TiviSecondaryText,
+                focusedLabelColor = com.example.ui.theme.AccentCyan,
+                unfocusedLabelColor = TiviSecondaryText,
+                cursorColor = com.example.ui.theme.AccentCyan,
+                focusedPlaceholderColor = TiviSecondaryText.copy(alpha = 0.7f),
+                unfocusedPlaceholderColor = TiviSecondaryText.copy(alpha = 0.7f)
+            ),
+            modifier = Modifier
+                .fillMaxWidth()
+                .focusRequester(requester)
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        OutlinedButton(
+            onClick = onPaste,
+            modifier = Modifier.fillMaxWidth().height(48.dp)
+        ) {
+            Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Paste from clipboard")
+        }
+        Spacer(modifier = Modifier.weight(1f))
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            OutlinedButton(
+                onClick = onCancel,
+                modifier = Modifier.weight(1f).height(48.dp)
+            ) { Text("Cancel") }
+            Button(
+                onClick = onConfirm,
+                enabled = canConfirm,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = com.example.ui.theme.AccentCyan,
+                    contentColor = Color(0xFF00212A)
+                ),
+                modifier = Modifier.weight(1f).height(48.dp)
+            ) { Text(if (editing) "Save" else "Add") }
+        }
+    }
+}
+
 // ============================================================================
 // REUSABLE TIVIMATE DRAWER UI BUILDING BLOCKS
 // ============================================================================
@@ -1945,6 +2223,8 @@ private fun TiviMenuRow(
     enabled: Boolean = true,
     busy: Boolean = false,
     isError: Boolean = false,
+    // greyed out: keeps focus (so the D-pad does not get lost on the screen) but ignores clicks
+    locked: Boolean = false,
     focusRequester: FocusRequester? = null,
     onFocusChange: ((Boolean) -> Unit)? = null,
     leadingIcon: (@Composable (Boolean) -> Unit)? = null,
@@ -1981,11 +2261,15 @@ private fun TiviMenuRow(
 
     val bgColor = if (showFocus) TiviFocusBg else Color.Transparent
     val titleColor = when {
+        locked && showFocus -> TiviFocusText.copy(alpha = 0.45f)
+        locked -> TiviSecondaryText.copy(alpha = 0.55f)
         !active || busy -> TiviSecondaryText.copy(alpha = 0.55f)
         showFocus -> TiviFocusText
         else -> TiviPrimaryText
     }
     val subColor = when {
+        locked && showFocus -> TiviFocusText.copy(alpha = 0.4f)
+        locked -> TiviSecondaryText.copy(alpha = 0.45f)
         isError && showFocus -> Color(0xFFB3261E)
         isError -> Color(0xFFFF8A80)
         !active || busy -> TiviSecondaryText.copy(alpha = 0.45f)
@@ -2015,7 +2299,7 @@ private fun TiviMenuRow(
                 enabled = active,
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = { if (!busy) onClick() }
+                onClick = { if (!busy && !locked) onClick() }
             )
             .padding(horizontal = 12.dp, vertical = 11.dp),
         verticalAlignment = Alignment.CenterVertically
