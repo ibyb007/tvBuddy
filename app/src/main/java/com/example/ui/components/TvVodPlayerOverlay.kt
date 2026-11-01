@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
@@ -74,6 +76,9 @@ import java.util.Date
 import java.util.Locale
 
 private enum class VodPanel { NONE, INFO, MENU, AUDIO }
+
+/** Buttons of the transport row; the episode buttons only exist while an episode of a show plays. */
+private enum class Transport { PREV_EP, REWIND, PLAY, FORWARD, NEXT_EP, FROM_START }
 
 private val PanelBg = Color(0xE6101418)
 private val Selected = Color(0xFFF1F3F4)
@@ -131,12 +136,27 @@ fun TvVodPlayerOverlay(
     onDisableAudio: () -> Unit,
     onOpenSubtitles: () -> Unit,
     onOpenSettings: () -> Unit,
+    /** Episodes of a show: null = no such button (a movie, or the first / last episode). */
+    onPreviousEpisode: (() -> Unit)? = null,
+    onNextEpisode: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val k = rememberUiScale()
     var panel by remember { mutableStateOf(VodPanel.NONE) }
     var tick by remember { mutableLongStateOf(0L) }
-    var infoFocus by remember { mutableIntStateOf(1) }      // -1 seek bar, 0 rewind, 1 play / pause, 2 forward, 3 watch from start
+    val hasPrev = onPreviousEpisode != null
+    val hasNext = onNextEpisode != null
+    val transport = remember(hasPrev, hasNext) {
+        buildList {
+            if (hasPrev) add(Transport.PREV_EP)
+            add(Transport.REWIND); add(Transport.PLAY); add(Transport.FORWARD)
+            if (hasNext) add(Transport.NEXT_EP)
+            add(Transport.FROM_START)
+        }
+    }
+    val playIdx = transport.indexOf(Transport.PLAY)
+    var infoFocus by remember { mutableIntStateOf(playIdx) }   // -1 = seek bar, else an index into [transport]
+    LaunchedEffect(channel?.id, playIdx) { infoFocus = playIdx }
     var menuIndex by remember { mutableIntStateOf(0) }
     var audioIndex by remember { mutableIntStateOf(0) }
     var okLongHandled by remember { mutableStateOf(false) }
@@ -220,13 +240,16 @@ fun TvVodPlayerOverlay(
 
     fun onShortOk() {
         when (panel) {
-            VodPanel.NONE -> if (errorMessage != null) onRetry() else { infoFocus = 1; panel = VodPanel.INFO }
-            VodPanel.INFO -> when (infoFocus) {
-                -1 -> onTogglePlayPause()                                  // on the seek bar OK pauses / resumes
-                0 -> addSeek(-SEEK_STEP_MS)
-                1 -> onTogglePlayPause()
-                2 -> addSeek(SEEK_STEP_MS)
-                else -> { pending = 0L; onSeekTo(0L); pos = 0L }          // watch from start
+            VodPanel.NONE -> if (errorMessage != null) onRetry() else { infoFocus = playIdx; panel = VodPanel.INFO }
+            VodPanel.INFO -> if (infoFocus == -1) onTogglePlayPause()      // on the seek bar OK pauses / resumes
+            else when (transport.getOrNull(infoFocus)) {
+                Transport.PREV_EP -> onPreviousEpisode?.invoke()
+                Transport.REWIND -> addSeek(-SEEK_STEP_MS)
+                Transport.PLAY -> onTogglePlayPause()
+                Transport.FORWARD -> addSeek(SEEK_STEP_MS)
+                Transport.NEXT_EP -> onNextEpisode?.invoke()
+                Transport.FROM_START -> { pending = 0L; onSeekTo(0L); pos = 0L }   // watch from start
+                null -> {}
             }
             VodPanel.MENU -> menuItems().getOrNull(menuIndex)?.action?.invoke()
             VodPanel.AUDIO -> {
@@ -248,7 +271,7 @@ fun TvVodPlayerOverlay(
                     if (repeat == 0) addSeek(sign * SEEK_STEP_MS)
                     else if (repeat % 5 == 0) addSeek(sign * heldSeekStep(repeat))
                 }
-                Key.DirectionDown -> if (repeat == 0) { infoFocus = 1; panel = VodPanel.INFO }
+                Key.DirectionDown -> if (repeat == 0) { infoFocus = playIdx; panel = VodPanel.INFO }
                 Key.DirectionUp -> if (repeat == 0) { infoFocus = -1; panel = VodPanel.INFO }
                 else -> return false
             }
@@ -258,13 +281,13 @@ fun TvVodPlayerOverlay(
                         // seek bar focused: LEFT / RIGHT scrub, a held key keeps seeking faster and faster
                         if (repeat == 0) addSeek(sign * SEEK_STEP_MS)
                         else if (repeat % 5 == 0) addSeek(sign * heldSeekStep(repeat))
-                    } else if (repeat == 0) infoFocus = (infoFocus + sign.toInt()).coerceIn(0, 3)
+                    } else if (repeat == 0) infoFocus = (infoFocus + sign.toInt()).coerceIn(0, transport.lastIndex)
                     else if (repeat % 5 == 0) addSeek(sign * heldSeekStep(repeat))     // held key = keep seeking
                 }
                 // UP focuses the seek bar, UP again hides the panel
                 Key.DirectionUp -> if (repeat == 0) { if (infoFocus == -1) panel = VodPanel.NONE else infoFocus = -1 }
                 Key.DirectionDown -> if (repeat == 0) {
-                    if (infoFocus == -1) infoFocus = 1 else { menuIndex = 0; panel = VodPanel.MENU }
+                    if (infoFocus == -1) infoFocus = playIdx else { menuIndex = 0; panel = VodPanel.MENU }
                 }
                 else -> return false
             }
@@ -428,12 +451,20 @@ fun TvVodPlayerOverlay(
                         }
                     }
                     Row(modifier = Modifier.align(Alignment.Center), horizontalArrangement = Arrangement.spacedBy((24 * k).dp)) {
-                        TransportButton(k, Icons.Default.FastRewind, infoFocus == 0)
-                        TransportButton(k, if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, infoFocus == 1)
-                        TransportButton(k, Icons.Default.FastForward, infoFocus == 2)
+                        transport.forEachIndexed { i, t ->
+                            val icon = when (t) {
+                                Transport.PREV_EP -> Icons.Default.SkipPrevious
+                                Transport.REWIND -> Icons.Default.FastRewind
+                                Transport.PLAY -> if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow
+                                Transport.FORWARD -> Icons.Default.FastForward
+                                Transport.NEXT_EP -> Icons.Default.SkipNext
+                                Transport.FROM_START -> null
+                            }
+                            if (icon != null) TransportButton(k, icon, infoFocus == i)
+                        }
                     }
                     Box(modifier = Modifier.align(Alignment.CenterEnd)) {
-                        TransportButton(k, Icons.Default.Replay, infoFocus == 3)
+                        TransportButton(k, Icons.Default.Replay, infoFocus == transport.indexOf(Transport.FROM_START))
                     }
                 }
                 Icon(
