@@ -127,6 +127,8 @@ fun HomeScreen(
     val vodLoading by viewModel.vodLoading.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedCategory.collectAsStateWithLifecycle()
     val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    // episode of a show that is playing (next / previous episode buttons)
+    val episodeContext by viewModel.episodeContext.collectAsStateWithLifecycle()
     val playlists by viewModel.allPlaylists.collectAsStateWithLifecycle()
     val globalSpoof by viewModel.globalSpoof.collectAsStateWithLifecycle()
     val uiMessage by viewModel.uiMessage.collectAsStateWithLifecycle()
@@ -348,7 +350,7 @@ fun HomeScreen(
                 val playing = currentChannelLive ?: currentChannel
                 if (playing != null && playing.contentType != com.example.data.model.ContentType.TV) {
                     viewModel.closePlayer()
-                    vodDetailId = playing.id
+                    vodDetailId = com.example.data.model.EpisodeIds.showIdOf(playing.id) ?: playing.id
                     vodType = playing.contentType
                     tvBrowse = TvBrowseLevel.GUIDE
                 } else if (currentChannel != null) tvBrowse = TvBrowseLevel.GUIDE else exitTv()
@@ -490,6 +492,15 @@ fun HomeScreen(
                     loadInfo = { viewModel.loadVodInfo(it) },
                     onOpenGroup = { id, title -> viewModel.openVodGroup(id, type, title) },
                     onNeedMoreAll = { viewModel.loadMoreVodAll(type) },
+                    loadSeasons = { viewModel.loadSeasons(it) },
+                    onPlayEpisode = { show, seasons, ep, startMs ->
+                        viewModel.playEpisode(show, seasons, ep, startMs)
+                        vodDetailId = show.id        // BACK from the episode returns to the show's page
+                        vodPlayPending = true
+                    },
+                    onOpenExternalEpisode = { show, ep -> viewModel.openEpisodeInExternalPlayer(show, ep) },
+                    episodeResumeOf = { show, ep -> viewModel.episodeResumeMs(show, ep) },
+                    lastEpisodeOf = { viewModel.lastEpisode(it) },
                     loading = vodLoading,
                     modifier = Modifier.fillMaxSize().zIndex(4f)
                 )
@@ -524,7 +535,9 @@ fun HomeScreen(
                     durationMs = { viewModel.playerManager.durationMs() },
                     onSeekTo = { viewModel.playerManager.seekToMs(it) },
                     onTogglePlayPause = { viewModel.playerManager.togglePlayPause() },
-                    onRetry = { viewModel.playVod(nowPlaying) },
+                    onRetry = { viewModel.retryVod(nowPlaying) },
+                    onPreviousEpisode = episodeContext?.previous?.let { { viewModel.playPreviousEpisode() } },
+                    onNextEpisode = episodeContext?.next?.let { { viewModel.playNextEpisode() } },
                     onWatchTv = { viewModel.watchLastTv() },
                     onCycleAudioBoost = { viewModel.cycleAudioBoost() },
                     onOpenQualityPicker = { showQualityDialog = true },
@@ -802,7 +815,9 @@ fun HomeScreen(
                                 onOpenQualityPicker = { showQualityDialog = true },
                                 onOpenAudioTracks = { showAudioDialog = true },
                                 onOpenSubtitles = { showSubtitleDialog = true },
-                                onRetry = { viewModel.playVod(vodPlaying) },
+                                onRetry = { viewModel.retryVod(vodPlaying) },
+                                onPreviousEpisode = episodeContext?.previous?.let { { viewModel.playPreviousEpisode() } },
+                                onNextEpisode = episodeContext?.next?.let { { viewModel.playNextEpisode() } },
                                 // BACK / close: the movie stops and its details page (mobileVodDetailId) comes back
                                 onClose = { viewModel.closePlayer() },
                                 isInPipMode = isInPipMode,
@@ -896,6 +911,11 @@ fun HomeScreen(
                             onOpenGroup = { id, title -> viewModel.openVodGroup(id, vodType, title) },
                             onNeedMoreAll = { viewModel.loadMoreVodAll(vodType) },
                             loading = vodLoading,
+                            loadSeasons = { viewModel.loadSeasons(it) },
+                            onPlayEpisode = { show, seasons, ep, startMs -> viewModel.playEpisode(show, seasons, ep, startMs) },
+                            onOpenExternalEpisode = { show, ep -> viewModel.openEpisodeInExternalPlayer(show, ep) },
+                            episodeResumeOf = { show, ep -> viewModel.episodeResumeMs(show, ep) },
+                            lastEpisodeOf = { viewModel.lastEpisode(it) },
                             bottomPadding = listBottomPadding,
                             modifier = Modifier.weight(1f)
                         )
