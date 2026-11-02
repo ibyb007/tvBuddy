@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ClosedCaption
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.GraphicEq
@@ -135,6 +136,7 @@ fun TvVodPlayerOverlay(
     onSelectAudioTrack: (TrackInfo) -> Unit,
     onDisableAudio: () -> Unit,
     onOpenSubtitles: () -> Unit,
+    onEnterPip: () -> Unit = {},
     onOpenSettings: () -> Unit,
     /** Episodes of a show: null = no such button (a movie, or the first / last episode). */
     onPreviousEpisode: (() -> Unit)? = null,
@@ -233,6 +235,7 @@ fun TvVodPlayerOverlay(
                 audioIndex = if (sel >= 0) sel + 1 else 0
                 panel = VodPanel.AUDIO
             },
+            VodMenuItem("PiP", Icons.Default.PictureInPictureAlt) { panel = VodPanel.NONE; onEnterPip() },
             VodMenuItem(subLabel, Icons.Default.ClosedCaption) { panel = VodPanel.NONE; onOpenSubtitles() },
             VodMenuItem("Settings", Icons.Default.Settings) { panel = VodPanel.NONE; onOpenSettings() }
         )
@@ -487,18 +490,18 @@ fun TvVodPlayerOverlay(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f), Color.Black.copy(alpha = 0.9f))))
-                    .padding(start = (24 * k).dp, end = (24 * k).dp, top = (90 * k).dp, bottom = (24 * k).dp),
+                    .padding(start = (16 * k).dp, end = (16 * k).dp, top = (84 * k).dp, bottom = (22 * k).dp),
                 verticalAlignment = Alignment.Top
             ) {
                 items.forEachIndexed { i, item ->
                     val selected = i == menuIndex
                     Column(
-                        modifier = Modifier.weight(1f).padding(horizontal = (4 * k).dp),
+                        modifier = Modifier.weight(1f).padding(horizontal = (2 * k).dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Box(
                             modifier = Modifier
-                                .size((80 * k).dp)
+                                .size((74 * k).dp)
                                 .clip(CircleShape)
                                 .background(if (selected) Selected else Color.White.copy(alpha = 0.14f)),
                             contentAlignment = Alignment.Center
@@ -507,15 +510,15 @@ fun TvVodPlayerOverlay(
                                 item.icon,
                                 contentDescription = item.label,
                                 tint = if (selected) Color.Black else Color.White,
-                                modifier = Modifier.size((42 * k).dp)
+                                modifier = Modifier.size((39 * k).dp)
                             )
                         }
-                        Spacer(Modifier.height((8 * k).dp))
+                        Spacer(Modifier.height((7 * k).dp))
                         Text(
                             item.label,
                             color = Color.White,
-                            fontSize = (24 * k).sp,
-                            lineHeight = (28 * k).sp,
+                            fontSize = (22 * k).sp,
+                            lineHeight = (26 * k).sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             textAlign = TextAlign.Center,
                             maxLines = 3,
