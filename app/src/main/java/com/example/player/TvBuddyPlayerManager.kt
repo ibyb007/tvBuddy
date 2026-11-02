@@ -16,7 +16,13 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.HttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
+import androidx.media3.exoplayer.mediacodec.MediaCodecInfo
+import androidx.media3.exoplayer.mediacodec.MediaCodecUtil
+import androidx.media3.common.MimeTypes
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
@@ -111,6 +117,78 @@ class TvBuddyPlayerManager(
         lastChannel?.let { startPlayback(it, lastSpoof) }
     }
     private val resetRetryRunnable = Runnable { retryCount = 0 }
+
+    // ---- Playback settings (buffer size, audio / video decoder) ----
+    private val _playbackSettings = MutableStateFlow(
+        PlaybackSettings(
+            bufferSize = BufferSize.fromName(context.getSharedPreferences("tvbuddy_prefs", Context.MODE_PRIVATE).getString(KEY_BUFFER, null)),
+            audioDecoder = DecoderMode.fromName(context.getSharedPreferences("tvbuddy_prefs", Context.MODE_PRIVATE).getString(KEY_AUDIO_DEC, null)),
+            videoDecoder = DecoderMode.fromName(context.getSharedPreferences("tvbuddy_prefs", Context.MODE_PRIVATE).getString(KEY_VIDEO_DEC, null))
+        )
+    )
+    val playbackSettings: StateFlow<PlaybackSettings> = _playbackSettings.asStateFlow()
+
+    /** The player instance the UI should draw into; changes when a playback setting forces a new player. */
+    private val _playerFlow = MutableStateFlow<ExoPlayer?>(null)
+    val playerFlow: StateFlow<ExoPlayer?> = _playerFlow.asStateFlow()
+
+    /** Where the next (re)start of a movie / episode continues (set when a dropped connection is re-opened). */
+    private var pendingRestartPositionMs = 0L
+
+    fun setPlaybackSettings(settings: PlaybackSettings) {
+        val old = _playbackSettings.value
+        if (old == settings) return
+        _playbackSettings.value = settings
+        context.getSharedPreferences("tvbuddy_prefs", Context.MODE_PRIVATE).edit()
+            .putString(KEY_BUFFER, settings.bufferSize.name)
+            .putString(KEY_AUDIO_DEC, settings.audioDecoder.name)
+            .putString(KEY_VIDEO_DEC, settings.videoDecoder.name)
+            .apply()
+        rebuildPlayer()
+    }
+
+    /** Buffer size and decoders are fixed when a player is built, so a change builds a new one and re-opens the stream. */
+    private fun rebuildPlayer() {
+        val old = exoPlayer ?: return
+        val channel = lastChannel
+        val isLive = channel?.contentType == com.example.data.model.ContentType.TV
+        val position = if (isLive) 0L else try { old.currentPosition } catch (_: Throwable) { 0L }
+        cancelRetry()
+        try { old.stop() } catch (_: Throwable) {}
+        val fresh = createPlayer()
+        exoPlayer = fresh
+        boostNeedsRebuild = true
+        _playerFlow.value = fresh
+        // the old player is released a moment later, after the screen switched to the new one
+        mainHandler.postDelayed({ try { old.release() } catch (_: Throwable) {} }, 600L)
+        if (channel != null && !suspendedForBackground) {
+            retryCount = 0
+            pendingRestartPositionMs = position
+            startPlayback(channel, lastSpoof)
+        }
+    }
+
+    private fun codecSelector(): MediaCodecSelector = object : MediaCodecSelector {
+        override fun getDecoderInfos(
+            mimeType: String,
+            requiresSecureDecoder: Boolean,
+            requiresTunnelingDecoder: Boolean
+        ): List<MediaCodecInfo> {
+            val list = MediaCodecUtil.getDecoderInfos(mimeType, requiresSecureDecoder, requiresTunnelingDecoder)
+            val s = _playbackSettings.value
+            val mode = if (MimeTypes.isVideo(mimeType)) s.videoDecoder else s.audioDecoder
+            // software first (hardware stays as the fallback); the sort is stable
+            return if (mode == DecoderMode.SOFTWARE) list.sortedBy { it.hardwareAccelerated } else list
+        }
+    }
+
+    private fun loadControl(): DefaultLoadControl {
+        val b = _playbackSettings.value.bufferSize
+        val builder = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(b.minMs, b.maxMs, b.startMs, b.rebufferMs)
+        if (b.maxBytes > 0) builder.setTargetBufferBytes(b.maxBytes)
+        return builder.build()
+    }
 
     // ---- Audio boost (LoudnessEnhancer / DynamicsProcessing on the player's audio session) ----
     private val boostPrefs = context.getSharedPreferences("tvbuddy_prefs", Context.MODE_PRIVATE)
@@ -229,7 +307,7 @@ class TvBuddyPlayerManager(
     val videoTracks: StateFlow<List<VideoTrackOption>> = _videoTracks.asStateFlow()
 
     fun getPlayer(): ExoPlayer {
-        return exoPlayer ?: createPlayer().also { exoPlayer = it }
+        return exoPlayer ?: createPlayer().also { exoPlayer = it; _playerFlow.value = it }
     }
 
     private fun isTelevision(): Boolean {
@@ -285,9 +363,16 @@ class TvBuddyPlayerManager(
                 return builder.build()
             }
         }
-            .setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON)
+            .setExtensionRendererMode(
+                // "Software" audio decoder: the FFmpeg decoder is tried before the phone's hardware codec
+                if (_playbackSettings.value.audioDecoder == DecoderMode.SOFTWARE)
+                    androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+                else androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+            )
+            .setMediaCodecSelector(codecSelector())
             .setEnableDecoderFallback(true)
         return ExoPlayer.Builder(context, renderers)
+            .setLoadControl(loadControl())
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(10_000)
             .build().apply {
@@ -299,6 +384,7 @@ class TvBuddyPlayerManager(
                         _isBuffering.value = (playbackState == Player.STATE_BUFFERING)
                         _isPlaying.value = (playbackState == Player.STATE_READY && playWhenReady)
                         if (playbackState == Player.STATE_BUFFERING) startStallWatchdog() else cancelStallWatchdog()
+                        if (playbackState == Player.STATE_ENDED) handleUnexpectedEnd(this@apply)
                         if (playbackState == Player.STATE_READY) {
                             if (_audioBoostProfile.value != AudioBoostProfile.OFF) {
                                 if (boostNeedsRebuild) { boostNeedsRebuild = false; scheduleBoostRebuild() }
@@ -403,6 +489,7 @@ class TvBuddyPlayerManager(
                         if (lastChannel != null && isRetryable(error) && retryCount < MAX_RETRIES) {
                             retryCount++
                             PlaybackLog.warn("RETRY", "Auto retry $retryCount/$MAX_RETRIES in ${retryCount * RETRY_STEP_MS} ms")
+                            rememberPositionForRestart(this@apply)
                             retryPending = true
                             _isBuffering.value = true
                             _isPlaying.value = false
@@ -552,6 +639,35 @@ class TvBuddyPlayerManager(
         }
     }
 
+    /** Movies / episodes continue where the dropped connection left off; live TV simply rejoins the live edge. */
+    private fun rememberPositionForRestart(p: ExoPlayer) {
+        pendingRestartPositionMs =
+            if (lastChannel?.contentType == com.example.data.model.ContentType.TV) 0L
+            else try { p.currentPosition.coerceAtLeast(0L) } catch (_: Throwable) { 0L }
+    }
+
+    /**
+     * Portals (Stalker especially) close a stream connection after a couple of minutes. Without this the player
+     * reached "ended" and stayed paused. A live channel, or a movie that ends well before its length, is re-opened.
+     */
+    private fun handleUnexpectedEnd(p: ExoPlayer) {
+        val channel = lastChannel ?: return
+        if (suspendedForBackground || retryPending) return
+        val live = channel.contentType == com.example.data.model.ContentType.TV
+        if (!live) {
+            val duration = p.duration
+            if (duration == C.TIME_UNSET || duration <= 0 || duration - p.currentPosition < 20_000L) return  // really finished
+        }
+        if (retryCount >= MAX_RETRIES) return
+        retryCount++
+        PlaybackLog.warn("RECONNECT", "Stream ended unexpectedly on '${channel.name}', reconnecting ($retryCount/$MAX_RETRIES)")
+        rememberPositionForRestart(p)
+        retryPending = true
+        _isBuffering.value = true
+        mainHandler.removeCallbacks(retryRunnable)
+        mainHandler.postDelayed(retryRunnable, 300L)
+    }
+
     private fun isRetryable(error: PlaybackException): Boolean {
         val drmFatal = error.errorCode == PlaybackException.ERROR_CODE_DRM_SCHEME_UNSUPPORTED ||
             error.errorCode == PlaybackException.ERROR_CODE_DRM_PROVISIONING_FAILED ||
@@ -625,11 +741,16 @@ class TvBuddyPlayerManager(
             ".ts", ".mp4", ".m4v", ".mkv", ".flv", ".webm", ".aac", ".mp3", ".avi", ".mov", ".mpg", ".mpeg"
         )
         const val MAX_RETRIES = 5
+        /** transient network errors while loading are retried this many times before the player reports an error */
+        const val LOAD_RETRIES = 8
         const val RETRY_STEP_MS = 1_500L
         const val STABLE_PLAY_MS = 10_000L
         const val STALL_TIMEOUT_MS = 30_000L
         const val FPS_SAMPLE_MS = 2000L
         const val KEY_AUDIO_BOOST = "audio_boost_profile"
+        const val KEY_BUFFER = "playback_buffer_size"
+        const val KEY_AUDIO_DEC = "playback_audio_decoder"
+        const val KEY_VIDEO_DEC = "playback_video_decoder"
         val STANDARD_FPS = listOf(23.976f, 24f, 25f, 29.97f, 30f, 50f, 59.94f, 60f)
     }
 
@@ -639,6 +760,7 @@ class TvBuddyPlayerManager(
     ) {
         cancelRetry()
         retryCount = 0
+        pendingRestartPositionMs = 0L
         forcedType = null
         progressiveProbe = 0
         suspendedForBackground = false
@@ -801,7 +923,9 @@ class TvBuddyPlayerManager(
             drmType = if (isDrm) drmType.title else "None"
         )
 
-        player.setMediaSource(mediaSource)
+        val startAt = pendingRestartPositionMs
+        pendingRestartPositionMs = 0L
+        if (startAt > 0L) player.setMediaSource(mediaSource, startAt) else player.setMediaSource(mediaSource)
         player.prepare()
         player.play()
     }
@@ -835,6 +959,7 @@ class TvBuddyPlayerManager(
                 // load the first segment exposes the real tracks (e.g. "Hindi, Stereo").
                 val factory = HlsMediaSource.Factory(dataSourceFactory)
                     .setAllowChunklessPreparation(false)
+                    .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(LOAD_RETRIES))
                 if (drmSessionManagerProvider != null) {
                     factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
                 }
@@ -842,6 +967,7 @@ class TvBuddyPlayerManager(
             }
             C.CONTENT_TYPE_DASH -> {
                 val factory = DashMediaSource.Factory(dataSourceFactory)
+                    .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(LOAD_RETRIES))
                 if (drmSessionManagerProvider != null) {
                     factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
                 }
@@ -853,6 +979,7 @@ class TvBuddyPlayerManager(
             }
             else -> {
                 val factory = ProgressiveMediaSource.Factory(dataSourceFactory)
+                    .setLoadErrorHandlingPolicy(DefaultLoadErrorHandlingPolicy(LOAD_RETRIES))
                 if (drmSessionManagerProvider != null) {
                     factory.setDrmSessionManagerProvider(drmSessionManagerProvider)
                 }
@@ -1065,6 +1192,7 @@ class TvBuddyPlayerManager(
         exoPlayer?.stop()
         exoPlayer?.release()
         exoPlayer = null
+        _playerFlow.value = null
         audioBoost.release()
         _isPlaying.value = false
         _isBuffering.value = false
