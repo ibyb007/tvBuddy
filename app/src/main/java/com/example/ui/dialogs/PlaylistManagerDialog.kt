@@ -148,6 +148,7 @@ sealed class TiviSettingsRoute {
     data class EpgSourceDetail(val sourceId: Long) : TiviSettingsRoute()
     data class EditEpgSourceUrl(val sourceId: Long) : TiviSettingsRoute()
     data object AudioBoost : TiviSettingsRoute()
+    data object Playback : TiviSettingsRoute()
 }
 
 /** State of an inline "Update ..." row: spinner while [running], then a result [message]. */
@@ -227,7 +228,7 @@ private val LocalDrawerFocus = compositionLocalOf<DrawerFocusMemory?> { null }
  */
 private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when (route) {
     is TiviSettingsRoute.Main -> listOf(route)
-    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback -> listOf(TiviSettingsRoute.Main, route)
     is TiviSettingsRoute.ReorderPlaylists, is TiviSettingsRoute.PlaylistDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, route)
     is TiviSettingsRoute.PlaylistEpgSources ->
@@ -349,6 +350,8 @@ fun PlaylistManagerDialog(
     onTogglePlaybackLog: (Boolean) -> Unit = {},
     onExportPlaybackLog: () -> Unit = {},
     onOpenSpoofEngine: () -> Unit = {},
+    playbackSettings: com.example.player.PlaybackSettings = com.example.player.PlaybackSettings(),
+    onChangePlaybackSettings: (com.example.player.PlaybackSettings) -> Unit = {},
     audioBoostProfile: com.example.player.AudioBoostProfile = com.example.player.AudioBoostProfile.OFF,
     onSelectAudioBoost: (com.example.player.AudioBoostProfile) -> Unit = {},
     warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
@@ -494,6 +497,8 @@ fun PlaylistManagerDialog(
                                 onOpenPlaylists = { navigateTo(TiviSettingsRoute.Playlists) },
                                 onOpenSpoofEngine = onOpenSpoofEngine,
                                 onOpenEpg = { navigateTo(TiviSettingsRoute.Epg) },
+                                playbackSettings = playbackSettings,
+                                onOpenPlayback = { navigateTo(TiviSettingsRoute.Playback) },
                                 audioBoostProfile = audioBoostProfile,
                                 onOpenAudioBoost = { navigateTo(TiviSettingsRoute.AudioBoost) },
                                 warpState = warpState,
@@ -757,6 +762,11 @@ fun PlaylistManagerDialog(
                                 }
                             }
 
+                            is TiviSettingsRoute.Playback -> PlaybackSubMenu(
+                                settings = playbackSettings,
+                                onChange = onChangePlaybackSettings
+                            )
+
                             is TiviSettingsRoute.AudioBoost -> AudioBoostSubMenu(
                                 selected = audioBoostProfile,
                                 onSelect = onSelectAudioBoost
@@ -835,6 +845,8 @@ private fun MainSettingsMenu(
     onOpenPlaylists: () -> Unit,
     onOpenSpoofEngine: () -> Unit,
     onOpenEpg: () -> Unit,
+    playbackSettings: com.example.player.PlaybackSettings,
+    onOpenPlayback: () -> Unit,
     audioBoostProfile: com.example.player.AudioBoostProfile,
     onOpenAudioBoost: () -> Unit,
     warpState: com.example.data.network.WarpManager.State,
@@ -871,6 +883,13 @@ private fun MainSettingsMenu(
                     title = "EPG",
                     subtitle = "EPG sources and update options",
                     onClick = onOpenEpg
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Playback",
+                    subtitle = "Buffer: ${playbackSettings.bufferSize.title} · Audio: ${playbackSettings.audioDecoder.title} · Video: ${playbackSettings.videoDecoder.title}",
+                    onClick = onOpenPlayback
                 )
             }
             item {
@@ -951,6 +970,81 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
             color = TiviSecondaryText,
             fontSize = 13.sp
         )
+    }
+}
+
+// ============================================================================
+// 1a. PLAYBACK SUBMENU ("Playback": buffer size, audio decoder, video decoder)
+// ============================================================================
+
+@Composable
+private fun PlaybackSubMenu(
+    settings: com.example.player.PlaybackSettings,
+    onChange: (com.example.player.PlaybackSettings) -> Unit
+) {
+    @Composable
+    fun check(selected: Boolean, isFocused: Boolean) {
+        if (selected) {
+            Icon(
+                Icons.Default.Check,
+                contentDescription = "Selected",
+                tint = if (isFocused) TiviFocusText else TiviAccentBlue
+            )
+        }
+    }
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Playback")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            item { DrawerSectionHeader(title = "Buffer size") }
+            items(com.example.player.BufferSize.entries.toList()) { size ->
+                TiviMenuRow(
+                    title = size.title,
+                    onClick = { onChange(settings.copy(bufferSize = size)) },
+                    trailingContent = { f -> check(size == settings.bufferSize, f) }
+                )
+            }
+            item {
+                Text(
+                    "How much video is downloaded before playback starts and kept ahead. Increase it if the stream " +
+                        "often pauses to buffer; a bigger buffer makes channel switching slower.",
+                    color = TiviSecondaryText, fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+            }
+            item { DrawerSectionHeader(title = "Audio decoder") }
+            items(com.example.player.DecoderMode.entries.toList()) { mode ->
+                TiviMenuRow(
+                    title = mode.title,
+                    onClick = { onChange(settings.copy(audioDecoder = mode)) },
+                    trailingContent = { f -> check(mode == settings.audioDecoder, f) }
+                )
+            }
+            item {
+                Text(
+                    "Try the software audio decoder if your device has issues when decoding audio using the hardware decoder.",
+                    color = TiviSecondaryText, fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+            }
+            item { DrawerSectionHeader(title = "Video decoder") }
+            items(com.example.player.DecoderMode.entries.toList()) { mode ->
+                TiviMenuRow(
+                    title = mode.title,
+                    onClick = { onChange(settings.copy(videoDecoder = mode)) },
+                    trailingContent = { f -> check(mode == settings.videoDecoder, f) }
+                )
+            }
+            item {
+                Text(
+                    "Try the software video decoder if your device has issues when decoding video using the hardware decoder.",
+                    color = TiviSecondaryText, fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+            }
+        }
     }
 }
 
