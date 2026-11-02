@@ -32,6 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
+import androidx.compose.material.icons.filled.PictureInPictureAlt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -163,6 +164,7 @@ fun TvPlayerOverlay(
     onSelectAudioTrack: (TrackInfo) -> Unit = {},
     onDisableAudio: () -> Unit = {},
     onOpenSubtitles: () -> Unit,
+    onEnterPip: () -> Unit = {},
     onClosePlayer: () -> Unit,
     onOpenSpoofSettings: () -> Unit = {},
     onOpenPlaylists: () -> Unit = {},
@@ -311,6 +313,7 @@ fun TvPlayerOverlay(
                 audioIndex = if (sel >= 0) sel + 1 else 0
                 panel = TvPanel.AUDIO
             },
+            TvMenuItem("PiP", Icons.Default.PictureInPictureAlt) { panel = TvPanel.NONE; onEnterPip() },
             TvMenuItem("Subtitles", Icons.Default.ClosedCaption) { panel = TvPanel.NONE; onOpenSubtitles() },
             TvMenuItem(
                 if (channel?.isFavorite == true) "Remove from Favorites" else "Add to Favorites",
@@ -654,18 +657,18 @@ fun TvPlayerOverlay(
                             listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f), Color.Black.copy(alpha = 0.9f))
                         )
                     )
-                    .padding(start = 8.dp, end = 8.dp, top = 56.dp, bottom = 14.dp),
+                    .padding(start = 4.dp, end = 4.dp, top = 52.dp, bottom = 13.dp),
                 verticalAlignment = Alignment.Top
             ) {
                 items.forEachIndexed { i, item ->
                     val selected = i == menuIndex
                     Column(
-                        modifier = Modifier.weight(1f).padding(horizontal = 2.dp),
+                        modifier = Modifier.weight(1f).padding(horizontal = 1.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(56.dp)
+                                .size(52.dp)
                                 .clip(CircleShape)
                                 .background(if (selected) TvSelected else Color.White.copy(alpha = 0.14f)),
                             contentAlignment = Alignment.Center
@@ -674,15 +677,15 @@ fun TvPlayerOverlay(
                                 item.icon,
                                 contentDescription = item.label,
                                 tint = if (selected) Color.Black else Color.White,
-                                modifier = Modifier.size(30.dp)
+                                modifier = Modifier.size(28.dp)
                             )
                         }
-                        Spacer(Modifier.height(6.dp))
+                        Spacer(Modifier.height(5.dp))
                         Text(
                             item.label,
                             color = Color.White,
-                            fontSize = 15.sp,
-                            lineHeight = 18.sp,
+                            fontSize = 14.sp,
+                            lineHeight = 17.sp,
                             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                             style = androidx.compose.ui.text.TextStyle(
                                 shadow = androidx.compose.ui.graphics.Shadow(
