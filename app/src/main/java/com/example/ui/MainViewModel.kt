@@ -743,6 +743,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible, contentType) }
     }
 
+    // ---- Playback settings (Settings > Playback: buffer size, audio / video decoder) ----
+    val playbackSettings: StateFlow<com.example.player.PlaybackSettings> = playerManager.playbackSettings
+
+    fun setPlaybackSettings(settings: com.example.player.PlaybackSettings) = playerManager.setPlaybackSettings(settings)
+
     // ---- Audio boost (Settings > Audio boost, TV long-OK menu) ----
     val audioBoostProfile: StateFlow<com.example.player.AudioBoostProfile> = playerManager.audioBoostProfile
 
