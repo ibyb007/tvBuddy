@@ -688,21 +688,25 @@ fun HomeScreen(
                                                 showAddDialog = true
                                             }
                                         )
-                                        DropdownMenuItem(
-                                            leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = Color.White) },
-                                            text = { Text("Playlists Manager", color = Color.White) },
-                                            onClick = {
-                                                showMoreMenu = false
-                                                openSettings(TiviSettingsRoute.Main)
-                                            }
-                                        )
+                                        val menuWarp by viewModel.warpState.collectAsStateWithLifecycle()
+                                        val warpStarting = menuWarp.phase == com.example.data.network.WarpManager.Phase.STARTING
                                         DropdownMenuItem(
                                             leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, tint = AccentCyan) },
-                                            text = { Text("Player Spoofing Engine", color = Color.White) },
-                                            onClick = {
-                                                showMoreMenu = false
-                                                showSpoofDialog = true
-                                            }
+                                            text = {
+                                                Text(
+                                                    if (warpStarting) "WARP Mode (starting...)" else "WARP Mode",
+                                                    color = Color.White
+                                                )
+                                            },
+                                            trailingIcon = {
+                                                androidx.compose.material3.Switch(
+                                                    checked = menuWarp.enabled,
+                                                    onCheckedChange = null,
+                                                    enabled = !warpStarting
+                                                )
+                                            },
+                                            enabled = !warpStarting,
+                                            onClick = { viewModel.setWarpEnabled(!menuWarp.enabled) }
                                         )
                                         DropdownMenuItem(
                                             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm) },
