@@ -394,7 +394,8 @@ fun HomeScreen(
     } else if (isTvMode) {
         // TV Fullscreen Leanback Mode (TiviMate-style)
         Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-            val player = viewModel.playerManager.getPlayer()
+            val livePlayer by viewModel.playerManager.playerFlow.collectAsStateWithLifecycle()
+            val player = livePlayer ?: viewModel.playerManager.getPlayer()
             val epgByChannel by viewModel.epgByChannel.collectAsStateWithLifecycle()
             val browseLevel = tvBrowse
             // where the TV page's preview window currently is (written by TvBrowseScreen, read only in layout)
@@ -784,7 +785,8 @@ fun HomeScreen(
             Column(modifier = Modifier.fillMaxSize()) {
                 // If a channel is selected, show the custom Composable Player Screen
                 if (currentChannel != null) {
-                    val player = viewModel.playerManager.getPlayer()
+                    val livePlayer by viewModel.playerManager.playerFlow.collectAsStateWithLifecycle()
+            val player = livePlayer ?: viewModel.playerManager.getPlayer()
                     Box(
                         modifier = if (isMobileFullscreen || isInPipMode) {
                             Modifier.fillMaxSize()
@@ -1152,6 +1154,7 @@ fun HomeScreen(
         val playbackLogEnabled by viewModel.playbackLogEnabled.collectAsStateWithLifecycle()
         val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
         val warpState by viewModel.warpState.collectAsStateWithLifecycle()
+        val playbackSettings by viewModel.playbackSettings.collectAsStateWithLifecycle()
         PlaylistManagerDialog(
             playlists = playlists,
             onDismiss = { showPlaylistManager = false },
@@ -1188,6 +1191,8 @@ fun HomeScreen(
             onTogglePlaybackLog = { viewModel.setPlaybackLogging(it) },
             onExportPlaybackLog = { viewModel.exportPlaybackLog() },
             onOpenSpoofEngine = { showSpoofDialog = true },
+            playbackSettings = playbackSettings,
+            onChangePlaybackSettings = { viewModel.setPlaybackSettings(it) },
             audioBoostProfile = audioBoostProfile,
             onSelectAudioBoost = { viewModel.setAudioBoostProfile(it) },
             warpState = warpState,
