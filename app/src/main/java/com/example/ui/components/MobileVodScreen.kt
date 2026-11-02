@@ -708,13 +708,24 @@ private fun MvDetails(
                     }
                     Spacer(Modifier.height(10.dp))
                     val current = seasons.getOrNull(seasonIndex.coerceIn(0, seasons.lastIndex))
-                    current?.episodes?.forEach { ep ->
-                        MvEpisodeRow(
-                            ep = ep,
-                            resumeMs = episodeResume(ep),
-                            fallbackImage = info?.backdropUrl.orEmpty().ifBlank { item.logoUrl.orEmpty() },
-                            onClick = { if (!playPending) onPlayEpisode(ep, episodeResume(ep)) }
-                        )
+                    val episodeFallback = info?.backdropUrl.orEmpty().ifBlank { item.logoUrl.orEmpty() }
+                    current?.episodes?.chunked(3)?.forEach { rowEps ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            rowEps.forEach { ep ->
+                                MvEpisodeRow(
+                                    ep = ep,
+                                    resumeMs = episodeResume(ep),
+                                    fallbackImage = episodeFallback,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { if (!playPending) onPlayEpisode(ep, episodeResume(ep)) }
+                                )
+                            }
+                            // keep card width equal on a partially filled last row
+                            repeat(3 - rowEps.size) { Spacer(Modifier.weight(1f)) }
+                        }
                     }
                 } else if (!isMovies && seasonsLoading) {
                     Spacer(Modifier.height(16.dp))
@@ -749,20 +760,23 @@ private fun MvDetails(
     }
 }
 
-/** One episode of the details page: thumbnail, "E3. Title", duration and a short plot; tap plays it. */
+/** One episode card of the details page (3 per row on mobile): thumbnail, "E3. Title", duration; tap plays it. */
 @Composable
-private fun MvEpisodeRow(ep: VodEpisode, resumeMs: Long, fallbackImage: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 5.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .clickable(onClick = onClick),
-        verticalAlignment = Alignment.Top
+private fun MvEpisodeRow(
+    ep: VodEpisode,
+    resumeMs: Long,
+    fallbackImage: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
     ) {
         Box(
             modifier = Modifier
-                .width(128.dp)
+                .fillMaxWidth()
                 .aspectRatio(16f / 9f)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MvPosterBg)
@@ -775,32 +789,26 @@ private fun MvEpisodeRow(ep: VodEpisode, resumeMs: Long, fallbackImage: String, 
                 Icons.Default.PlayArrow,
                 contentDescription = null,
                 tint = Color.White.copy(alpha = 0.9f),
-                modifier = Modifier.align(Alignment.Center).size(26.dp)
-                    .clip(RoundedCornerShape(13.dp)).background(Color.Black.copy(alpha = 0.45f))
+                modifier = Modifier.align(Alignment.Center).size(22.dp)
+                    .clip(RoundedCornerShape(11.dp)).background(Color.Black.copy(alpha = 0.45f))
             )
             if (resumeMs > 0) {
                 Text(
                     "Resume",
                     color = Color.White,
-                    fontSize = 9.sp,
+                    fontSize = 8.sp,
                     modifier = Modifier
                         .align(Alignment.TopEnd)
-                        .padding(4.dp)
+                        .padding(3.dp)
                         .clip(RoundedCornerShape(4.dp))
                         .background(Color(0xFF1E88E5))
-                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                        .padding(horizontal = 4.dp, vertical = 1.dp)
                 )
             }
         }
-        Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(ep.label, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (ep.duration.isNotBlank()) Text(ep.duration, color = MvMuted, fontSize = 11.sp)
-            if (ep.plot.isNotBlank()) {
-                Spacer(Modifier.height(2.dp))
-                Text(ep.plot, color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, lineHeight = 15.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
-            }
-        }
+        Spacer(Modifier.height(4.dp))
+        Text(ep.label, color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+        if (ep.duration.isNotBlank()) Text(ep.duration, color = MvMuted, fontSize = 10.sp, maxLines = 1)
     }
 }
 
