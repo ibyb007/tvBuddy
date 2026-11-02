@@ -545,6 +545,7 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
+                    onEnterPip = onEnterPip,
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     modifier = Modifier.fillMaxSize().zIndex(2f)
                 )
@@ -576,6 +577,7 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
+                    onEnterPip = onEnterPip,
                     epgByChannel = epgByChannel,
                     recentChannels = recentChannels,
                     onRemoveRecent = { viewModel.removeFromHistory(it) },
