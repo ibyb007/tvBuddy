@@ -400,6 +400,8 @@ fun HomeScreen(
             val browseLevel = tvBrowse
             // where the TV page's preview window currently is (written by TvBrowseScreen, read only in layout)
             val previewBounds = remember { mutableStateOf<Rect?>(null) }
+            // how far the TV page is currently pushed right by its sliding panels (the preview follows it in layout)
+            val previewShift = remember { mutableStateOf<() -> Float>({ 0f }) }
 
             if (browseLevel != null) {
                 // TV page: preview + EPG grid, playlist groups panel and rail (BACK from playback / LEFT from channel list)
@@ -437,6 +439,7 @@ fun HomeScreen(
                     onOpenVod = { vodDetailId = null; vodType = it },
                     focusSuspended = vodType != null,
                     onPreviewBounds = { previewBounds.value = it },
+                    onPreviewShift = { previewShift.value = it },
                     overlayMode = tvBrowseOverlay,
                     onDismiss = { tvBrowse = null },
                     onOptionsVisible = { tvOptionsOpen = it },
@@ -515,6 +518,7 @@ fun HomeScreen(
                     aspectMode = aspectMode,
                     browsing = browseLevel != null && !tvBrowseOverlay,
                     previewBounds = previewBounds,
+                    previewShift = previewShift,
                     modifier = Modifier.fillMaxSize().zIndex(1f)
                 )
             }
