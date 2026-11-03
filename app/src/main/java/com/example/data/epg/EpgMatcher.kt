@@ -42,10 +42,71 @@ object EpgMatcher {
     fun normNamesOf(displayNames: List<String>, id: String): String =
         (displayNames + id.replace(domainSuffix, "")).map { normalize(it) }.filter { it.isNotEmpty() }.distinct().joinToString("\t")
 
+    // ---- Smart matching for playlists without tvg-id (Sony Ten, Star Sports, Fox 501-507, Sky Sports ...) ----
+
+    /** A name that is only a brand says nothing about the channel ("Star 4K" is not the entertainment channel "Star"). */
+    private val genericNames = setOf(
+        "star", "sky", "fox", "sony", "zee", "colors", "sun", "tnt", "bt", "etv", "sports", "sport", "news",
+        "movies", "kids", "music", "ten", "tv"
+    )
+    private val noiseTokens = qualityTokens + setOf(
+        "hindi", "english", "tamil", "telugu", "bangla", "bengali", "marathi", "kannada", "malayalam", "punjabi",
+        "gujarati", "urdu", "channel", "live", "in", "uk", "us", "au", "ind", "india"
+    )
+    /** Foxtel Australia: channel number -> the name the guides use for it. */
+    private val foxAu = mapOf(501 to "cricket", 502 to "league", 503 to "footy")
+
+    fun isGeneric(norm: String) = norm in genericNames
+
+    private fun tokensOf(name: String?): List<String> {
+        if (name.isNullOrBlank()) return emptyList()
+        var s = Normalizer.normalize(name, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
+        s = s.replace(bracketed, " ")
+        val m = prefix.find(s)
+        if (m != null && m.range.first == 0 && s.length - m.value.length >= 2) s = s.substring(m.value.length)
+        s = s.lowercase().replace("&", " and ")
+            .replace(Regex("sony\\s*sports?\\s*ten"), "sony ten")
+            .replace(Regex("(?<=[a-z])(?=\\d)"), " ")
+        return s.split(Regex("[^a-z0-9\\p{L}]+")).filter { it.isNotEmpty() && it !in noiseTokens }
+    }
+
+    /** Order-free key of a name: "Ten 1 Sony" and "Sony Sports Ten 1 HD" give the same key. */
+    private fun tokenKey(tokens: List<String>) = tokens.sorted().joinToString(" ")
+
+    /** Alternative keys for a channel name, most specific first. */
+    fun smartKeys(name: String?): List<String> {
+        val t = tokensOf(name)
+        if (t.isEmpty()) return emptyList()
+        val out = LinkedHashSet<String>()
+        out += tokenKey(t)
+        // Foxtel "501" - "507": guides list them by number or by their name (Fox Cricket / League / Footy)
+        val num = t.firstNotNullOfOrNull { it.toIntOrNull()?.takeIf { n -> n in 501..507 } }
+        if (num != null && "fox" in t) {
+            out += tokenKey(listOf("fox", "sports", num.toString()))
+            out += tokenKey(listOf("fox", num.toString()))
+            foxAu[num]?.let { out += tokenKey(listOf("fox", it)) }
+        }
+        // a trailing channel number (>= 100) that the guide does not repeat: "Fox Cricket 501" -> "Fox Cricket"
+        val noBigNumber = t.filter { it.toIntOrNull()?.let { n -> n >= 100 } != true }
+        if (noBigNumber.isNotEmpty() && noBigNumber.size < t.size && !(num != null && foxAu[num] == null)) out += tokenKey(noBigNumber)
+        // "Sports" is often dropped or added between brand and number
+        val noSports = t.filter { it != "sports" && it != "sport" }
+        if (noSports.isNotEmpty() && noSports.size < t.size) out += tokenKey(noSports)
+        return out.filter { k -> k.split(' ').let { parts -> !(parts.size == 1 && parts[0] in genericNames) } }
+    }
+
+    /** True when [id] is a generic brand id that does not fit the channel's own name (a mapping from an older, looser matcher). */
+    fun isWrongGenericId(ch: ChannelEpgRef): Boolean {
+        val id = ch.epgChannelId?.takeIf { it.isNotBlank() } ?: return false
+        val nId = normalize(id.replace(domainSuffix, ""))
+        return nId in genericNames && normalize(ch.name) != nId
+    }
+
     /** Built once per mapping run from the guide's channel list and the ids that have programmes. */
     class Index(guide: List<EpgChannelEntity>, idsWithPrograms: Set<String>) {
         private val byLowerId = HashMap<String, String>()
         private val byNorm = HashMap<String, MutableList<String>>()
+        private val byTok = HashMap<String, MutableList<String>>()
         val icons = HashMap<String, String>()
 
         init {
@@ -54,6 +115,7 @@ object EpgMatcher {
                 byLowerId.putIfAbsent(g.lowerId, g.channelId)
                 g.iconUrl?.takeIf { it.isNotBlank() }?.let { icons[g.channelId] = it }
                 for (n in g.normNames.split('\t')) if (n.isNotEmpty()) byNorm.getOrPut(n) { ArrayList(2) }.add(g.channelId)
+                for (k in smartKeys(g.displayName).take(1)) byTok.getOrPut(k) { ArrayList(2) }.add(g.channelId)
             }
             // ids that have programmes but no <channel> element in the guide still match by id
             for (id in idsWithPrograms) byLowerId.putIfAbsent(id.lowercase(), id)
@@ -65,6 +127,8 @@ object EpgMatcher {
                 }
             }
         }
+
+        fun byTokens(key: String): String? = byTok[key]?.firstOrNull()
 
         fun byId(id: String?): String? = id?.trim()?.takeIf { it.isNotEmpty() }?.let { byLowerId[it.lowercase()] }
 
@@ -80,11 +144,17 @@ object EpgMatcher {
 
     /** The guide channel [ch] belongs to, or null. */
     fun resolve(ch: ChannelEpgRef, index: Index): String? {
-        index.byId(ch.epgChannelId)?.let { return it }
-        index.byId(ch.epgName)?.let { return it }
+        val wrong = isWrongGenericId(ch)
+        if (!wrong) index.byId(ch.epgChannelId)?.let { return it }
+        index.byId(ch.epgName)?.let { if (!isGeneric(normalize(it))) return it }
         index.byId(ch.name)?.let { return it }
-        index.byName(normalize(ch.epgName), ch.epgChannelId)?.let { return it }
-        return index.byName(normalize(ch.name), ch.epgChannelId)
+        val nEpg = normalize(ch.epgName)
+        if (!isGeneric(nEpg)) index.byName(nEpg, ch.epgChannelId)?.let { return it }
+        val nName = normalize(ch.name)
+        if (!isGeneric(nName)) index.byName(nName, ch.epgChannelId)?.let { return it }
+        // no id and no exact name: word-order free / number-aware match
+        for (k in smartKeys(ch.name) + smartKeys(ch.epgName)) index.byTokens(k)?.let { return it }
+        return null
     }
 
     /**
