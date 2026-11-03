@@ -136,6 +136,122 @@ class TvBuddyRepository(
         if (anyOk) epgPrefs.edit().putLong("ts_$playlistId", System.currentTimeMillis()).apply()
     }
 
+    // ---- TVBuddy EPG engine (M3U playlists only: Stalker / Xtream bring their own guide) ----
+    private val _tvBuddyEpgStatus = kotlinx.coroutines.flow.MutableStateFlow(loadTvBuddyEpgStatus())
+    val tvBuddyEpgStatus: kotlinx.coroutines.flow.StateFlow<Map<Long, com.example.data.epg.TvBuddyEpgStatus>> = _tvBuddyEpgStatus
+
+    private fun loadTvBuddyEpgStatus(): Map<Long, com.example.data.epg.TvBuddyEpgStatus> {
+        val out = HashMap<Long, com.example.data.epg.TvBuddyEpgStatus>()
+        for ((k, v) in epgPrefs.all) {
+            if (!k.startsWith("tvb_") || v != true) continue
+            val id = k.removePrefix("tvb_").toLongOrNull() ?: continue
+            out[id] = com.example.data.epg.TvBuddyEpgStatus(
+                enabled = true,
+                matched = epgPrefs.getInt("tvbm_$id", 0),
+                total = epgPrefs.getInt("tvbt_$id", 0),
+                updatedAt = epgPrefs.getLong("tvbu_$id", 0L),
+                message = epgPrefs.getString("tvbs_$id", "") ?: ""
+            )
+        }
+        return out
+    }
+
+    private fun setTvBuddyStatus(playlistId: Long, st: com.example.data.epg.TvBuddyEpgStatus?) {
+        _tvBuddyEpgStatus.value = _tvBuddyEpgStatus.value.toMutableMap().also {
+            if (st == null) it.remove(playlistId) else it[playlistId] = st
+        }
+    }
+
+    private fun tvBuddyStatusOf(playlistId: Long) =
+        _tvBuddyEpgStatus.value[playlistId] ?: com.example.data.epg.TvBuddyEpgStatus(enabled = true)
+
+    /** Channels of the playlist whose programmes exist in the database (same keys the player looks up). */
+    private suspend fun tvBuddyMatchSplit(playlistId: Long): Pair<List<String>, List<String>> {
+        val ids = programDao.getDistinctChannelIds().mapTo(HashSet()) { it.lowercase() }
+        val matched = ArrayList<String>()
+        val unmatched = ArrayList<String>()
+        for (r in channelDao.getTvEpgRefs(playlistId)) {
+            val hit = r.epgChannelId?.lowercase() in ids || r.epgName?.lowercase() in ids || r.name.lowercase() in ids
+            (if (hit) matched else unmatched) += r.name
+        }
+        return matched to unmatched
+    }
+
+    /** Names of the playlist's live channels that still have no guide (the "Unmatched channels" page). */
+    suspend fun tvBuddyUnmatched(playlistId: Long): List<String> = withContext(Dispatchers.IO) {
+        tvBuddyMatchSplit(playlistId).second.distinct().sortedBy { it.lowercase() }
+    }
+
+    fun setTvBuddyEpg(playlistId: Long, enabled: Boolean, userAgent: String) {
+        epgPrefs.edit().putBoolean("tvb_$playlistId", enabled).apply()
+        if (enabled) {
+            setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(enabled = true, running = true, message = "Starting..."))
+        } else {
+            setTvBuddyStatus(playlistId, null)
+        }
+        epgScope.launch { if (enabled) runTvBuddyEpg(playlistId, userAgent) else removeTvBuddyEpg(playlistId) }
+    }
+
+    private suspend fun deleteEpgSourceIfUnused(sourceId: Long) {
+        val used = epgSourceDao.getAllPlaylistEpgCrossRefs().first().any { it.epgSourceId == sourceId }
+        if (!used) epgSourceDao.getEpgSourceById(sourceId)?.let { deleteEpgSource(it) }
+    }
+
+    private suspend fun removeTvBuddyEpg(playlistId: Long) {
+        val mine = epgSourceDao.getAllEpgSources().first().filter { it.name.startsWith(com.example.data.epg.TvBuddyEpg.NAME_PREFIX) }
+        val kept = epgPrefs.getStringSet("urls_$playlistId", null)?.toMutableSet()
+        for (src in mine) {
+            togglePlaylistEpgAssignment(playlistId, src.id, false)
+            kept?.remove(src.url)
+            deleteEpgSourceIfUnused(src.id)
+        }
+        if (kept != null) epgPrefs.edit().putStringSet("urls_$playlistId", kept).apply()
+        epgPrefs.edit().remove("tvbm_$playlistId").remove("tvbt_$playlistId").remove("tvbu_$playlistId").remove("tvbs_$playlistId").apply()
+    }
+
+    private suspend fun runTvBuddyEpg(playlistId: Long, userAgent: String) {
+        try {
+            val pl = playlistDao.getPlaylistById(playlistId) ?: return
+            if (pl.type == PlaylistType.STALKER || pl.type == PlaylistType.XTREAM) {
+                setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = false, message = "Not needed: this playlist type brings its own guide"))
+                return
+            }
+            val names = channelDao.getTvEpgRefs(playlistId).map { it.name.lowercase() }
+            val total = names.size
+            val keptUrls = LinkedHashSet<String>()
+            for (region in com.example.data.epg.TvBuddyEpg.REGIONS) {
+                if (region.trigger != null && names.none { region.trigger.containsMatchIn(it) }) continue
+                for (url in region.candidates) {
+                    setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = true, total = total, message = "${region.title}: downloading guide..."))
+                    val before = tvBuddyMatchSplit(playlistId).first.size
+                    val srcId = addEpgSource(url, "${com.example.data.epg.TvBuddyEpg.NAME_PREFIX} · ${region.title}")
+                    val ok = importXmltv(url, false, userAgent).isSuccess
+                    if (ok) remapEpg(playlistId)
+                    val after = if (ok) tvBuddyMatchSplit(playlistId).first.size else before
+                    if (ok && after > before) {
+                        togglePlaylistEpgAssignment(playlistId, srcId, true)
+                        keptUrls += url
+                        break
+                    } else {
+                        deleteEpgSourceIfUnused(srcId)
+                    }
+                }
+            }
+            if (keptUrls.isNotEmpty()) {
+                val urls = (epgPrefs.getStringSet("urls_$playlistId", null) ?: emptySet()) + keptUrls
+                epgPrefs.edit().putStringSet("urls_$playlistId", urls).putLong("ts_$playlistId", System.currentTimeMillis()).apply()
+            }
+            val matched = tvBuddyMatchSplit(playlistId).first.size
+            val now = System.currentTimeMillis()
+            val msg = if (keptUrls.isEmpty()) "No guide source added channels. Tap Unmatched channels to review" else "Matched $matched of $total channels"
+            epgPrefs.edit().putInt("tvbm_$playlistId", matched).putInt("tvbt_$playlistId", total)
+                .putLong("tvbu_$playlistId", now).putString("tvbs_$playlistId", msg).apply()
+            setTvBuddyStatus(playlistId, com.example.data.epg.TvBuddyEpgStatus(true, false, msg, matched, total, now))
+        } catch (e: Exception) {
+            setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = false, message = "Failed: ${e.message ?: "unknown error"}"))
+        }
+    }
+
     fun refreshStaleEpgs(userAgent: String) {
         epgScope.launch {
             val now = System.currentTimeMillis()
