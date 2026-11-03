@@ -28,6 +28,10 @@ interface ProgramDao {
     @Query("SELECT COUNT(*) FROM epg_programs WHERE epgChannelId = :epgChannelId AND endTimeMs >= :now")
     suspend fun countUpcoming(epgChannelId: String, now: Long = System.currentTimeMillis()): Int
 
+    /** Every channel id that still has programmes on air or ahead (used to find channels with no guide yet). */
+    @Query("SELECT DISTINCT epgChannelId FROM epg_programs WHERE endTimeMs >= :now")
+    suspend fun getChannelIdsWithUpcoming(now: Long = System.currentTimeMillis()): List<String>
+
     @Query("SELECT COUNT(DISTINCT epgChannelId) FROM epg_programs")
     suspend fun getDistinctUpdatedChannelsCount(): Int
 
