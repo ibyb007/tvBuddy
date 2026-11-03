@@ -693,23 +693,34 @@ fun HomeScreen(
                                         )
                                         val menuWarp by viewModel.warpState.collectAsStateWithLifecycle()
                                         val warpStarting = menuWarp.phase == com.example.data.network.WarpManager.Phase.STARTING
+                                        // fixed title + small status line, so the menu keeps its width while WARP connects
+                                        val warpStatus = when (menuWarp.phase) {
+                                            com.example.data.network.WarpManager.Phase.STARTING -> "Connecting"
+                                            com.example.data.network.WarpManager.Phase.RUNNING -> "On"
+                                            com.example.data.network.WarpManager.Phase.ERROR -> "Failed"
+                                            com.example.data.network.WarpManager.Phase.OFF -> "Off"
+                                        }
                                         DropdownMenuItem(
                                             leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, tint = AccentCyan) },
                                             text = {
-                                                Text(
-                                                    if (warpStarting) "WARP Mode (starting...)" else "WARP Mode",
-                                                    color = Color.White
-                                                )
+                                                Column {
+                                                    Text("WARP Mode", color = Color.White)
+                                                    Text(
+                                                        warpStatus,
+                                                        color = if (menuWarp.phase == com.example.data.network.WarpManager.Phase.RUNNING) AccentCyan else Color.LightGray,
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 13.sp,
+                                                        maxLines = 1
+                                                    )
+                                                }
                                             },
                                             trailingIcon = {
-                                                androidx.compose.material3.Switch(
+                                                com.example.ui.dialogs.SlimSwitch(
                                                     checked = menuWarp.enabled,
-                                                    onCheckedChange = null,
-                                                    enabled = !warpStarting
+                                                    accent = AccentCyan
                                                 )
                                             },
-                                            enabled = !warpStarting,
-                                            onClick = { viewModel.setWarpEnabled(!menuWarp.enabled) }
+                                            onClick = { if (!warpStarting) viewModel.setWarpEnabled(!menuWarp.enabled) }
                                         )
                                         DropdownMenuItem(
                                             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm) },
