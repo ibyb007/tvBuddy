@@ -1,5 +1,15 @@
 package com.example.ui.components
 
+import androidx.compose.ui.util.lerp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.runtime.State
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.animation.core.FastOutSlowInEasing
 import com.example.data.epg.EpgMatcher
 import android.os.SystemClock
 import android.widget.Toast
@@ -98,6 +108,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.compose.ui.unit.toSize
 import androidx.compose.ui.window.Dialog
 import androidx.media3.exoplayer.ExoPlayer
@@ -139,6 +150,8 @@ private val OptionsHeaderBg = Color(0xFF2A2E33)
 // ---- geometry on the 1080p design grid (scaled with rememberUiScale()) ----
 internal const val RAIL_COLLAPSED_PX = 112f
 private const val RAIL_EXPANDED_PX = 440f
+/** One duration for the rail / groups slide, so everything that follows it stays in step. */
+private const val PANEL_ANIM_MS = 260
 private const val GROUPS_PX = 500f
 private const val CONTENT_PAD_PX = 32f
 private const val CHANNEL_COL_END_PX = 543f      // x where the programme cells start (same as TvGuidePanel)
@@ -280,6 +293,8 @@ fun TvBrowseScreen(
     onOpenVod: (contentType: String) -> Unit = {},
     /** Reports where the preview window sits (root coordinates) so the shared video surface can follow it. */
     onPreviewBounds: (Rect) -> Unit = {},
+    /** hands out a function that returns how far (px) the page is pushed right by the sliding panels right now */
+    onPreviewShift: (() -> Float) -> Unit = {},
     /**
      * true when the page was opened from full-screen playback (LEFT, LEFT): the video keeps playing
      * full-screen behind a see-through page that shows the rail + groups + a plain channel list
@@ -586,14 +601,22 @@ fun TvBrowseScreen(
             TvBrowseLevel.GROUPS -> if (overlayMode) 0.dp else (RAIL_COLLAPSED_PX * k).dp   // no nav rail on the overlay page
             TvBrowseLevel.RAIL -> (RAIL_EXPANDED_PX * k).dp
         },
-        animationSpec = tween(220),
+        animationSpec = tween(PANEL_ANIM_MS, easing = FastOutSlowInEasing),
         label = "railWidth"
     )
     val groupsWidthState = animateDpAsState(
         targetValue = if (level == TvBrowseLevel.GUIDE) 0.dp else (GROUPS_PX * k).dp,
-        animationSpec = tween(220),
+        animationSpec = tween(PANEL_ANIM_MS, easing = FastOutSlowInEasing),
         label = "groupsWidth"
     )
+
+    // The shared video preview follows the sliding page by reading this in ITS layout pass, in the same frame,
+    // instead of waiting for a positioned-callback -> state -> relayout round trip (that lagged one frame behind).
+    val shiftDensity = LocalDensity.current
+    DisposableEffect(Unit) {
+        onPreviewShift { with(shiftDensity) { (railWidthState.value + groupsWidthState.value).roundToPx() }.toFloat() }
+        onDispose { onPreviewShift { 0f } }
+    }
 
     Box(
         modifier = modifier
@@ -666,7 +689,8 @@ fun TvBrowseScreen(
                 searchQuery = searchQuery,
                 numbering = numbering,
                 slotsOf = slotsFn,
-                onPreviewBounds = onPreviewBounds
+                onPreviewBounds = onPreviewBounds,
+                shiftPx = { with(shiftDensity) { (railWidthState.value + groupsWidthState.value).roundToPx() }.toFloat() }
             )
         }
 
@@ -675,6 +699,10 @@ fun TvBrowseScreen(
             RailPanel(
                 width = 0.dp,
                 widthProvider = { railWidthState.value },
+                progressProvider = {
+                    val lo = RAIL_COLLAPSED_PX * k
+                    ((railWidthState.value.value - lo) / (RAIL_EXPANDED_PX * k - lo)).coerceIn(0f, 1f)
+                },
                 k = k,
                 expanded = level == TvBrowseLevel.RAIL,
                 focused = level == TvBrowseLevel.RAIL,
@@ -731,7 +759,8 @@ private fun BrowseContent(
     searchQuery: String,
     numbering: Map<Long, Int>,
     slotsOf: (ChannelEntity) -> List<EpgSlot>,
-    onPreviewBounds: (Rect) -> Unit
+    onPreviewBounds: (Rect) -> Unit,
+    shiftPx: () -> Float
 ) {
     val dpPerMs = (BROWSE_HALF_HOUR_PX * k) / HALF_HOUR_MS
     // opens already positioned on the selected row; later jumps (group switch) are instant, single steps animate
@@ -759,7 +788,8 @@ private fun BrowseContent(
                     modifier = Modifier
                         .size(width = (PREVIEW_W_PX * k).dp, height = (PREVIEW_H_PX * k).dp)
                         .onGloballyPositioned { c ->
-                            onPreviewBounds(Rect(c.positionInRoot(), c.size.toSize()))
+                            // report the slot where it sits when the panels are settled; the slide itself is applied by the video surface
+                            onPreviewBounds(Rect(c.positionInRoot() - Offset(shiftPx(), 0f), c.size.toSize()))
                         }
                         .clip(RoundedCornerShape((16 * k).dp))
                         .background(Color.Black)
@@ -1041,8 +1071,19 @@ internal fun RailPanel(
     entries: List<RailEntry>,
     bgAlpha: Float = 1f,
     /** The page the rail belongs to (its icon stays lit): TV on the TV page, Movies / Shows on the VOD page. */
-    currentId: RailId = RailId.TV
+    currentId: RailId = RailId.TV,
+    /** 0 = collapsed .. 1 = expanded, read only while laying out / drawing (no recomposition per frame). */
+    progressProvider: (() -> Float)? = null
 ) {
+    // Everything that changes while the rail opens (logo offset, item widths, label fade) derives from ONE progress
+    // value that is only read in the layout / draw phases. The rail used to run ~25 separate animators that
+    // recomposed every item and re-measured text on each frame, which is what made the transition stutter.
+    val ownProgress = animateFloatAsState(
+        targetValue = if (expanded) 1f else 0f,
+        animationSpec = tween(PANEL_ANIM_MS, easing = FastOutSlowInEasing),
+        label = "railProgress"
+    )
+    val progress: () -> Float = progressProvider ?: { ownProgress.value }
     Box(
         modifier = (if (widthProvider != null) Modifier.layoutWidth(widthProvider) else Modifier.width(width))
             .fillMaxHeight()
@@ -1053,37 +1094,31 @@ internal fun RailPanel(
         // Must be start-aligned: a plain requiredWidth() larger than the rail gets CENTERED by Compose,
         // which pushed the logo and icons off the left edge while the rail is collapsed.
         Box(modifier = Modifier.wrapContentWidth(Alignment.Start, unbounded = true).width((RAIL_EXPANDED_PX * k).dp).fillMaxHeight()) {
-            // logo: "tv" always sits at the top of the rail; "Buddy" is revealed as the rail widens
-            val logoSize by animateFloatAsState(if (expanded) 60f else 62f, tween(220), label = "logoSize")
-            val logoStart by animateDpAsState(((if (expanded) 40 else 26) * k).dp, tween(220), label = "logoStart")
+            // logo: "tv" always sits at the top of the rail; "Buddy" fades in as the rail widens
             Row(
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(start = logoStart, top = (40 * k).dp),
+                    .padding(top = (40 * k).dp)
+                    .offset { IntOffset((lerp(26f, 40f, progress()) * k * density).roundToInt(), 0) },
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = "tv",
                     color = BrowseBlue,
                     fontWeight = FontWeight.Bold,
-                    fontSize = (logoSize * k).sp,
+                    fontSize = (61 * k).sp,
                     maxLines = 1,
                     softWrap = false
                 )
-                AnimatedVisibility(
-                    visible = expanded,
-                    enter = expandHorizontally(tween(220)) + fadeIn(tween(220)),
-                    exit = shrinkHorizontally(tween(220)) + fadeOut(tween(120))
-                ) {
-                    Text(
-                        text = "Buddy",
-                        color = Color(0xFFD7DCE2),
-                        fontWeight = FontWeight.Normal,
-                        fontSize = (logoSize * k).sp,
-                        maxLines = 1,
-                        softWrap = false
-                    )
-                }
+                Text(
+                    text = "Buddy",
+                    color = Color(0xFFD7DCE2),
+                    fontWeight = FontWeight.Normal,
+                    fontSize = (61 * k).sp,
+                    maxLines = 1,
+                    softWrap = false,
+                    modifier = Modifier.graphicsLayer { alpha = ((progress() - 0.1f) / 0.6f).coerceIn(0f, 1f) }
+                )
             }
 
             // Search / TV / Favorites
@@ -1094,14 +1129,14 @@ internal fun RailPanel(
             ) {
                 entries.forEachIndexed { i, entry ->
                     if (entry.id != RailId.SETTINGS) {
-                        RailItem(k, entry, expanded, focused, i == selectedIndex, entry.id == currentId)
+                        RailItem(k, entry, expanded, focused, i == selectedIndex, entry.id == currentId, progress)
                     }
                 }
             }
 
             // Settings (bottom)
             Box(modifier = Modifier.align(Alignment.BottomStart).padding(bottom = (32 * k).dp)) {
-                RailItem(k, entries.last(), expanded, focused, selectedIndex == entries.lastIndex, entries.last().id == currentId)
+                RailItem(k, entries.last(), expanded, focused, selectedIndex == entries.lastIndex, entries.last().id == currentId, progress)
             }
         }
     }
@@ -1114,47 +1149,48 @@ private fun RailItem(
     expanded: Boolean,
     railFocused: Boolean,
     isSelected: Boolean,
-    isCurrentPage: Boolean
+    isCurrentPage: Boolean,
+    progress: () -> Float
 ) {
     val highlighted = expanded && railFocused && isSelected
-    val iconTint by animateColorAsState(
+    // colour states are only READ inside the small icon scope / the draw lambda, so a colour change never
+    // recomposes the whole item per frame
+    val iconTint = animateColorAsState(
         when {
             highlighted -> Color.Black
             isCurrentPage -> Color.White
             else -> Color.White.copy(alpha = if (expanded) 0.9f else 0.45f)
         },
-        tween(220), label = "railIconTint"
+        tween(PANEL_ANIM_MS), label = "railIconTint"
     )
-    val pillColor by animateColorAsState(
+    val pillColor = animateColorAsState(
         if (highlighted) PillFocused else if (expanded && isCurrentPage) PillApplied else Color.Transparent,
-        tween(220), label = "railPill"
+        tween(PANEL_ANIM_MS), label = "railPill"
     )
-    // sizes follow the rail width, so items grow / shrink with it instead of popping
-    val itemStart by animateDpAsState(((if (expanded) 32 else 0) * k).dp, tween(220), label = "railItemStart")
-    val itemWidth by animateDpAsState(((if (expanded) 376f else RAIL_COLLAPSED_PX) * k).dp, tween(220), label = "railItemWidth")
-    val leadSpace by animateDpAsState(((if (expanded) 24 else 38) * k).dp, tween(220), label = "railLead")
-    // labels fade in once the rail has started to open, and disappear quickly when it shrinks
-    val labelAlpha by animateFloatAsState(
-        if (expanded) 1f else 0f,
-        if (expanded) tween(200, delayMillis = 80) else tween(80),
-        label = "railLabelAlpha"
-    )
+    val itemH = (80 * k)
     Row(
         modifier = Modifier
-            .padding(start = itemStart, top = (8 * k).dp, bottom = (8 * k).dp)
-            .width(itemWidth)
-            .height((80 * k).dp)
+            .padding(top = (8 * k).dp, bottom = (8 * k).dp)
+            // size and start inset follow the rail width (one progress value), in the layout phase only
+            .offset { IntOffset((lerp(0f, 32f, progress()) * k * density).roundToInt(), 0) }
+            .layout { measurable, _ ->
+                val w = (lerp(RAIL_COLLAPSED_PX, 376f, progress()) * k * density).roundToInt()
+                val h = (itemH * density).roundToInt()
+                val placeable = measurable.measure(Constraints.fixed(w, h))
+                layout(w, h) { placeable.place(0, 0) }
+            }
             .clip(RoundedCornerShape((14 * k).dp))
-            .background(pillColor),
+            .drawBehind { drawRect(pillColor.value) },
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Spacer(Modifier.width(leadSpace))
-        Icon(
-            entry.icon,
-            contentDescription = entry.label,
-            tint = iconTint,
-            modifier = Modifier.size((38 * k).dp)
+        Spacer(
+            Modifier.layout { measurable, _ ->
+                val w = (lerp(38f, 24f, progress()) * k * density).roundToInt()
+                val placeable = measurable.measure(Constraints.fixed(w, 0))
+                layout(w, 0) { placeable.place(0, 0) }
+            }
         )
+        RailIcon(entry, iconTint, k)
         Spacer(Modifier.width((22 * k).dp))
         Text(
             entry.label,
@@ -1162,9 +1198,20 @@ private fun RailItem(
             fontSize = (33 * k).sp,
             maxLines = 1,
             softWrap = false,
-            modifier = Modifier.alpha(labelAlpha)
+            // labels appear once the rail has opened a little and are gone before it has closed again
+            modifier = Modifier.graphicsLayer { alpha = ((progress() - 0.15f) / 0.5f).coerceIn(0f, 1f) }
         )
     }
+}
+
+@Composable
+private fun RailIcon(entry: RailEntry, tint: State<Color>, k: Float) {
+    Icon(
+        entry.icon,
+        contentDescription = entry.label,
+        tint = tint.value,
+        modifier = Modifier.size((38 * k).dp)
+    )
 }
 
 // ---------------------------------------------------------------------------------------------
