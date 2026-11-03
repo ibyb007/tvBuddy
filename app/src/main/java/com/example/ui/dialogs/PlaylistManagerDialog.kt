@@ -471,7 +471,7 @@ fun PlaylistManagerDialog(
                 val phone = mobileNav != null
                 Box(
                     modifier = (if (phone) Modifier.fillMaxSize() else Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(380.dp))
-                        .background(if (phone) com.example.ui.theme.DarkBackground else TiviDrawerBg)
+                        .background(if (phone) com.example.ui.theme.DarkBackground else TiviDrawerBg.copy(alpha = 0.5f))
                         .pointerInput(Unit) { detectTapGestures(onTap = { }) } // Consume taps inside drawer
                 ) {
                     AnimatedContent(
