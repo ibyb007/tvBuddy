@@ -520,7 +520,7 @@ fun HomeScreen(
             }
 
             val nowPlaying = currentChannelLive ?: currentChannel
-            if (browseLevel == null && nowPlaying != null && nowPlaying.contentType != com.example.data.model.ContentType.TV) {
+            if (!isInPipMode && browseLevel == null && nowPlaying != null && nowPlaying.contentType != com.example.data.model.ContentType.TV) {
                 // movie: seek bar, long-press seeking, TV / Audio boost / Video / Audio / Subtitles / Settings bar
                 com.example.ui.components.TvVodPlayerOverlay(
                     channel = nowPlaying,
@@ -549,7 +549,7 @@ fun HomeScreen(
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     modifier = Modifier.fillMaxSize().zIndex(2f)
                 )
-            } else if (browseLevel == null) {
+            } else if (!isInPipMode && browseLevel == null) {
                 TvPlayerOverlay(
                     channel = currentChannelLive ?: currentChannel,
                     isPlaying = isPlaying,
