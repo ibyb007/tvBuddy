@@ -743,6 +743,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { repository.setGroupVisibility(playlistId, groupTitle, isVisible, contentType) }
     }
 
+    // ---- TVBuddy EPG engine (playlist page > TVBuddy EPG; M3U playlists) ----
+    val tvBuddyEpgStatus: StateFlow<Map<Long, com.example.data.epg.TvBuddyEpgStatus>> = repository.tvBuddyEpgStatus
+
+    fun setTvBuddyEpg(playlistId: Long, enabled: Boolean) =
+        repository.setTvBuddyEpg(playlistId, enabled, _globalSpoof.value.getUserAgent())
+
+    suspend fun tvBuddyUnmatched(playlistId: Long): List<String> = repository.tvBuddyUnmatched(playlistId)
+
     // ---- Playback settings (Settings > Playback: buffer size, audio / video decoder) ----
     val playbackSettings: StateFlow<com.example.player.PlaybackSettings> = playerManager.playbackSettings
 
