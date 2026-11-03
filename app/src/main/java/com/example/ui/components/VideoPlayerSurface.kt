@@ -111,6 +111,8 @@ fun TvSharedVideoSurface(
     aspectMode: AspectMode,
     browsing: Boolean,
     previewBounds: State<Rect?>,
+    /** how far (px) the TV page is pushed right by its sliding panels right now; read in layout, so the preview moves with it in the same frame */
+    previewShift: State<() -> Float>? = null,
     modifier: Modifier = Modifier
 ) {
     val progress = animateFloatAsState(
@@ -134,13 +136,14 @@ fun TvSharedVideoSurface(
                 // state reads here only re-run layout (no recomposition) while the preview moves
                 val target = previewBounds.value
                 val p = progress.value
+                val shift = previewShift?.value?.invoke() ?: 0f
 
                 var left = 0f
                 var top = 0f
                 var w = fullW
                 var h = fullH
                 if (target != null) {
-                    left = lerp(0f, target.left - origin.x, p)
+                    left = lerp(0f, target.left + shift - origin.x, p)
                     top = lerp(0f, target.top - origin.y, p)
                     w = lerp(fullW, target.width, p)
                     h = lerp(fullH, target.height, p)
