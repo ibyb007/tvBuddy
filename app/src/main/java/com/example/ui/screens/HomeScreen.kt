@@ -1157,6 +1157,7 @@ fun HomeScreen(
         val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
         val warpState by viewModel.warpState.collectAsStateWithLifecycle()
         val playbackSettings by viewModel.playbackSettings.collectAsStateWithLifecycle()
+        val tvBuddyEpgStatus by viewModel.tvBuddyEpgStatus.collectAsStateWithLifecycle()
         PlaylistManagerDialog(
             playlists = playlists,
             onDismiss = { showPlaylistManager = false },
@@ -1193,6 +1194,9 @@ fun HomeScreen(
             onTogglePlaybackLog = { viewModel.setPlaybackLogging(it) },
             onExportPlaybackLog = { viewModel.exportPlaybackLog() },
             onOpenSpoofEngine = { showSpoofDialog = true },
+            tvBuddyEpgStatus = tvBuddyEpgStatus,
+            onToggleTvBuddyEpg = { id, on -> viewModel.setTvBuddyEpg(id, on) },
+            onLoadTvBuddyUnmatched = { viewModel.tvBuddyUnmatched(it) },
             playbackSettings = playbackSettings,
             onChangePlaybackSettings = { viewModel.setPlaybackSettings(it) },
             audioBoostProfile = audioBoostProfile,
