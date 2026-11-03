@@ -149,6 +149,7 @@ sealed class TiviSettingsRoute {
     data class EditEpgSourceUrl(val sourceId: Long) : TiviSettingsRoute()
     data object AudioBoost : TiviSettingsRoute()
     data object Playback : TiviSettingsRoute()
+    data class TvBuddyUnmatched(val playlistId: Long) : TiviSettingsRoute()
 }
 
 /** State of an inline "Update ..." row: spinner while [running], then a result [message]. */
@@ -245,6 +246,8 @@ private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when
     is TiviSettingsRoute.PortalParams ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.EpgSources -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, route)
+    is TiviSettingsRoute.TvBuddyUnmatched ->
+        listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.AddEpgSourceUrl, is TiviSettingsRoute.EpgSourceDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
     is TiviSettingsRoute.EditEpgSourceUrl ->
@@ -350,6 +353,9 @@ fun PlaylistManagerDialog(
     onTogglePlaybackLog: (Boolean) -> Unit = {},
     onExportPlaybackLog: () -> Unit = {},
     onOpenSpoofEngine: () -> Unit = {},
+    tvBuddyEpgStatus: Map<Long, com.example.data.epg.TvBuddyEpgStatus> = emptyMap(),
+    onToggleTvBuddyEpg: (Long, Boolean) -> Unit = { _, _ -> },
+    onLoadTvBuddyUnmatched: suspend (Long) -> List<String> = { emptyList() },
     playbackSettings: com.example.player.PlaybackSettings = com.example.player.PlaybackSettings(),
     onChangePlaybackSettings: (com.example.player.PlaybackSettings) -> Unit = {},
     audioBoostProfile: com.example.player.AudioBoostProfile = com.example.player.AudioBoostProfile.OFF,
@@ -540,6 +546,9 @@ fun PlaylistManagerDialog(
                                     PlaylistDetailSubMenu(
                                         playlist = playlist,
                                         assignedEpgCount = assignedCount,
+                                        tvBuddyStatus = tvBuddyEpgStatus[playlist.id],
+                                        onToggleTvBuddyEpg = { onToggleTvBuddyEpg(playlist.id, it) },
+                                        onOpenTvBuddyUnmatched = { navigateTo(TiviSettingsRoute.TvBuddyUnmatched(playlist.id)) },
                                         onUpdatePlaylistEntity = onUpdatePlaylist,
                                         onEditName = {
                                             textEditDialogState = TextEditPrompt(
@@ -762,6 +771,11 @@ fun PlaylistManagerDialog(
                                 }
                             }
 
+                            is TiviSettingsRoute.TvBuddyUnmatched -> TvBuddyUnmatchedSubMenu(
+                                playlistId = route.playlistId,
+                                load = onLoadTvBuddyUnmatched
+                            )
+
                             is TiviSettingsRoute.Playback -> PlaybackSubMenu(
                                 settings = playbackSettings,
                                 onChange = onChangePlaybackSettings
@@ -970,6 +984,37 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
             color = TiviSecondaryText,
             fontSize = 13.sp
         )
+    }
+}
+
+// ============================================================================
+// TVBuddy EPG: channels of a playlist that still have no guide
+// ============================================================================
+
+@Composable
+private fun TvBuddyUnmatchedSubMenu(playlistId: Long, load: suspend (Long) -> List<String>) {
+    var names by remember(playlistId) { mutableStateOf<List<String>?>(null) }
+    LaunchedEffect(playlistId) { names = load(playlistId) }
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Unmatched channels")
+        val list = names
+        when {
+            list == null -> Text("Checking...", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
+            list.isEmpty() -> Text("Every channel has a guide.", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
+            else -> LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(vertical = 8.dp)
+            ) {
+                item {
+                    Text(
+                        "These channels were not found in any guide source. Check their tvg-id in the playlist, or add an EPG source that covers them.",
+                        color = TiviSecondaryText, fontSize = 13.sp,
+                        modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                    )
+                }
+                items(list.take(500)) { name -> TiviMenuRow(title = name, onClick = {}) }
+            }
+        }
     }
 }
 
@@ -1238,6 +1283,9 @@ private fun ReorderPlaylistsSubMenu(
 private fun PlaylistDetailSubMenu(
     playlist: PlaylistEntity,
     assignedEpgCount: Int,
+    tvBuddyStatus: com.example.data.epg.TvBuddyEpgStatus?,
+    onToggleTvBuddyEpg: (Boolean) -> Unit,
+    onOpenTvBuddyUnmatched: () -> Unit,
     onUpdatePlaylistEntity: (PlaylistEntity) -> Unit,
     onEditName: () -> Unit,
     onEditUrl: () -> Unit,
@@ -1299,6 +1347,34 @@ private fun PlaylistDetailSubMenu(
                     subtitle = epgSummary,
                     onClick = onOpenPlaylistEpgSources
                 )
+            }
+            // M3U / JSON playlists only: Stalker and Xtream portals deliver their own guide
+            if (!isPortal) {
+                item {
+                    val st = tvBuddyStatus
+                    TiviSwitchRow(
+                        title = "TVBuddy EPG",
+                        subtitle = when {
+                            st == null || !st.enabled -> "Find a guide for this playlist's channels automatically (India, UK sports, Fox Sports AU, Willow)"
+                            st.running -> st.message.ifBlank { "Working..." }
+                            else -> st.message.ifBlank { "On" }
+                        },
+                        checked = st?.enabled == true,
+                        onCheckedChange = { if (st?.running != true) onToggleTvBuddyEpg(it) }
+                    )
+                }
+                if (tvBuddyStatus?.enabled == true) {
+                    item {
+                        TiviMenuRow(
+                            title = "Unmatched channels",
+                            subtitle = if (tvBuddyStatus.total > 0)
+                                "${tvBuddyStatus.total - tvBuddyStatus.matched} of ${tvBuddyStatus.total} channels have no guide"
+                            else "Channels without a guide",
+                            enabled = !tvBuddyStatus.running,
+                            onClick = onOpenTvBuddyUnmatched
+                        )
+                    }
+                }
             }
             item {
                 TiviMenuRow(
