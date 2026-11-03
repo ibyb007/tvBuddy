@@ -79,19 +79,37 @@ class MainActivity : ComponentActivity() {
     }
 
     fun enterPipMode() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            toastPip("Picture-in-picture needs Android 8 or newer")
+            return
+        }
+        if (!packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
+            toastPip("This device does not support picture-in-picture")
+            return
+        }
+        // post: the remote key that opened it is still being handled, and the call needs a settled, resumed activity
+        window.decorView.post {
             try {
-                val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .build()
-                enterPictureInPictureMode(params)
-            } catch (_: Exception) {
-                try {
-                    @Suppress("DEPRECATION")
-                    enterPictureInPictureMode()
-                } catch (_: Exception) {}
+                if (isFinishing || isDestroyed) return@post
+                val info = viewModel.playerManager.streamInfo.value
+                // use the video's own shape when known (the system only accepts ratios between 1:2.39 and 2.39:1)
+                val ratio = if (info.width > 0 && info.height > 0) {
+                    val r = info.width.toFloat() / info.height
+                    if (r in 0.45f..2.35f) Rational(info.width, info.height) else Rational(16, 9)
+                } else Rational(16, 9)
+                val params = PictureInPictureParams.Builder().setAspectRatio(ratio).build()
+                if (!enterPictureInPictureMode(params)) {
+                    toastPip("Picture-in-picture is turned off for this app. Enable it in the system settings")
+                }
+            } catch (e: Exception) {
+                com.example.player.PlaybackLog.error("PIP", "Could not enter picture-in-picture: ${e.message}")
+                toastPip("Picture-in-picture failed: ${e.message ?: e.javaClass.simpleName}")
             }
         }
+    }
+
+    private fun toastPip(text: String) {
+        android.widget.Toast.makeText(this, text, android.widget.Toast.LENGTH_LONG).show()
     }
 
     @Suppress("OVERRIDE_DEPRECATION")
