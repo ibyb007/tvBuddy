@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import com.example.data.network.VodCategory
 import com.example.data.network.VodPage
 import kotlinx.coroutines.withContext
@@ -134,6 +135,8 @@ class TvBuddyRepository(
             if (importXmltv(u, false, userAgent).isSuccess) anyOk = true
         }
         if (anyOk) epgPrefs.edit().putLong("ts_$playlistId", System.currentTimeMillis()).apply()
+        // channels the bulk guide does not cover get theirs now, not only once they are played
+        if (anyOk) prefetchPortalEpg(playlistId)
     }
 
     // ---- TVBuddy EPG engine (M3U playlists only: Stalker / Xtream bring their own guide) ----
@@ -262,11 +265,11 @@ class TvBuddyRepository(
             for (p in playlistDao.getAllPlaylists().first()) {
                 val stale = now - epgPrefs.getLong("ts_${p.id}", 0L) > 12L * 60 * 60 * 1000
                 if (p.type == PlaylistType.STALKER) {
-                    if (p.includeTv && stale) refreshPortalEpg(p.id)
+                    if (p.includeTv) { if (stale) refreshPortalEpg(p.id) else prefetchPortalEpg(p.id) }
                     continue
                 }
                 val urls = epgPrefs.getStringSet("urls_${p.id}", null)?.toList() ?: continue
-                if (stale) fetchEpgUrls(p.id, urls, userAgent)
+                if (stale) fetchEpgUrls(p.id, urls, userAgent) else prefetchPortalEpg(p.id)
             }
         }
     }
@@ -293,16 +296,31 @@ class TvBuddyRepository(
             }
             epgPrefs.edit().putLong("ts_$playlistId", System.currentTimeMillis()).apply()
             remapEpg(playlistId)
+            // channels the bulk answer left out get their guide now instead of when played
+            epgScope.launch { prefetchPortalEpg(playlistId) }
             Result.success(keep.size)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
+    /** Asks the portal itself for one channel's guide (Xtream get_simple_data_table / get_short_epg, Stalker get_short_epg). */
+    private suspend fun fetchPortalChannelEpg(pl: PlaylistEntity, channel: ChannelEntity, stalkerAuth: StalkerAuthResult?): List<ProgramEntity> {
+        val ua = pl.toSpoofProfile().getUserAgent()
+        return when (pl.type) {
+            PlaylistType.XTREAM -> {
+                val full = xtreamClient.fetchFullEpg(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, channel.streamId, ua)
+                full.ifEmpty { xtreamClient.fetchShortEpg(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, channel.streamId, 12, ua) }
+            }
+            else -> if (stalkerAuth != null && stalkerAuth.success) {
+                stalkerClient.fetchShortEpg(stalkerAuth, pl.toStalkerParams(), pl.id, ua, channel.streamId, 12)
+            } else emptyList()
+        }
+    }
+
     /**
      * Makes sure the channel that is being watched has a guide: when no imported XMLTV and no earlier portal answer
-     * has upcoming programmes for it, asks the portal itself (Xtream get_simple_data_table / get_short_epg, Stalker
-     * get_short_epg). Asked at most once per five minutes per channel.
+     * has upcoming programmes for it, asks the portal itself. Asked at most once per five minutes per channel.
      */
     suspend fun ensureChannelEpg(channel: ChannelEntity) = withContext(Dispatchers.IO) {
         if (channel.contentType != ContentType.TV || channel.streamId.isBlank()) return@withContext
@@ -315,23 +333,78 @@ class TvBuddyRepository(
             val keys = listOfNotNull(channel.epgChannelId, EpgMatcher.portalKey(pl.id, channel.streamId)).distinct()
             if (keys.any { programDao.countUpcoming(it, now) > 1 }) return@withContext
             portalEpgAsked[channel.id] = now
-            val ua = pl.toSpoofProfile().getUserAgent()
-            val programs = when (pl.type) {
-                PlaylistType.XTREAM -> {
-                    val full = xtreamClient.fetchFullEpg(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, channel.streamId, ua)
-                    full.ifEmpty { xtreamClient.fetchShortEpg(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), pl.id, channel.streamId, 12, ua) }
-                }
-                else -> {
-                    val auth = stalkerSession(pl)
-                    if (auth.success) stalkerClient.fetchShortEpg(auth, pl.toStalkerParams(), pl.id, ua, channel.streamId, 12) else emptyList()
-                }
-            }
-            val fresh = programs.filter { it.endTimeMs >= now - 6 * 3_600_000L }
+            val auth = if (pl.type == PlaylistType.STALKER) stalkerSession(pl) else null
+            val fresh = fetchPortalChannelEpg(pl, channel, auth).filter { it.endTimeMs >= now - 6 * 3_600_000L }
             if (fresh.isNotEmpty()) {
                 programDao.deleteProgramsForChannel(fresh.first().epgChannelId)
                 programDao.insertPrograms(fresh)
             }
         } catch (_: Exception) {
+        }
+    }
+
+    private val prefetchRunning = java.util.concurrent.ConcurrentHashMap.newKeySet<Long>()
+
+    /**
+     * Background top-up of the guide for Xtream / Stalker playlists: the bulk guide (xmltv.php / get_epg_info) usually
+     * leaves many channels out, and those used to get a guide only after being played ([ensureChannelEpg]). This asks
+     * the portal for every live channel that still has no programmes, a few requests at a time, and writes the
+     * answers in batches so the UI is not rebuilt per channel. A channel the portal had nothing for is not asked
+     * again for 30 minutes.
+     */
+    suspend fun prefetchPortalEpg(playlistId: Long) = withContext(Dispatchers.IO) {
+        if (!prefetchRunning.add(playlistId)) return@withContext
+        try {
+            val pl = playlistDao.getPlaylistById(playlistId) ?: return@withContext
+            if (!pl.includeTv || (pl.type != PlaylistType.XTREAM && pl.type != PlaylistType.STALKER)) return@withContext
+            val now = System.currentTimeMillis()
+            val have = programDao.getChannelIdsWithUpcoming(now).mapTo(HashSet()) { it.lowercase() }
+            val missing = channelDao.getTvEpgRefs(playlistId).filter { r ->
+                r.streamId.isNotBlank() &&
+                    (portalEpgAsked[r.id]?.let { now - it > 30 * 60_000L } ?: true) &&
+                    listOfNotNull(
+                        r.epgChannelId?.lowercase(), EpgMatcher.portalKey(playlistId, r.streamId),
+                        r.streamId.lowercase(), r.epgName?.lowercase(), r.name.lowercase()
+                    ).none { it in have }
+            }
+            if (missing.isEmpty()) return@withContext
+            val auth = if (pl.type == PlaylistType.STALKER) stalkerSession(pl) else null
+            if (pl.type == PlaylistType.STALKER && auth?.success != true) return@withContext
+            val gate = kotlinx.coroutines.sync.Semaphore(4)
+            val pending = ArrayList<ProgramEntity>()
+            val flushLock = Mutex()
+            suspend fun flush(force: Boolean) = flushLock.withLock {
+                if (pending.isEmpty() || (!force && pending.size < 400)) return@withLock
+                val batch = ArrayList(pending); pending.clear()
+                database.withTransaction {
+                    batch.map { it.epgChannelId }.distinct().chunked(500).forEach { programDao.deleteProgramsForChannels(it) }
+                    batch.chunked(2000).forEach { programDao.insertPrograms(it) }
+                }
+            }
+            kotlinx.coroutines.coroutineScope {
+                for (r in missing.take(3000)) {
+                    launch {
+                        gate.withPermit {
+                            portalEpgAsked[r.id] = System.currentTimeMillis()
+                            val ch = ChannelEntity(
+                                id = r.id, playlistId = playlistId, streamId = r.streamId, name = r.name, streamUrl = "",
+                                epgChannelId = r.epgChannelId, epgName = r.epgName
+                            )
+                            val fresh = try {
+                                fetchPortalChannelEpg(pl, ch, auth).filter { it.endTimeMs >= now - 6 * 3_600_000L }
+                            } catch (_: Exception) { emptyList() }
+                            if (fresh.isNotEmpty()) {
+                                flushLock.withLock { pending.addAll(fresh) }
+                                flush(false)
+                            }
+                        }
+                    }
+                }
+            }
+            flush(true)
+        } catch (_: Exception) {
+        } finally {
+            prefetchRunning.remove(playlistId)
         }
     }
 
