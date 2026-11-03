@@ -219,9 +219,14 @@ class TvBuddyRepository(
             val names = channelDao.getTvEpgRefs(playlistId).map { it.name.lowercase() }
             val total = names.size
             val keptUrls = LinkedHashSet<String>()
+            // guides imported earlier may now match with the smarter matcher
+            remapEpg(playlistId)
             for (region in com.example.data.epg.TvBuddyEpg.REGIONS) {
                 if (region.trigger != null && names.none { region.trigger.containsMatchIn(it) }) continue
                 for (url in region.candidates) {
+                    // stop once every channel this region is about has its guide; otherwise try the next source
+                    val targetsLeft = tvBuddyMatchSplit(playlistId).second.any { region.targets.containsMatchIn(it.lowercase()) }
+                    if (!targetsLeft) break
                     setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = true, total = total, message = "${region.title}: downloading guide..."))
                     val before = tvBuddyMatchSplit(playlistId).first.size
                     val srcId = addEpgSource(url, "${com.example.data.epg.TvBuddyEpg.NAME_PREFIX} · ${region.title}")
@@ -231,7 +236,6 @@ class TvBuddyRepository(
                     if (ok && after > before) {
                         togglePlaylistEpgAssignment(playlistId, srcId, true)
                         keptUrls += url
-                        break
                     } else {
                         deleteEpgSourceIfUnused(srcId)
                     }
@@ -347,6 +351,8 @@ class TvBuddyRepository(
                     for (r in refs) {
                         val resolved = EpgMatcher.resolve(r, index)
                         if (resolved != null && resolved != r.epgChannelId) channelDao.setEpgChannelId(r.id, resolved)
+                        // a looser older matcher mapped brand-only names ("Star 4K" -> "Star"): drop that wrong guide
+                        else if (resolved == null && EpgMatcher.isWrongGenericId(r)) channelDao.setEpgChannelId(r.id, null)
                         if (r.logoUrl.isNullOrBlank() && resolved != null) {
                             LogoUrl.normalize(index.icons[resolved])?.let { channelDao.setLogoUrl(r.id, it) }
                         }
