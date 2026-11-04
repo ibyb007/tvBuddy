@@ -59,20 +59,22 @@ enum class MobilePanelPage { CHANNELS, GROUPS }
 /** What the phone currently lists: a playlist (null = all) and a category ("All", "★ Favorites" or a group title). */
 data class MobileGroupSelection(val playlistId: Long?, val category: String)
 
-private enum class GKind { HEADER, FAVORITES, ALL, GROUP }
+private enum class GKind { HEADER, FAVORITES, ALL, HISTORY, GROUP }
 private data class GRow(val kind: GKind, val playlistId: Long?, val title: String)
 
 private fun buildGroupRows(sections: List<TvGroupSection>): List<GRow> {
     val out = ArrayList<GRow>()
     if (sections.size > 1) {
         out += GRow(GKind.HEADER, null, "All playlists")
-        out += GRow(GKind.FAVORITES, null, "Favorites")
         out += GRow(GKind.ALL, null, "All channels")
+        out += GRow(GKind.HISTORY, null, "History")
+        out += GRow(GKind.FAVORITES, null, "Favorites")
     }
     for (s in sections) {
         if (sections.size > 1) out += GRow(GKind.HEADER, s.playlistId, s.name)
-        out += GRow(GKind.FAVORITES, s.playlistId, "Favorites")
         out += GRow(GKind.ALL, s.playlistId, "All channels")
+        out += GRow(GKind.HISTORY, s.playlistId, "History")
+        out += GRow(GKind.FAVORITES, s.playlistId, "Favorites")
         s.groups.forEach { out += GRow(GKind.GROUP, s.playlistId, it) }
     }
     return out
@@ -263,6 +265,7 @@ private fun GroupsPage(
     val rows = remember(sections) { buildGroupRows(sections) }
     fun categoryOf(r: GRow) = when (r.kind) {
         GKind.FAVORITES -> "★ Favorites"
+        GKind.HISTORY -> com.example.ui.CATEGORY_HISTORY
         GKind.GROUP -> r.title
         else -> "All"
     }
