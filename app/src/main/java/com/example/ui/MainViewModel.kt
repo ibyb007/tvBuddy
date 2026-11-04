@@ -749,7 +749,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setTvBuddyEpg(playlistId: Long, enabled: Boolean) =
         repository.setTvBuddyEpg(playlistId, enabled, _globalSpoof.value.getUserAgent())
 
-    suspend fun tvBuddyUnmatched(playlistId: Long): List<String> = repository.tvBuddyUnmatched(playlistId)
+    suspend fun tvBuddyUnmatched(playlistId: Long): List<com.example.data.epg.EpgChannelMatch> = repository.tvBuddyUnmatched(playlistId)
+
+    /** Matches a playlist channel to a guide channel by the name or tvg-id the user typed; returns the sentence to show. */
+    suspend fun setManualEpgMatch(playlistId: Long, channelName: String, value: String): String =
+        repository.setManualEpgMatch(playlistId, channelName, value, _globalSpoof.value.getUserAgent())
 
     // ---- Playback settings (Settings > Playback: buffer size, audio / video decoder) ----
     val playbackSettings: StateFlow<com.example.player.PlaybackSettings> = playerManager.playbackSettings
@@ -911,49 +915,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** "Update EPG": only the guides assigned to enabled playlists are refreshed (see [TvBuddyRepository.refreshAssignedEpgs]). */
     fun triggerUpdateEpg() {
         val key = UpdateKeys.EPG
         if (isUpdateRunning(key)) return
-        setUpdateState(key, UpdateRowState(running = true))
+        setUpdateState(key, UpdateRowState(running = true, message = "Checking enabled playlists..."))
         viewModelScope.launch {
-            // portal guides (Stalker) are not XMLTV links: they are refreshed from the portal itself below
-            val sources = allEpgSources.value.filter { it.isEnabled && !it.sourceType.equals(com.example.data.local.entity.EPG_TYPE_STALKER, ignoreCase = true) }
-            val portalPlaylists = repository.allPlaylists.first()
-                .filter { it.isActive && it.type == com.example.data.model.PlaylistType.STALKER && it.includeTv }
-            if (sources.isEmpty() && portalPlaylists.isEmpty()) {
-                setUpdateState(key, UpdateRowState(message = "No EPG sources available to update", isError = true))
-                return@launch
-            }
-            var totalCount = 0
-            var failed = 0
-            val settings = _epgSettings.value
-            for (src in sources) {
-                val res = repository.importXmltv(
-                    urlOrContent = src.url,
-                    isRawText = false,
-                    userAgent = _globalSpoof.value.getUserAgent(),
-                    pastDaysToKeep = settings.pastDaysToKeep,
-                    storeDescriptions = settings.storeProgramDescriptions
-                )
-                res.onSuccess { totalCount += it }.onFailure { failed++ }
-            }
-            for (pl in portalPlaylists) {
-                repository.refreshPortalEpg(pl.id).onSuccess { totalCount += it }.onFailure { failed++ }
+            val r = repository.refreshAssignedEpgs(_globalSpoof.value.getUserAgent()) { msg ->
+                setUpdateState(key, UpdateRowState(running = true, message = msg))
             }
             _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
             setUpdateState(
                 key,
-                if (failed == sources.size + portalPlaylists.size) UpdateRowState(message = "EPG update failed", isError = true)
-                else UpdateRowState(message = "EPG updated successfully ($totalCount programs)")
+                when {
+                    r.sources == 0 -> UpdateRowState(message = "No EPG source is assigned to an enabled playlist", isError = true)
+                    r.failed == r.sources -> UpdateRowState(message = "EPG update failed" + (r.firstError?.let { ": $it" } ?: ""), isError = true)
+                    r.failed > 0 -> UpdateRowState(message = "EPG updated, ${r.failed} of ${r.sources} sources failed", isError = true)
+                    r.updated == 0 -> UpdateRowState(message = "EPG is already up to date")
+                    else -> UpdateRowState(message = "EPG updated successfully (${r.programs} programs)")
+                }
             )
         }
     }
 
+    /** "Clear EPG": the row shows it at once ("Clearing..."), the stored guide is gone when it says "EPG cleared". */
     fun triggerClearEpg() {
+        val key = UpdateKeys.EPG_CLEAR
+        if (isUpdateRunning(key)) return
+        setUpdateState(key, UpdateRowState(running = true, message = "Clearing..."))
+        _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = "Clearing EPG...")
         viewModelScope.launch {
-            repository.clearAllEpg()
-            _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
-            _uiMessage.value = UiMessage(text = "EPG cache cleared")
+            try {
+                repository.clearAllEpg()
+                _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
+                setUpdateState(key, UpdateRowState(message = "EPG cleared"))
+                _uiMessage.value = UiMessage(text = "EPG cleared")
+            } catch (e: Exception) {
+                _epgSettings.value = _epgSettings.value.copy(latestUpdateStatus = repository.getLatestEpgStatus())
+                setUpdateState(key, UpdateRowState(message = "Could not clear EPG: ${e.localizedMessage ?: "unknown error"}", isError = true))
+            }
         }
     }
 
