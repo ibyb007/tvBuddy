@@ -60,11 +60,12 @@ object XmltvParser {
         maxStartTimeMs: Long = Long.MAX_VALUE,
         batchSize: Int = 2000,
         onChannels: (List<XmltvChannel>) -> Unit = {},
+        acceptChannel: ((String) -> Boolean)? = null,
         onPrograms: (List<ProgramEntity>) -> Unit
     ) {
         val parser = Xml.newPullParser()
         parser.setInput(inputStream, null) // let the XML declaration decide the encoding
-        run(parser, storeDescriptions, minEndTimeMs, maxStartTimeMs, batchSize, onChannels, onPrograms)
+        run(parser, storeDescriptions, minEndTimeMs, maxStartTimeMs, batchSize, onChannels, acceptChannel, onPrograms)
     }
 
     fun parse(
@@ -85,8 +86,15 @@ object XmltvParser {
         val parser = Xml.newPullParser()
         parser.setInput(StringReader(xmlContent))
         val all = ArrayList<ProgramEntity>()
-        run(parser, storeDescriptions, minEndTimeMs, Long.MAX_VALUE, 2000, {}, { all.addAll(it) })
+        run(parser, storeDescriptions, minEndTimeMs, Long.MAX_VALUE, 2000, {}, null, { all.addAll(it) })
         return all
+    }
+
+    /** Tag names of XMLTV are lower case; only a feed that shouts pays for the conversion. */
+    private fun tagName(parser: XmlPullParser): String {
+        val n = parser.name ?: return ""
+        for (c in n) if (c.isUpperCase()) return n.lowercase()
+        return n
     }
 
     private fun run(
@@ -96,12 +104,15 @@ object XmltvParser {
         maxStartTimeMs: Long,
         batchSize: Int,
         onChannels: (List<XmltvChannel>) -> Unit,
+        acceptChannel: ((String) -> Boolean)?,
         onPrograms: (List<ProgramEntity>) -> Unit
     ) {
         var programs = ArrayList<ProgramEntity>(batchSize)
         var channels = ArrayList<XmltvChannel>(200)
 
         var inProgramme = false
+        // false for a programme of a channel nobody asked for: its children are skipped without being read
+        var wanted = true
         var inChannel = false
         var chId = ""
         var chNames = ArrayList<String>(2)
@@ -122,7 +133,7 @@ object XmltvParser {
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
             when (event) {
-                XmlPullParser.START_TAG -> when (parser.name.lowercase()) {
+                XmlPullParser.START_TAG -> when (tagName(parser)) {
                     "channel" -> {
                         inChannel = true
                         chId = parser.getAttributeValue(null, "id").orEmpty().trim()
@@ -137,33 +148,36 @@ object XmltvParser {
                         if (!inProgramme) flushChannels() // all <channel> elements precede the programmes
                         inProgramme = true
                         pChannel = parser.getAttributeValue(null, "channel")?.trim()
-                        pStart = parseDate(parser.getAttributeValue(null, "start"))
-                        pStop = parseDate(parser.getAttributeValue(null, "stop"))
+                        wanted = !pChannel.isNullOrBlank() && (acceptChannel == null || acceptChannel(pChannel!!))
+                        if (wanted) {
+                            pStart = parseDate(parser.getAttributeValue(null, "start"))
+                            pStop = parseDate(parser.getAttributeValue(null, "stop"))
+                        }
                         pTitle = ""; pDesc = ""; pCategory = ""; pIcon = null
                     }
-                    "title" -> if (inProgramme) {
+                    "title" -> if (inProgramme && wanted) {
                         val t = parser.nextText().trim()
                         if (pTitle.isEmpty()) pTitle = t // first language wins
                     }
-                    "sub-title" -> if (inProgramme) {
+                    "sub-title" -> if (inProgramme && wanted) {
                         val t = parser.nextText().trim()
                         if (pTitle.isNotEmpty() && t.isNotEmpty() && pDesc.isEmpty() && storeDescriptions) pDesc = t
                     }
-                    "desc" -> if (inProgramme) {
+                    "desc" -> if (inProgramme && wanted) {
                         val t = parser.nextText().trim()
                         if (storeDescriptions && (pDesc.isEmpty() || t.length > pDesc.length)) pDesc = t
                     }
-                    "category" -> if (inProgramme) {
+                    "category" -> if (inProgramme && wanted) {
                         val t = parser.nextText().trim()
                         if (pCategory.isEmpty()) pCategory = t
                     }
                     "icon" -> {
                         val src = parser.getAttributeValue(null, "src")?.trim()
-                        if (inProgramme) { if (pIcon == null) pIcon = src }
+                        if (inProgramme) { if (wanted && pIcon == null) pIcon = src }
                         else if (inChannel && chIcon == null) chIcon = src
                     }
                 }
-                XmlPullParser.END_TAG -> when (parser.name.lowercase()) {
+                XmlPullParser.END_TAG -> when (tagName(parser)) {
                     "channel" -> {
                         if (inChannel && chId.isNotEmpty()) {
                             channels.add(XmltvChannel(chId, chNames, chIcon))
@@ -172,10 +186,12 @@ object XmltvParser {
                         inChannel = false
                     }
                     "programme" -> {
+                        val keep = wanted
                         inProgramme = false
+                        wanted = true
                         // a missing / invalid stop time: assume 30 minutes
                         val stop = if (pStop > pStart) pStop else if (pStart > 0) pStart + 30 * 60_000L else 0L
-                        if (!pChannel.isNullOrBlank() && pTitle.isNotBlank() && pStart > 0L &&
+                        if (keep && !pChannel.isNullOrBlank() && pTitle.isNotBlank() && pStart > 0L &&
                             (minEndTimeMs <= 0L || stop >= minEndTimeMs) && pStart <= maxStartTimeMs
                         ) {
                             programs.add(
