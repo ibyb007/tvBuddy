@@ -940,7 +940,14 @@ fun HomeScreen(
                         )
                     } else {
                         // Category Chips
+                        val chipState = androidx.compose.foundation.lazy.rememberLazyListState()
+                        // keep the selected group's chip in view (after a relaunch it can be far to the right)
+                        LaunchedEffect(selectedCategory, categories.size) {
+                            val i = categories.indexOf(selectedCategory)
+                            if (i >= 0) chipState.animateScrollToItem((i - 1).coerceAtLeast(0))
+                        }
                         LazyRow(
+                            state = chipState,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 8.dp),
@@ -1010,7 +1017,23 @@ fun HomeScreen(
                             }
                         } else {
                             // Channel List
+                            val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+                            // Opening a group (or relaunching into it) puts the playing channel in view instead of the
+                            // top of a long list; a group without it starts at the top. Typing in search does not move it.
+                            LaunchedEffect(selectedCategory, mobilePlaylistId, channels.isNotEmpty()) {
+                                val idx = channels.indexOfFirst { it.id == currentChannel?.id }
+                                listState.scrollToItem(if (idx >= 0) (idx - 1).coerceAtLeast(0) else 0)
+                            }
+                            // the channel resumed at launch arrives after the list: bring it into view once
+                            var scrolledToResumed by remember { mutableStateOf(false) }
+                            LaunchedEffect(currentChannel?.id, channels.isNotEmpty()) {
+                                if (scrolledToResumed || currentChannel == null || channels.isEmpty()) return@LaunchedEffect
+                                scrolledToResumed = true
+                                val idx = channels.indexOfFirst { it.id == currentChannel?.id }
+                                if (idx >= 0) listState.scrollToItem((idx - 1).coerceAtLeast(0))
+                            }
                             LazyColumn(
+                                state = listState,
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .weight(1f),
