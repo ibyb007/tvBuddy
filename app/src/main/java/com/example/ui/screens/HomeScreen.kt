@@ -1208,6 +1208,7 @@ fun HomeScreen(
             tvBuddyEpgStatus = tvBuddyEpgStatus,
             onToggleTvBuddyEpg = { id, on -> viewModel.setTvBuddyEpg(id, on) },
             onLoadTvBuddyUnmatched = { viewModel.tvBuddyUnmatched(it) },
+            onSetEpgManualMatch = { id, name, value -> viewModel.setManualEpgMatch(id, name, value) },
             playbackSettings = playbackSettings,
             onChangePlaybackSettings = { viewModel.setPlaybackSettings(it) },
             audioBoostProfile = audioBoostProfile,
