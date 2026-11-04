@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -1007,6 +1008,7 @@ private fun TvBuddyUnmatchedSubMenu(
     var rows by remember(playlistId) { mutableStateOf<List<com.example.data.epg.EpgChannelMatch>?>(null) }
     var info by remember(playlistId) { mutableStateOf<String?>(null) }
     var busy by remember(playlistId) { mutableStateOf(false) }
+    var query by remember(playlistId) { mutableStateOf("") }
     val scope = rememberCoroutineScope()
     LaunchedEffect(playlistId) { rows = load(playlistId) }
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1019,6 +1021,16 @@ private fun TvBuddyUnmatchedSubMenu(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 8.dp)
             ) {
+                item {
+                    TiviMenuRow(
+                        title = if (query.isBlank()) "Search channels" else "Search: $query",
+                        subtitle = if (query.isBlank()) null else "Tap to change. Leave it empty to show every channel",
+                        leadingIcon = { f ->
+                            Icon(Icons.Default.Search, contentDescription = null, tint = if (f) TiviFocusText else TiviAccentBlue)
+                        },
+                        onClick = { onEditText("Search unmatched channels", query) { query = it.trim() } }
+                    )
+                }
                 item {
                     Text(
                         "Pick a channel and type the name or tvg-id it has in the guide (for example \"Sky Sports 1\" or " +
@@ -1035,7 +1047,18 @@ private fun TvBuddyUnmatchedSubMenu(
                         )
                     }
                 }
-                items(list.take(500), key = { it.name }) { m ->
+                val shownRows = if (query.isBlank()) list else list.filter {
+                    it.name.contains(query, ignoreCase = true) || it.manualMatch?.contains(query, ignoreCase = true) == true
+                }
+                if (shownRows.isEmpty()) {
+                    item {
+                        Text(
+                            "No channel matches \"$query\".", color = TiviSecondaryText, fontSize = 15.sp,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
+                        )
+                    }
+                }
+                items(shownRows.take(500), key = { it.name }) { m ->
                     TiviMenuRow(
                         title = m.name,
                         subtitle = m.manualMatch?.let { typed ->
