@@ -5,7 +5,9 @@ import com.example.data.local.dao.ChannelEpgRef
 import com.example.data.local.entity.EpgChannelEntity
 import com.example.data.util.LogoUrl
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class EpgMatcherTest {
@@ -46,6 +48,39 @@ class EpgMatcherTest {
     fun guideChannelsWithoutProgrammesAreIgnored() {
         val index = EpgMatcher.Index(listOf(guide("Empty.uk", "Some Channel")), emptySet())
         assertNull(EpgMatcher.resolve(ChannelEpgRef(1, "1", "Some Channel", null, null, null), index))
+    }
+
+    @Test
+    fun wantedKeepsEveryChannelResolveCouldPick() {
+        val guide = listOf(
+            guide("9187", "Sky Comedy HD"), guide("SkySports1.uk", "Sky Sports 1"),
+            guide("StarSports1.in", "Star Sports 1"), guide("Other", "Some Other Channel")
+        )
+        val refs = listOf(
+            ChannelEpgRef(1, "a", "UK: Sky Comedy HD", null, null, null, 1),
+            ChannelEpgRef(2, "b", "Sky Sports 1 FHD", "SkySports1.UK", null, null, 1),
+            ChannelEpgRef(3, "c", "Star Sports 1 Hindi", null, null, null, 1)
+        )
+        val filter = EpgMatcher.Wanted(refs).newFilter()
+        filter.noteChannels(guide.map { it.channelId to listOf(it.displayName) })
+        val index = EpgMatcher.Index(guide, guide.map { it.channelId }.toSet())
+        for (r in refs) {
+            val hit = EpgMatcher.resolve(r, index)
+            assertTrue("${r.name} -> $hit", hit != null && filter.accepts(hit))
+        }
+        assertFalse(filter.accepts("Other"))
+        assertTrue(EpgMatcher.Wanted(emptyList()).isEmpty)
+    }
+
+    @Test
+    fun manualMatchByGuideNameOrTvgId() {
+        val g = listOf(guide("9187", "Sky Comedy HD"), guide("SkySports1.uk", "Sky Sports 1"))
+        val index = EpgMatcher.Index(g, g.map { it.channelId }.toSet())
+        assertEquals("9187", EpgMatcher.resolveManual("Sky Comedy HD", index))
+        assertEquals("9187", EpgMatcher.resolveManual("sky comedy", index))
+        assertEquals("SkySports1.uk", EpgMatcher.resolveManual("skysports1.UK", index))
+        assertNull(EpgMatcher.resolveManual("No Such Channel", index))
+        assertNull(EpgMatcher.resolveManual("  ", index))
     }
 
     @Test
