@@ -27,12 +27,13 @@ data class ChannelEpgRef(
     val name: String,
     val epgChannelId: String?,
     val epgName: String?,
-    val logoUrl: String?
+    val logoUrl: String?,
+    val playlistId: Long = 0L
 )
 
 @Dao
 interface ChannelDao {
-    @Query("SELECT id, streamId, name, epgChannelId, epgName, logoUrl FROM channels WHERE contentType = 'TV' AND (:playlistId = 0 OR playlistId = :playlistId)")
+    @Query("SELECT id, streamId, name, epgChannelId, epgName, logoUrl, playlistId FROM channels WHERE contentType = 'TV' AND (:playlistId = 0 OR playlistId = :playlistId)")
     suspend fun getTvEpgRefs(playlistId: Long): List<ChannelEpgRef>
 
     @Query("UPDATE channels SET epgChannelId = :epgChannelId WHERE id = :id")
