@@ -36,6 +36,14 @@ interface ChannelDao {
     @Query("SELECT id, streamId, name, epgChannelId, epgName, logoUrl, playlistId FROM channels WHERE contentType = 'TV' AND (:playlistId = 0 OR playlistId = :playlistId)")
     suspend fun getTvEpgRefs(playlistId: Long): List<ChannelEpgRef>
 
+    /** Live channels of a playlist that are not in a hidden group (what the "Unmatched channels" page lists). */
+    @Query(
+        "SELECT id, streamId, name, epgChannelId, epgName, logoUrl, playlistId FROM channels " +
+            "WHERE contentType = 'TV' AND playlistId = :playlistId AND groupTitle NOT IN " +
+            "(SELECT groupTitle FROM channel_groups WHERE playlistId = :playlistId AND contentType = 'TV' AND isVisible = 0)"
+    )
+    suspend fun getVisibleTvEpgRefs(playlistId: Long): List<ChannelEpgRef>
+
     @Query("UPDATE channels SET epgChannelId = :epgChannelId WHERE id = :id")
     suspend fun setEpgChannelId(id: Long, epgChannelId: String?)
 
