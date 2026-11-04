@@ -229,7 +229,7 @@ class TvBuddyRepository(
 
     /** Channels of the playlist whose programmes exist in the database (same keys the player looks up). */
     private suspend fun tvBuddyMatchSplit(playlistId: Long): Pair<List<String>, List<String>> {
-        val ids = programDao.getDistinctChannelIds().mapTo(HashSet()) { it.lowercase() }
+        val ids = programDao.getChannelIdsWithUpcoming().mapTo(HashSet()) { it.lowercase() }
         val matched = ArrayList<String>()
         val unmatched = ArrayList<String>()
         for (r in channelDao.getTvEpgRefs(playlistId)) {
@@ -238,19 +238,31 @@ class TvBuddyRepository(
         return matched to unmatched
     }
 
-    private fun hasGuide(r: com.example.data.local.dao.ChannelEpgRef, ids: Set<String>) =
-        r.epgChannelId?.lowercase() in ids || r.epgName?.lowercase() in ids || r.name.lowercase() in ids
+    /**
+     * Same keys the player looks programmes up by (see [EpgMatcher.candidateKeys]). [ids] are the guide channels that
+     * still have programmes on air or ahead: a channel whose programmes are all in the past shows no guide, so it
+     * counts as unmatched too.
+     */
+    private fun hasGuide(r: com.example.data.local.dao.ChannelEpgRef, ids: Set<String>): Boolean {
+        if (r.epgChannelId?.takeIf { it.isNotBlank() }?.lowercase()?.let { it in ids } == true) return true
+        if (r.streamId.isNotBlank() &&
+            (EpgMatcher.portalKey(r.playlistId, r.streamId) in ids || r.streamId.lowercase() in ids)
+        ) return true
+        if (r.epgName?.takeIf { it.isNotBlank() }?.lowercase()?.let { it in ids } == true) return true
+        return r.name.lowercase() in ids
+    }
 
     /**
      * The "Unmatched channels" page: live channels of the playlist that have no guide, plus the ones the user matched
      * by hand (so a wrong manual match can be changed). Unmatched first, then by name.
      */
     suspend fun tvBuddyUnmatched(playlistId: Long): List<com.example.data.epg.EpgChannelMatch> = withContext(Dispatchers.IO) {
-        val ids = programDao.getDistinctChannelIds().mapTo(HashSet()) { it.lowercase() }
+        val ids = programDao.getChannelIdsWithUpcoming().mapTo(HashSet()) { it.lowercase() }
         val manual = manualMatches(playlistId)
         val seen = HashSet<String>()
         val out = ArrayList<com.example.data.epg.EpgChannelMatch>()
-        for (r in channelDao.getTvEpgRefs(playlistId)) {
+        // channels of hidden groups are not part of the playlist the user sees: they are not listed here either
+        for (r in channelDao.getVisibleTvEpgRefs(playlistId)) {
             val hit = hasGuide(r, ids)
             val typed = manual[playlistId to r.name.trim().lowercase()]
             if ((!hit || typed != null) && seen.add(r.name.trim().lowercase())) {
@@ -540,21 +552,49 @@ class TvBuddyRepository(
     suspend fun remapEpg(playlistId: Long = 0L) = withContext(Dispatchers.IO) {
         remapMutex.withLock {
             try {
-                val ids = programDao.getDistinctChannelIds().toHashSet()
+                // only guide channels that still have programmes on air or ahead can give a channel its guide
+                val ids = programDao.getChannelIdsWithUpcoming().toHashSet()
                 if (ids.isEmpty()) return@withLock
                 val index = EpgMatcher.Index(epgChannelDao.getAll(), ids)
                 val refs = channelDao.getTvEpgRefs(playlistId)
                 val manual = manualMatches(playlistId)
+                // The same channel in another playlist that has a tvg-id (and so a guide): name key -> guide channel id
+                val allRefs = if (playlistId == 0L) refs else channelDao.getTvEpgRefs(0L)
+                val donors = HashMap<String, String>()
+                for (a in allRefs) {
+                    if (EpgMatcher.isWrongGenericId(a)) continue
+                    val own = index.byId(a.epgChannelId) ?: continue
+                    for (k in EpgMatcher.siblingKeys(a)) donors.putIfAbsent(k, own)
+                }
+                fun fromSibling(r: com.example.data.local.dao.ChannelEpgRef): String? {
+                    for (k in EpgMatcher.siblingKeys(r)) donors[k]?.let { return it }
+                    return null
+                }
                 database.withTransaction {
                     for (r in refs) {
                         // what the user typed in for this channel beats every automatic rule
                         val typed = manual[r.playlistId to r.name.trim().lowercase()]
-                        val resolved = typed?.let { EpgMatcher.resolveManual(it, index) } ?: EpgMatcher.resolve(r, index)
+                        val resolved = typed?.let { EpgMatcher.resolveManual(it, index) }
+                            ?: EpgMatcher.resolve(r, index)
+                            ?: fromSibling(r)
                         if (resolved != null && resolved != r.epgChannelId) channelDao.setEpgChannelId(r.id, resolved)
                         // a looser older matcher mapped brand-only names ("Star 4K" -> "Star"): drop that wrong guide
                         else if (resolved == null && EpgMatcher.isWrongGenericId(r)) channelDao.setEpgChannelId(r.id, null)
                         if (r.logoUrl.isNullOrBlank() && resolved != null) {
                             LogoUrl.normalize(index.icons[resolved])?.let { channelDao.setLogoUrl(r.id, it) }
+                        }
+                    }
+                    // a guide just reached this playlist's channels: same-named channels of the OTHER playlists that
+                    // still have no guide of their own get it too (without waiting for those playlists' own refresh)
+                    if (playlistId != 0L) {
+                        val everyManual = manualMatches(0L)
+                        for (r in allRefs) {
+                            if (r.playlistId == playlistId) continue
+                            if (everyManual.containsKey(r.playlistId to r.name.trim().lowercase())) continue
+                            val cur = r.epgChannelId?.takeIf { it.isNotBlank() }?.lowercase()
+                            if (cur != null && cur in ids) continue
+                            val target = fromSibling(r) ?: continue
+                            if (target != r.epgChannelId) channelDao.setEpgChannelId(r.id, target)
                         }
                     }
                 }
