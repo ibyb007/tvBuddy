@@ -24,17 +24,23 @@ object EpgMatcher {
         "50fps", "60fps", "raw", "vip", "backup", "multisub", "orig", "original"
     )
     private val domainSuffix = Regex("\\.(?:[a-z]{2,3}|com|net|tv)$", RegexOption.IGNORE_CASE)
+    // compiled once: normalising runs for every channel name of a guide (tens of thousands of calls)
+    private val marks = Regex("\\p{M}+")
+    private val plusNumber = Regex("\\+\\s*(\\d)")
+    private val nonWord = Regex("[^a-z0-9\\p{L}]+")
+    private val sonyTen = Regex("sony\\s*sports?\\s*ten")
+    private val letterDigit = Regex("(?<=[a-z])(?=\\d)")
 
     /** "Sky Sports 1 HD" / "UK: SKY SPORTS 1 FHD" / "sky-sports-1" -> "skysports1". "+1" timeshift stays distinct ("plus1"). */
     fun normalize(name: String?): String {
         if (name.isNullOrBlank()) return ""
-        var s = Normalizer.normalize(name, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
+        var s = Normalizer.normalize(name, Normalizer.Form.NFD).replace(marks, "")
         s = s.replace(bracketed, " ")
         // a leading country / provider tag: "UK: ", "US | ", "|UK|", "[DE] "
         val m = prefix.find(s)
         if (m != null && m.range.first == 0 && s.length - m.value.length >= 2) s = s.substring(m.value.length)
-        s = s.lowercase().replace("&", " and ").replace(Regex("\\+\\s*(\\d)"), " plus$1 ")
-        val tokens = s.split(Regex("[^a-z0-9\\p{L}]+")).filter { it.isNotEmpty() && it !in qualityTokens }
+        s = s.lowercase().replace("&", " and ").replace(plusNumber, " plus$1 ")
+        val tokens = s.split(nonWord).filter { it.isNotEmpty() && it !in qualityTokens }
         return tokens.joinToString("")
     }
 
@@ -60,14 +66,14 @@ object EpgMatcher {
 
     private fun tokensOf(name: String?): List<String> {
         if (name.isNullOrBlank()) return emptyList()
-        var s = Normalizer.normalize(name, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "")
+        var s = Normalizer.normalize(name, Normalizer.Form.NFD).replace(marks, "")
         s = s.replace(bracketed, " ")
         val m = prefix.find(s)
         if (m != null && m.range.first == 0 && s.length - m.value.length >= 2) s = s.substring(m.value.length)
         s = s.lowercase().replace("&", " and ")
-            .replace(Regex("sony\\s*sports?\\s*ten"), "sony ten")
-            .replace(Regex("(?<=[a-z])(?=\\d)"), " ")
-        return s.split(Regex("[^a-z0-9\\p{L}]+")).filter { it.isNotEmpty() && it !in noiseTokens }
+            .replace(sonyTen, "sony ten")
+            .replace(letterDigit, " ")
+        return s.split(nonWord).filter { it.isNotEmpty() && it !in noiseTokens }
     }
 
     /** Order-free key of a name: "Ten 1 Sony" and "Sony Sports Ten 1 HD" give the same key. */
@@ -154,6 +160,82 @@ object EpgMatcher {
         if (!isGeneric(nName)) index.byName(nName, ch.epgChannelId)?.let { return it }
         // no id and no exact name: word-order free / number-aware match
         for (k in smartKeys(ch.name) + smartKeys(ch.epgName)) index.byTokens(k)?.let { return it }
+        return null
+    }
+
+    /**
+     * What the playlists' channels can possibly be matched to, used to drop programmes nobody will ever show while a
+     * guide is read (a provider guide has thousands of channels; a playlist uses a few hundred). It accepts every
+     * guide channel [resolve] could pick for one of [refs] (same id / name / word-order-free rules), so it never
+     * loses a programme that would have been matched. [manual] are the guide names / ids typed in by the user.
+     */
+    class Wanted(refs: List<ChannelEpgRef>, manual: Collection<String> = emptyList()) {
+        private val ids = HashSet<String>()
+        private val norms = HashSet<String>()
+        private val smart = HashSet<String>()
+
+        init {
+            for (r in refs) {
+                for (v in arrayOf(r.epgChannelId, r.epgName, r.name, r.streamId)) {
+                    if (v.isNullOrBlank()) continue
+                    ids += v.trim().lowercase()
+                    val n = normalize(v)
+                    if (n.isNotEmpty() && !isGeneric(n)) norms += n
+                }
+                smart += smartKeys(r.name)
+                smart += smartKeys(r.epgName)
+            }
+            for (m in manual) {
+                if (m.isBlank()) continue
+                ids += m.trim().lowercase()
+                normalize(m).takeIf { it.isNotEmpty() }?.let { norms += it }
+                smart += smartKeys(m)
+            }
+        }
+
+        /** True when there is nothing to filter by (no channels yet): everything is kept then. */
+        val isEmpty: Boolean get() = ids.isEmpty()
+
+        /** Changes whenever the set of wanted channels changes: a guide that did not change is only skipped while this is the same. */
+        val signature: Int by lazy { ids.sorted().hashCode() * 31 + norms.size * 17 + smart.size }
+
+        /** One filter per guide import (it remembers decisions, so it is not shared between imports). */
+        fun newFilter() = Filter()
+
+        inner class Filter {
+            private val accepted = HashSet<String>()
+            private val decided = HashMap<String, Boolean>()
+
+            /** Call with the guide's `<channel>` elements before its programmes arrive. */
+            fun noteChannels(guide: List<Pair<String, List<String>>>) {
+                for ((id, names) in guide) {
+                    if (names.any { normalize(it) in norms } || smartKeys(names.firstOrNull()).firstOrNull()?.let { it in smart } == true) {
+                        accepted += id
+                    }
+                }
+            }
+
+            /** Whether programmes of the guide channel [id] are kept. */
+            fun accepts(id: String): Boolean {
+                if (id in accepted) return true
+                return decided.getOrPut(id) {
+                    id.lowercase() in ids || normalize(id.replace(domainSuffix, "")).let { it.isNotEmpty() && it in norms }
+                }
+            }
+        }
+    }
+
+    /**
+     * The guide channel a name or tvg-id typed in by the user stands for: an id first (any case), then a display
+     * name (same normalising as [resolve]), then the word-order-free / number-aware keys. Null when the guide has no
+     * such channel.
+     */
+    fun resolveManual(value: String, index: Index): String? {
+        val v = value.trim()
+        if (v.isEmpty()) return null
+        index.byId(v)?.let { return it }
+        index.byName(normalize(v), null)?.let { return it }
+        for (k in smartKeys(v)) index.byTokens(k)?.let { return it }
         return null
     }
 
