@@ -54,6 +54,9 @@ data class TvGroupSelection(
     val groupTitle: String? = null         // only for kind == GROUP
 )
 
+/** Phone mode: the "History" chip after "All" (the last 10 live channels played). */
+const val CATEGORY_HISTORY = "History"
+
 /** One playlist with its visible groups, in the order the groups panel lists them. */
 data class TvGroupSection(
     val playlistId: Long,
@@ -115,7 +118,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val pendingResumeUrl: String? = prefs.getString(KEY_RESUME_URL, null)
     private var resumeHandled = false
 
-    private val _selectedCategory = MutableStateFlow("All")
+    // phone mode: the group chip last shown is restored after a relaunch (checked against the real groups below)
+    private val _selectedCategory = MutableStateFlow(prefs.getString(KEY_MOBILE_CATEGORY, null)?.takeIf { it.isNotBlank() } ?: "All")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
     /** Phone mode: opacity of the floating navbar and its playlist panel (0.1 - 1.0), saved across launches. */
@@ -129,7 +133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /** Phone mode: playlist picked in the floating navbar (null = all playlists). */
-    private val _mobilePlaylistId = MutableStateFlow<Long?>(null)
+    private val _mobilePlaylistId = MutableStateFlow<Long?>(prefs.getLong(KEY_MOBILE_PLAYLIST, -1L).takeIf { it >= 0L })
     val mobilePlaylistId: StateFlow<Long?> = _mobilePlaylistId.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
@@ -294,9 +298,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     val categories: StateFlow<List<String>> = combine(tvGroupSections, _mobilePlaylistId) { sections, plId ->
         val shown = if (plId == null) sections else sections.filter { it.playlistId == plId }
-        listOf("All", "★ Favorites") + shown.flatMap { it.groups }.distinct()
+        listOf("All", CATEGORY_HISTORY, "★ Favorites") + shown.flatMap { it.groups }.distinct()
     }
-        .stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", "★ Favorites"))
+        .stateIn(viewModelScope, SharingStarted.Lazily, listOf("All", CATEGORY_HISTORY, "★ Favorites"))
 
     private data class FilterState(
         val category: String,
@@ -366,8 +370,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         rawChannels,
         allPlaylists,
         liveGroups,
-        filterState
-    ) { channels, playlists, groups, fs ->
+        filterState,
+        repository.playbackHistory
+    ) { channels, playlists, groups, fs, history ->
         if (fs.tvMode) {
             applySelection(channels, playlists, groups, fs.selection, fs.favOnly, fs.nameSorted)
         } else {
@@ -376,6 +381,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             when (fs.category) {
                 "All" -> all
                 "★ Favorites" -> all.filter { it.isFavorite }
+                // the last 10 live channels played (most recent first) that are still visible
+                CATEGORY_HISTORY -> {
+                    val byId = all.associateBy { it.id }
+                    val byUrl = all.associateBy { it.streamUrl }
+                    history.mapNotNull { byId[it.channelId] ?: byUrl[it.streamUrl] }.distinctBy { it.id }.take(10)
+                }
                 else -> all.filter { it.groupTitle.equals(fs.category, ignoreCase = true) }
             }
         }
@@ -463,12 +474,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun selectCategory(category: String) {
         _selectedCategory.value = category
+        prefs.edit().putString(KEY_MOBILE_CATEGORY, category).apply()
     }
 
-    /** Phone navbar: show one playlist (null = all playlists). Group chips go back to "All". */
+    /** Phone navbar: show one playlist (null = all playlists). Group chips go back to "All". The pick survives a relaunch. */
     fun selectMobilePlaylist(playlistId: Long?) {
         _mobilePlaylistId.value = playlistId
         _selectedCategory.value = "All"
+        prefs.edit().putLong(KEY_MOBILE_PLAYLIST, playlistId ?: -1L).putString(KEY_MOBILE_CATEGORY, "All").apply()
+    }
+
+    init {
+        // A restored phone playlist / group that was deleted, deactivated or hidden meanwhile falls back to "All"
+        viewModelScope.launch {
+            combine(allPlaylists, tvGroupSections, _mobilePlaylistId, _selectedCategory) { playlists, sections, plId, cat ->
+                arrayOf<Any?>(playlists, sections, plId, cat)
+            }.collect { v ->
+                @Suppress("UNCHECKED_CAST")
+                val playlists = v[0] as List<PlaylistEntity>
+                @Suppress("UNCHECKED_CAST")
+                val sections = v[1] as List<TvGroupSection>
+                val plId = v[2] as Long?
+                val cat = v[3] as String
+                if (playlists.isEmpty() || sections.isEmpty()) return@collect   // still loading
+                if (plId != null && playlists.none { it.id == plId && it.isActive }) {
+                    selectMobilePlaylist(null)
+                    return@collect
+                }
+                val fixed = cat == "All" || cat == CATEGORY_HISTORY || cat == "★ Favorites"
+                val shown = if (plId == null) sections else sections.filter { it.playlistId == plId }
+                if (!fixed && shown.none { s -> s.groups.any { it.equals(cat, ignoreCase = true) } }) selectCategory("All")
+            }
+        }
     }
 
     // ---- TV groups panel actions ----
@@ -1343,6 +1380,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val KEY_PREV_PLAYLIST = "prev_ctx_playlist"
         const val KEY_PREV_KIND = "prev_ctx_kind"
         const val KEY_PREV_GROUP = "prev_ctx_group"
+        const val KEY_MOBILE_PLAYLIST = "mobile_playlist_id"
+        const val KEY_MOBILE_CATEGORY = "mobile_category"
         const val KEY_SEL_PLAYLIST = "tv_sel_playlist"
         const val KEY_SEL_KIND = "tv_sel_kind"
         const val KEY_SEL_GROUP = "tv_sel_group"
