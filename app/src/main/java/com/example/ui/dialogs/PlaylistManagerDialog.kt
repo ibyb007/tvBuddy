@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -72,6 +73,7 @@ import androidx.compose.runtime.Composable
 import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -108,6 +110,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.example.data.local.entity.ChannelGroupEntity
 import com.example.data.model.ContentType
 import com.example.data.model.PlaylistType
@@ -162,6 +165,7 @@ data class UpdateRowState(
 object UpdateKeys {
     const val ALL_PLAYLISTS = "playlists:all"
     const val EPG = "epg"
+    const val EPG_CLEAR = "epg:clear"
     fun playlist(id: Long) = "playlist:$id"
 }
 
@@ -355,7 +359,8 @@ fun PlaylistManagerDialog(
     onOpenSpoofEngine: () -> Unit = {},
     tvBuddyEpgStatus: Map<Long, com.example.data.epg.TvBuddyEpgStatus> = emptyMap(),
     onToggleTvBuddyEpg: (Long, Boolean) -> Unit = { _, _ -> },
-    onLoadTvBuddyUnmatched: suspend (Long) -> List<String> = { emptyList() },
+    onLoadTvBuddyUnmatched: suspend (Long) -> List<com.example.data.epg.EpgChannelMatch> = { emptyList() },
+    onSetEpgManualMatch: suspend (Long, String, String) -> String = { _, _, _ -> "" },
     playbackSettings: com.example.player.PlaybackSettings = com.example.player.PlaybackSettings(),
     onChangePlaybackSettings: (com.example.player.PlaybackSettings) -> Unit = {},
     audioBoostProfile: com.example.player.AudioBoostProfile = com.example.player.AudioBoostProfile.OFF,
@@ -399,12 +404,8 @@ fun PlaylistManagerDialog(
         else changes.forEach { (title, visible) -> onSetGroupVisibility(playlistId, title, visible, contentType) }
     }
 
-    // epgSourceId -> names of playlists using it (so a source extracted from one playlist is visible everywhere)
-    val epgUsedBy = remember(playlists, playlistEpgCrossRefs) {
-        playlistEpgCrossRefs
-            .groupBy({ it.epgSourceId }, { ref -> playlists.find { it.id == ref.playlistId }?.name })
-            .mapValues { (_, names) -> names.filterNotNull().joinToString(", ") }
-    }
+    // sources that at least one playlist uses (the EPG sources list shows these with a check mark)
+    val epgAssignedIds = remember(playlistEpgCrossRefs) { playlistEpgCrossRefs.mapTo(HashSet()) { it.epgSourceId } }
 
     // Sub-dialogs for inline text/number edits
     var textEditDialogState by remember { mutableStateOf<TextEditPrompt?>(null) }
@@ -734,12 +735,13 @@ fun PlaylistManagerDialog(
                                 onChangeState = onUpdateEpgSettings,
                                 onUpdateEpg = onTriggerUpdateEpg,
                                 updateState = updateStates[UpdateKeys.EPG],
+                                clearState = updateStates[UpdateKeys.EPG_CLEAR],
                                 onClearEpg = onTriggerClearEpg
                             )
 
                             is TiviSettingsRoute.EpgSources -> EpgSourcesSubMenu(
                                 sources = epgSources,
-                                usedBy = epgUsedBy,
+                                assignedIds = epgAssignedIds,
                                 onAddSource = { navigateTo(TiviSettingsRoute.AddEpgSourceUrl) },
                                 onSelectSource = { src -> navigateTo(TiviSettingsRoute.EpgSourceDetail(src.id)) }
                             )
@@ -773,7 +775,11 @@ fun PlaylistManagerDialog(
 
                             is TiviSettingsRoute.TvBuddyUnmatched -> TvBuddyUnmatchedSubMenu(
                                 playlistId = route.playlistId,
-                                load = onLoadTvBuddyUnmatched
+                                load = onLoadTvBuddyUnmatched,
+                                onSetMatch = onSetEpgManualMatch,
+                                onEditText = { title, initial, confirm ->
+                                    textEditDialogState = TextEditPrompt(title, initial, confirm)
+                                }
                             )
 
                             is TiviSettingsRoute.Playback -> PlaybackSubMenu(
@@ -992,12 +998,20 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
 // ============================================================================
 
 @Composable
-private fun TvBuddyUnmatchedSubMenu(playlistId: Long, load: suspend (Long) -> List<String>) {
-    var names by remember(playlistId) { mutableStateOf<List<String>?>(null) }
-    LaunchedEffect(playlistId) { names = load(playlistId) }
+private fun TvBuddyUnmatchedSubMenu(
+    playlistId: Long,
+    load: suspend (Long) -> List<com.example.data.epg.EpgChannelMatch>,
+    onSetMatch: suspend (Long, String, String) -> String,
+    onEditText: (title: String, initial: String, confirm: (String) -> Unit) -> Unit
+) {
+    var rows by remember(playlistId) { mutableStateOf<List<com.example.data.epg.EpgChannelMatch>?>(null) }
+    var info by remember(playlistId) { mutableStateOf<String?>(null) }
+    var busy by remember(playlistId) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(playlistId) { rows = load(playlistId) }
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "Unmatched channels")
-        val list = names
+        val list = rows
         when {
             list == null -> Text("Checking...", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
             list.isEmpty() -> Text("Every channel has a guide.", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
@@ -1007,12 +1021,39 @@ private fun TvBuddyUnmatchedSubMenu(playlistId: Long, load: suspend (Long) -> Li
             ) {
                 item {
                     Text(
-                        "These channels were not found in any guide source. Check their tvg-id in the playlist, or add an EPG source that covers them.",
+                        "Pick a channel and type the name or tvg-id it has in the guide (for example \"Sky Sports 1\" or " +
+                            "\"SkySports1.uk\"). Leave it empty to remove a manual match.",
                         color = TiviSecondaryText, fontSize = 13.sp,
                         modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
                     )
                 }
-                items(list.take(500)) { name -> TiviMenuRow(title = name, onClick = {}) }
+                info?.let { msg ->
+                    item {
+                        Text(
+                            msg, color = TiviAccentBlue, fontSize = 13.sp,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                        )
+                    }
+                }
+                items(list.take(500), key = { it.name }) { m ->
+                    TiviMenuRow(
+                        title = m.name,
+                        subtitle = m.manualMatch?.let { typed ->
+                            if (m.matched) "Matched to: $typed" else "Matched to: $typed (schedule not loaded yet)"
+                        },
+                        enabled = !busy,
+                        onClick = {
+                            onEditText("EPG channel name or tvg-id for ${m.name}", m.manualMatch.orEmpty()) { typed ->
+                                scope.launch {
+                                    busy = true
+                                    info = try { onSetMatch(playlistId, m.name, typed) } catch (e: Exception) { "Could not match: ${e.localizedMessage ?: "unknown error"}" }
+                                    rows = load(playlistId)
+                                    busy = false
+                                }
+                            }
+                        }
+                    )
+                }
             }
         }
     }
@@ -1368,8 +1409,8 @@ private fun PlaylistDetailSubMenu(
                         TiviMenuRow(
                             title = "Unmatched channels",
                             subtitle = if (tvBuddyStatus.total > 0)
-                                "${tvBuddyStatus.total - tvBuddyStatus.matched} of ${tvBuddyStatus.total} channels have no guide"
-                            else "Channels without a guide",
+                                "${tvBuddyStatus.total - tvBuddyStatus.matched} of ${tvBuddyStatus.total} channels have no guide. Tap to match them by name or tvg-id"
+                            else "Match channels without a guide by name or tvg-id",
                             enabled = !tvBuddyStatus.running,
                             onClick = onOpenTvBuddyUnmatched
                         )
@@ -1840,6 +1881,7 @@ private fun EpgSettingsSubMenu(
     onChangeState: (EpgGlobalSettingsState) -> Unit,
     onUpdateEpg: () -> Unit,
     updateState: UpdateRowState?,
+    clearState: UpdateRowState?,
     onClearEpg: () -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1916,8 +1958,10 @@ private fun EpgSettingsSubMenu(
                 )
             }
             item {
-                TiviMenuRow(
+                // shows "Clearing..." / "EPG cleared" right under the row, so a click is always seen
+                TiviUpdateRow(
                     title = "Clear EPG",
+                    state = clearState,
                     onClick = onClearEpg
                 )
             }
@@ -1950,10 +1994,35 @@ private fun EpgSettingsSubMenu(
 // 8. GLOBAL EPG SOURCES SUBMENU ("EPG sources")
 // ============================================================================
 
+/** Blue check = assigned to a playlist, grey "!" = not assigned to any playlist. */
+@Composable
+private fun EpgSourceStateIcon(assigned: Boolean, focused: Boolean) {
+    val fill = when {
+        assigned && focused -> TiviFocusText
+        assigned -> TiviAccentBlue
+        else -> TiviSecondaryText
+    }
+    Box(
+        modifier = Modifier.size(26.dp).clip(CircleShape).background(fill),
+        contentAlignment = Alignment.Center
+    ) {
+        if (assigned) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Assigned",
+                tint = if (focused) TiviAccentBlue else Color.White,
+                modifier = Modifier.size(18.dp)
+            )
+        } else {
+            Text("!", color = Color(0xFF202124), fontSize = 17.sp, fontWeight = FontWeight.Bold)
+        }
+    }
+}
+
 @Composable
 private fun EpgSourcesSubMenu(
     sources: List<EpgSourceEntity>,
-    usedBy: Map<Long, String>,
+    assignedIds: Set<Long>,
     onAddSource: () -> Unit,
     onSelectSource: (EpgSourceEntity) -> Unit
 ) {
@@ -1964,25 +2033,11 @@ private fun EpgSourcesSubMenu(
             contentPadding = PaddingValues(bottom = 24.dp)
         ) {
             items(sources, key = { it.id }) { src ->
-                val titleText = if (src.isDefault) "${src.name} (default)" else src.name
-                val users = usedBy[src.id].orEmpty()
-                val location = src.locationLabel()
-                val subtitleText = if (users.isBlank()) "Not assigned \u2022 $location" else "Used by $users \u2022 $location"
+                val assigned = src.id in assignedIds
                 TiviMenuRow(
-                    title = titleText,
-                    subtitle = subtitleText,
-                    leadingIcon = { focused ->
-                        if (src.isEnabled) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Active",
-                                tint = if (focused) TiviFocusText else TiviAccentBlue,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        } else {
-                            Spacer(modifier = Modifier.size(20.dp))
-                        }
-                    },
+                    title = if (src.isDefault) "${src.name} (default)" else src.name,
+                    subtitle = src.locationLabel(),
+                    leadingIcon = { focused -> EpgSourceStateIcon(assigned = assigned, focused = focused) },
                     onClick = { onSelectSource(src) }
                 )
             }
