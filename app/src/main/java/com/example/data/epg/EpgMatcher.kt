@@ -148,6 +148,20 @@ object EpgMatcher {
         }
     }
 
+    /**
+     * Keys that identify "the same channel" across playlists (normalised name / tvg-name, plus the word-order-free key).
+     * A channel without tvg-id in one playlist borrows the guide of the same channel that has one in another playlist.
+     */
+    fun siblingKeys(ch: ChannelEpgRef): List<String> {
+        val out = LinkedHashSet<String>()
+        for (v in arrayOf(ch.name, ch.epgName)) {
+            val n = normalize(v)
+            if (n.isNotEmpty() && !isGeneric(n)) out += "n:$n"
+            smartKeys(v).firstOrNull()?.let { out += "s:$it" }
+        }
+        return out.toList()
+    }
+
     /** The guide channel [ch] belongs to, or null. */
     fun resolve(ch: ChannelEpgRef, index: Index): String? {
         val wrong = isWrongGenericId(ch)
