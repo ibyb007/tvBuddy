@@ -228,10 +228,13 @@ fun TvBuddyPlayerScreen(
                 var level = 0f
                 var active = false
                 // keep clear of the system back-gesture zones at both screen edges
-                val edgeGuard = 40.dp.toPx()
+                // (back gesture on the sides, notification shade / home & recents gesture at top and bottom)
+                val edgeGuard = 48.dp.toPx()
+                val vertGuard = 56.dp.toPx()
                 detectVerticalDragGestures(
                     onDragStart = { offset ->
-                        active = offset.x > edgeGuard && offset.x < size.width - edgeGuard
+                        active = offset.x > edgeGuard && offset.x < size.width - edgeGuard &&
+                            offset.y > vertGuard && offset.y < size.height - vertGuard
                         if (!active) return@detectVerticalDragGestures
                         kind = if (offset.x > size.width / 2f) SwipeKind.VOLUME else SwipeKind.BRIGHTNESS
                         level = when (kind) {
