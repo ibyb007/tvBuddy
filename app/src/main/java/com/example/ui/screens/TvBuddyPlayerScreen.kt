@@ -572,9 +572,29 @@ fun TvBuddyPlayerScreen(
                         }
                     }
 
+                    // no guide for this channel: show how far the current clock hour has run, like the TV UI
+                    var hourNow by remember { mutableStateOf(System.currentTimeMillis()) }
+                    LaunchedEffect(currentProgram == null) {
+                        while (currentProgram == null) {
+                            hourNow = System.currentTimeMillis()
+                            kotlinx.coroutines.delay(15_000L)
+                        }
+                    }
                     if (currentProgram != null && currentProgram.isLive) {
                         LinearProgressIndicator(
                             progress = { currentProgram.progress },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 4.dp, vertical = 4.dp)
+                                .height(3.dp)
+                                .clip(RoundedCornerShape(1.5.dp)),
+                            color = AccentCyan,
+                            trackColor = Color(0xFF1E293B)
+                        )
+                    } else if (currentProgram == null) {
+                        val hourStart = com.example.ui.components.floorToHour(hourNow)
+                        LinearProgressIndicator(
+                            progress = { ((hourNow - hourStart).toFloat() / com.example.ui.components.HOUR_MS).coerceIn(0f, 1f) },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 4.dp, vertical = 4.dp)
