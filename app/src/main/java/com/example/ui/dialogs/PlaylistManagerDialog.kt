@@ -252,7 +252,9 @@ private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when
     is TiviSettingsRoute.PortalParams ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.EpgSources -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, route)
-    is TiviSettingsRoute.TvBuddyUnmatched, is TiviSettingsRoute.TvBuddySources ->
+    is TiviSettingsRoute.TvBuddyUnmatched ->
+        listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
+    is TiviSettingsRoute.TvBuddySources ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.AddEpgSourceUrl, is TiviSettingsRoute.EpgSourceDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
