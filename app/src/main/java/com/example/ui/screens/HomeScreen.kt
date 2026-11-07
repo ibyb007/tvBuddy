@@ -1195,6 +1195,7 @@ fun HomeScreen(
         val warpState by viewModel.warpState.collectAsStateWithLifecycle()
         val playbackSettings by viewModel.playbackSettings.collectAsStateWithLifecycle()
         val tvBuddyEpgStatus by viewModel.tvBuddyEpgStatus.collectAsStateWithLifecycle()
+        val tvBuddySourceOn by viewModel.tvBuddySourceOn.collectAsStateWithLifecycle()
         PlaylistManagerDialog(
             playlists = playlists,
             onDismiss = { showPlaylistManager = false },
@@ -1234,6 +1235,9 @@ fun HomeScreen(
             tvBuddyEpgStatus = tvBuddyEpgStatus,
             onToggleTvBuddyEpg = { id, on -> viewModel.setTvBuddyEpg(id, on) },
             onLoadTvBuddyUnmatched = { viewModel.tvBuddyUnmatched(it) },
+            onSearchTvBuddyChannels = { id, q -> viewModel.tvBuddySearch(id, q) },
+            tvBuddySourceOn = tvBuddySourceOn,
+            onToggleTvBuddySource = { key, on -> viewModel.setTvBuddySourceEnabled(key, on) },
             onSetEpgManualMatch = { id, name, value -> viewModel.setManualEpgMatch(id, name, value) },
             playbackSettings = playbackSettings,
             onChangePlaybackSettings = { viewModel.setPlaybackSettings(it) },
