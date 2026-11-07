@@ -786,6 +786,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setTvBuddyEpg(playlistId: Long, enabled: Boolean) =
         repository.setTvBuddyEpg(playlistId, enabled, _globalSpoof.value.getUserAgent())
 
+    val tvBuddySourceOn: StateFlow<Map<String, Boolean>> = repository.tvBuddySourceOn
+
+    fun setTvBuddySourceEnabled(key: String, enabled: Boolean) =
+        repository.setTvBuddySourceEnabled(key, enabled, _globalSpoof.value.getUserAgent())
+
+    suspend fun tvBuddySearch(playlistId: Long, query: String): List<com.example.data.epg.EpgChannelMatch> =
+        repository.tvBuddySearch(playlistId, query)
+
     suspend fun tvBuddyUnmatched(playlistId: Long): List<com.example.data.epg.EpgChannelMatch> = repository.tvBuddyUnmatched(playlistId)
 
     /** Matches a playlist channel to a guide channel by the name or tvg-id the user typed; returns the sentence to show. */
