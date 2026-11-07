@@ -282,8 +282,15 @@ fun MobileVodPlayer(
                 if (isInPipMode) return@pointerInput
                 var kind = MvSwipeKind.VOLUME
                 var level = 0f
+                var active = false
+                // keep clear of the system gesture zones: back on the sides, shade / home / recents top and bottom
+                val edgeGuard = 48.dp.toPx()
+                val vertGuard = 56.dp.toPx()
                 detectVerticalDragGestures(
                     onDragStart = { offset ->
+                        active = offset.x > edgeGuard && offset.x < size.width - edgeGuard &&
+                            offset.y > vertGuard && offset.y < size.height - vertGuard
+                        if (!active) return@detectVerticalDragGestures
                         kind = if (offset.x > size.width / 2f) MvSwipeKind.VOLUME else MvSwipeKind.BRIGHTNESS
                         level = when (kind) {
                             MvSwipeKind.VOLUME -> {
@@ -295,9 +302,10 @@ fun MobileVodPlayer(
                         gestureKind = kind
                         gestureLevel = level
                     },
-                    onDragEnd = { gestureTick++ },
-                    onDragCancel = { gestureTick++ },
+                    onDragEnd = { if (active) gestureTick++; active = false },
+                    onDragCancel = { if (active) gestureTick++; active = false },
                     onVerticalDrag = { change, dragAmount ->
+                        if (!active) return@detectVerticalDragGestures
                         change.consume()
                         // a swipe over the full height moves the level by ~100 %
                         level = (level - dragAmount / size.height * 1.2f).coerceIn(0f, 1f)
