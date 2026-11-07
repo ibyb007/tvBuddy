@@ -220,6 +220,7 @@ fun HomeScreen(
     var tvBrowse by remember { mutableStateOf<TvBrowseLevel?>(null) }
     // true when the TV page was opened from full-screen playback (LEFT, LEFT): video stays full-screen behind it
     var tvBrowseOverlay by remember { mutableStateOf(false) }
+    val tvWarpState by viewModel.warpState.collectAsStateWithLifecycle()
     LaunchedEffect(tvBrowse) { if (tvBrowse == null) tvBrowseOverlay = false }
     // Opening the TV page while a channel plays starts on the group that channel was started from
     LaunchedEffect(tvBrowse != null) { if (tvBrowse != null) viewModel.syncSelectionToPlayContext() }
@@ -545,7 +546,8 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
-                    onEnterPip = onEnterPip,
+                    warpState = tvWarpState,
+                    onToggleWarp = { viewModel.setWarpEnabled(!tvWarpState.enabled) },
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     modifier = Modifier.fillMaxSize().zIndex(2f)
                 )
@@ -577,7 +579,8 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
-                    onEnterPip = onEnterPip,
+                    warpState = tvWarpState,
+                    onToggleWarp = { viewModel.setWarpEnabled(!tvWarpState.enabled) },
                     epgByChannel = epgByChannel,
                     recentChannels = recentChannels,
                     onRemoveRecent = { viewModel.removeFromHistory(it) },
