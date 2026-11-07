@@ -218,6 +218,41 @@ class TvBuddyRepository(
         return out
     }
 
+    // which TVBuddy guide sources are turned on (global, shared by every playlist that uses TVBuddy EPG)
+    private fun loadTvBuddySourceOn(): Map<String, Boolean> =
+        com.example.data.epg.TvBuddyEpg.SOURCES.associate { it.key to epgPrefs.getBoolean("tvbsrc_${it.key}", it.defaultOn) }
+
+    private val _tvBuddySourceOn = kotlinx.coroutines.flow.MutableStateFlow(loadTvBuddySourceOn())
+    val tvBuddySourceOn: kotlinx.coroutines.flow.StateFlow<Map<String, Boolean>> = _tvBuddySourceOn
+
+    private fun enabledTvBuddySources() =
+        com.example.data.epg.TvBuddyEpg.SOURCES.filter { _tvBuddySourceOn.value[it.key] == true }
+
+    /** Turns one guide source on / off and re-runs the engine of every playlist that has TVBuddy EPG on. */
+    fun setTvBuddySourceEnabled(key: String, enabled: Boolean, userAgent: String) {
+        epgPrefs.edit().putBoolean("tvbsrc_$key", enabled).apply()
+        _tvBuddySourceOn.value = loadTvBuddySourceOn()
+        for ((id, st) in _tvBuddyEpgStatus.value.toList()) {
+            if (!st.enabled || st.running) continue
+            setTvBuddyStatus(id, st.copy(running = true, message = "Applying sources..."))
+            epgScope.launch { runTvBuddyEpg(id, userAgent) }
+        }
+    }
+
+    /** Recounts matched channels of every playlist that uses TVBuddy EPG (after the guide changed). */
+    private suspend fun refreshTvBuddyStatuses() {
+        for ((id, st) in _tvBuddyEpgStatus.value.toList()) {
+            if (!st.enabled || st.running) continue
+            val (m, u) = tvBuddyMatchSplit(id)
+            val total = m.size + u.size
+            val now = System.currentTimeMillis()
+            val msg = "Matched ${m.size} of $total channels"
+            epgPrefs.edit().putInt("tvbm_$id", m.size).putInt("tvbt_$id", total)
+                .putLong("tvbu_$id", now).putString("tvbs_$id", msg).apply()
+            setTvBuddyStatus(id, st.copy(running = false, message = msg, matched = m.size, total = total, updatedAt = now))
+        }
+    }
+
     private fun setTvBuddyStatus(playlistId: Long, st: com.example.data.epg.TvBuddyEpgStatus?) {
         _tvBuddyEpgStatus.value = _tvBuddyEpgStatus.value.toMutableMap().also {
             if (st == null) it.remove(playlistId) else it[playlistId] = st
@@ -268,6 +303,33 @@ class TvBuddyRepository(
             if ((!hit || typed != null) && seen.add(r.name.trim().lowercase())) {
                 out += com.example.data.epg.EpgChannelMatch(r.name, typed, hit)
             }
+        }
+        out.sortedWith(compareBy({ it.matched }, { it.name.lowercase() }))
+    }
+
+    /**
+     * Search on the "Unmatched channels" page: every live channel of the playlist whose name (or tvg-id) contains
+     * [query], matched ones included, with the guide channel it uses now, so the match can be changed.
+     */
+    suspend fun tvBuddySearch(playlistId: Long, query: String): List<com.example.data.epg.EpgChannelMatch> = withContext(Dispatchers.IO) {
+        val q = query.trim()
+        if (q.isEmpty()) return@withContext emptyList()
+        val ids = programDao.getChannelIdsWithUpcoming().mapTo(HashSet()) { it.lowercase() }
+        val manual = manualMatches(playlistId)
+        val guideNames = epgChannelDao.getAll().associate { it.channelId to it.displayName }
+        val seen = HashSet<String>()
+        val out = ArrayList<com.example.data.epg.EpgChannelMatch>()
+        for (r in channelDao.getVisibleTvEpgRefs(playlistId)) {
+            if (!r.name.contains(q, ignoreCase = true) && r.epgChannelId?.contains(q, ignoreCase = true) != true) continue
+            if (!seen.add(r.name.trim().lowercase())) continue
+            val hit = hasGuide(r, ids)
+            val typed = manual[playlistId to r.name.trim().lowercase()]
+            val auto = if (typed == null && hit) {
+                val id = r.epgChannelId?.takeIf { it.isNotBlank() } ?: r.epgName?.takeIf { it.isNotBlank() }
+                id?.let { i -> guideNames[i]?.let { "$it ($i)" } ?: i }
+            } else null
+            out += com.example.data.epg.EpgChannelMatch(r.name, typed, hit, auto)
+            if (out.size >= 300) break
         }
         out.sortedWith(compareBy({ it.matched }, { it.name.lowercase() }))
     }
@@ -343,14 +405,30 @@ class TvBuddyRepository(
         return legacy.mapTo(HashSet()) { it.url }
     }
 
-    /** Makes the TVBuddy guide the playlist's TVBuddy source and records its link for the periodic refresh. */
-    private suspend fun assignTvBuddySource(playlistId: Long): Long {
+    /**
+     * Assigns every turned-on TVBuddy guide to the playlist, drops the turned-off ones, and records the links for the
+     * periodic refresh. Returns the turned-on sources with their source ids.
+     */
+    private suspend fun assignTvBuddySources(playlistId: Long): List<Pair<com.example.data.epg.TvBuddyEpg.Source, Long>> {
         val legacyUrls = dropLegacyTvBuddySources(playlistId)
-        val srcId = addEpgSource(com.example.data.epg.TvBuddyEpg.SOURCE_URL, com.example.data.epg.TvBuddyEpg.SOURCE_NAME)
-        togglePlaylistEpgAssignment(playlistId, srcId, true)
-        val urls = ((epgPrefs.getStringSet("urls_$playlistId", null) ?: emptySet()) - legacyUrls) + com.example.data.epg.TvBuddyEpg.SOURCE_URL
+        val on = enabledTvBuddySources()
+        val out = ArrayList<Pair<com.example.data.epg.TvBuddyEpg.Source, Long>>()
+        for (src in on) {
+            val id = addEpgSource(src.url, com.example.data.epg.TvBuddyEpg.sourceName(src))
+            togglePlaylistEpgAssignment(playlistId, id, true)
+            out += src to id
+        }
+        for (src in com.example.data.epg.TvBuddyEpg.SOURCES) {
+            if (on.any { it.key == src.key }) continue
+            epgSourceDao.getEpgSourceByUrl(src.url)?.let {
+                togglePlaylistEpgAssignment(playlistId, it.id, false)
+                deleteEpgSourceIfUnused(it.id)
+            }
+        }
+        val allTvb = com.example.data.epg.TvBuddyEpg.SOURCES.map { it.url }.toSet()
+        val urls = ((epgPrefs.getStringSet("urls_$playlistId", null) ?: emptySet()) - legacyUrls - allTvb) + on.map { it.url }
         epgPrefs.edit().putStringSet("urls_$playlistId", urls.toSet()).apply()
-        return srcId
+        return out
     }
 
     private suspend fun runTvBuddyEpg(playlistId: Long, userAgent: String) {
@@ -362,23 +440,37 @@ class TvBuddyRepository(
             }
             val total = channelDao.getTvEpgRefs(playlistId).size
             setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = true, total = total, message = "Downloading guide..."))
-            val srcId = assignTvBuddySource(playlistId)
-            val res = importXmltvDetailed(
-                com.example.data.epg.TvBuddyEpg.SOURCE_URL, false, userAgent, epgKeepDays(), epgStoreDescriptions(),
-                wanted = buildWanted(listOf(playlistId)), remap = false, conditional = false
-            )
-            val failure = res.exceptionOrNull()
-            if (failure is EpgImportAborted) {
-                setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = false, message = "Stopped: the guide was cleared"))
+            val assigned = assignTvBuddySources(playlistId)
+            if (assigned.isEmpty()) {
+                remapEpg(playlistId)
+                val msg = "No guide source is turned on. Open Configure sources"
+                epgPrefs.edit().putInt("tvbm_$playlistId", 0).putString("tvbs_$playlistId", msg).apply()
+                setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = false, matched = 0, total = total, message = msg))
                 return
             }
-            if (failure != null) throw failure
-            epgSourceDao.updateLastUpdated(srcId)
+            val wanted = buildWanted(listOf(playlistId))
+            var okCount = 0
+            var firstFailure: Throwable? = null
+            for ((i, pair) in assigned.withIndex()) {
+                val (src, srcId) = pair
+                setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = true, total = total, message = "Downloading guide ${i + 1} of ${assigned.size}..."))
+                val res = importXmltvDetailed(
+                    src.url, false, userAgent, epgKeepDays(), epgStoreDescriptions(),
+                    wanted = wanted, remap = false, conditional = false
+                )
+                val failure = res.exceptionOrNull()
+                if (failure is EpgImportAborted) {
+                    setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = false, message = "Stopped: the guide was cleared"))
+                    return
+                }
+                if (failure != null) { if (firstFailure == null) firstFailure = failure } else { okCount++; epgSourceDao.updateLastUpdated(srcId) }
+            }
+            if (okCount == 0) throw firstFailure ?: Exception("no guide could be loaded")
             setTvBuddyStatus(playlistId, tvBuddyStatusOf(playlistId).copy(running = true, total = total, message = "Matching channels..."))
             remapEpg(playlistId)
             val matched = tvBuddyMatchSplit(playlistId).first.size
             val now = System.currentTimeMillis()
-            val msg = "Matched $matched of $total channels"
+            val msg = "Matched $matched of $total channels" + if (okCount < assigned.size) " (${assigned.size - okCount} source(s) failed)" else ""
             epgPrefs.edit().putLong("ts_$playlistId", now)
                 .putInt("tvbm_$playlistId", matched).putInt("tvbt_$playlistId", total)
                 .putLong("tvbu_$playlistId", now).putString("tvbs_$playlistId", msg).apply()
@@ -396,7 +488,7 @@ class TvBuddyRepository(
                 if (epgPrefs.getBoolean("tvb_${p.id}", false) &&
                     epgSourceDao.getAssignedSourcesForPlaylistOnce(p.id).any { com.example.data.epg.TvBuddyEpg.isLegacyName(it.name) }
                 ) {
-                    assignTvBuddySource(p.id)
+                    assignTvBuddySources(p.id)
                     epgPrefs.edit().remove("ts_${p.id}").apply()
                 }
                 val stale = now - epgPrefs.getLong("ts_${p.id}", 0L) > 12L * 60 * 60 * 1000
@@ -976,6 +1068,8 @@ class TvBuddyRepository(
             remapEpg()
             recordEpgUpdated()
         }
+        // the TVBuddy EPG match counts follow the guide, also right after "Clear EPG" + "Update EPG"
+        refreshTvBuddyStatuses()
         if (updated + unchanged > 0) {
             val stamp = System.currentTimeMillis()
             val e = epgPrefs.edit()
