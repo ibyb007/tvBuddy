@@ -32,7 +32,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.AspectRatio
-import androidx.compose.material.icons.filled.PictureInPictureAlt
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ClosedCaption
@@ -164,7 +164,8 @@ fun TvPlayerOverlay(
     onSelectAudioTrack: (TrackInfo) -> Unit = {},
     onDisableAudio: () -> Unit = {},
     onOpenSubtitles: () -> Unit,
-    onEnterPip: () -> Unit = {},
+    warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
+    onToggleWarp: () -> Unit = {},
     onClosePlayer: () -> Unit,
     onOpenSpoofSettings: () -> Unit = {},
     onOpenPlaylists: () -> Unit = {},
@@ -304,6 +305,12 @@ fun TvPlayerOverlay(
             if (mbps > 0f) "${streamInfo.width} × ${streamInfo.height}, ${"%.2f".format(mbps)} Mbps"
             else "${streamInfo.width} × ${streamInfo.height}"
         } else videoQuality.title.substringBefore(" ")
+        val warpLabel = "WARP: " + when (warpState.phase) {
+            com.example.data.network.WarpManager.Phase.STARTING -> "Connecting"
+            com.example.data.network.WarpManager.Phase.RUNNING -> "On"
+            com.example.data.network.WarpManager.Phase.ERROR -> "Failed"
+            com.example.data.network.WarpManager.Phase.OFF -> if (warpState.enabled) "Enabled" else "Off"
+        }
         return listOf(
             TvMenuItem("Channels list", Icons.Default.FormatListBulleted) { openChannelList() },
             TvMenuItem("Audio boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq) { onCycleAudioBoost() },
@@ -313,7 +320,7 @@ fun TvPlayerOverlay(
                 audioIndex = if (sel >= 0) sel + 1 else 0
                 panel = TvPanel.AUDIO
             },
-            TvMenuItem("PiP", Icons.Default.PictureInPictureAlt) { panel = TvPanel.NONE; onEnterPip() },
+            TvMenuItem(warpLabel, Icons.Default.Security) { onToggleWarp() },
             TvMenuItem("Subtitles", Icons.Default.ClosedCaption) { panel = TvPanel.NONE; onOpenSubtitles() },
             TvMenuItem(
                 if (channel?.isFavorite == true) "Remove from Favorites" else "Add to Favorites",
