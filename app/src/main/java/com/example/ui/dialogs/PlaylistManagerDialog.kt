@@ -154,6 +154,7 @@ sealed class TiviSettingsRoute {
     data object AudioBoost : TiviSettingsRoute()
     data object Playback : TiviSettingsRoute()
     data class TvBuddyUnmatched(val playlistId: Long) : TiviSettingsRoute()
+    data class TvBuddySources(val playlistId: Long) : TiviSettingsRoute()
 }
 
 /** State of an inline "Update ..." row: spinner while [running], then a result [message]. */
@@ -251,7 +252,7 @@ private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when
     is TiviSettingsRoute.PortalParams ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.EpgSources -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, route)
-    is TiviSettingsRoute.TvBuddyUnmatched ->
+    is TiviSettingsRoute.TvBuddyUnmatched, is TiviSettingsRoute.TvBuddySources ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, TiviSettingsRoute.PlaylistDetail(route.playlistId), route)
     is TiviSettingsRoute.AddEpgSourceUrl, is TiviSettingsRoute.EpgSourceDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Epg, TiviSettingsRoute.EpgSources, route)
@@ -361,6 +362,9 @@ fun PlaylistManagerDialog(
     tvBuddyEpgStatus: Map<Long, com.example.data.epg.TvBuddyEpgStatus> = emptyMap(),
     onToggleTvBuddyEpg: (Long, Boolean) -> Unit = { _, _ -> },
     onLoadTvBuddyUnmatched: suspend (Long) -> List<com.example.data.epg.EpgChannelMatch> = { emptyList() },
+    onSearchTvBuddyChannels: suspend (Long, String) -> List<com.example.data.epg.EpgChannelMatch> = { _, _ -> emptyList() },
+    tvBuddySourceOn: Map<String, Boolean> = emptyMap(),
+    onToggleTvBuddySource: (String, Boolean) -> Unit = { _, _ -> },
     onSetEpgManualMatch: suspend (Long, String, String) -> String = { _, _, _ -> "" },
     playbackSettings: com.example.player.PlaybackSettings = com.example.player.PlaybackSettings(),
     onChangePlaybackSettings: (com.example.player.PlaybackSettings) -> Unit = {},
@@ -551,6 +555,7 @@ fun PlaylistManagerDialog(
                                         tvBuddyStatus = tvBuddyEpgStatus[playlist.id],
                                         onToggleTvBuddyEpg = { onToggleTvBuddyEpg(playlist.id, it) },
                                         onOpenTvBuddyUnmatched = { navigateTo(TiviSettingsRoute.TvBuddyUnmatched(playlist.id)) },
+                                        onOpenTvBuddySources = { navigateTo(TiviSettingsRoute.TvBuddySources(playlist.id)) },
                                         onUpdatePlaylistEntity = onUpdatePlaylist,
                                         onEditName = {
                                             textEditDialogState = TextEditPrompt(
@@ -777,10 +782,16 @@ fun PlaylistManagerDialog(
                             is TiviSettingsRoute.TvBuddyUnmatched -> TvBuddyUnmatchedSubMenu(
                                 playlistId = route.playlistId,
                                 load = onLoadTvBuddyUnmatched,
+                                search = onSearchTvBuddyChannels,
                                 onSetMatch = onSetEpgManualMatch,
                                 onEditText = { title, initial, confirm ->
                                     textEditDialogState = TextEditPrompt(title, initial, confirm)
                                 }
+                            )
+
+                            is TiviSettingsRoute.TvBuddySources -> TvBuddySourcesSubMenu(
+                                sourceOn = tvBuddySourceOn,
+                                onToggle = onToggleTvBuddySource
                             )
 
                             is TiviSettingsRoute.Playback -> PlaybackSubMenu(
@@ -1002,6 +1013,7 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
 private fun TvBuddyUnmatchedSubMenu(
     playlistId: Long,
     load: suspend (Long) -> List<com.example.data.epg.EpgChannelMatch>,
+    search: suspend (Long, String) -> List<com.example.data.epg.EpgChannelMatch>,
     onSetMatch: suspend (Long, String, String) -> String,
     onEditText: (title: String, initial: String, confirm: (String) -> Unit) -> Unit
 ) {
@@ -1010,13 +1022,18 @@ private fun TvBuddyUnmatchedSubMenu(
     var busy by remember(playlistId) { mutableStateOf(false) }
     var query by remember(playlistId) { mutableStateOf("") }
     val scope = rememberCoroutineScope()
+    // search results: every channel of the playlist that fits, matched ones too, so their match can be changed
+    var found by remember(playlistId) { mutableStateOf<List<com.example.data.epg.EpgChannelMatch>?>(null) }
+    var refreshTick by remember(playlistId) { mutableStateOf(0) }
     LaunchedEffect(playlistId) { rows = load(playlistId) }
+    LaunchedEffect(playlistId, query, refreshTick) {
+        found = if (query.isBlank()) null else try { search(playlistId, query) } catch (e: Exception) { emptyList() }
+    }
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "Unmatched channels")
         val list = rows
         when {
             list == null -> Text("Checking...", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
-            list.isEmpty() -> Text("Every channel has a guide.", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(vertical = 8.dp)
@@ -1024,7 +1041,8 @@ private fun TvBuddyUnmatchedSubMenu(
                 item {
                     TiviMenuRow(
                         title = if (query.isBlank()) "Search channels" else "Search: $query",
-                        subtitle = if (query.isBlank()) null else "Tap to change. Leave it empty to show every channel",
+                        subtitle = if (query.isBlank()) "Also finds channels that already have a guide, so you can change their match"
+                        else "Tap to change. Leave it empty to show only unmatched channels",
                         leadingIcon = { f ->
                             Icon(Icons.Default.Search, contentDescription = null, tint = if (f) TiviFocusText else TiviAccentBlue)
                         },
@@ -1047,13 +1065,14 @@ private fun TvBuddyUnmatchedSubMenu(
                         )
                     }
                 }
-                val shownRows = if (query.isBlank()) list else list.filter {
+                val shownRows = if (query.isBlank()) list else (found ?: list.filter {
                     it.name.contains(query, ignoreCase = true) || it.manualMatch?.contains(query, ignoreCase = true) == true
-                }
+                })
                 if (shownRows.isEmpty()) {
                     item {
                         Text(
-                            "No channel matches \"$query\".", color = TiviSecondaryText, fontSize = 15.sp,
+                            if (query.isBlank()) "Every channel has a guide. Use search to find a channel and change its match."
+                            else "No channel matches \"$query\".", color = TiviSecondaryText, fontSize = 15.sp,
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
                         )
                     }
@@ -1063,7 +1082,7 @@ private fun TvBuddyUnmatchedSubMenu(
                         title = m.name,
                         subtitle = m.manualMatch?.let { typed ->
                             if (m.matched) "Matched to: $typed" else "Matched to: $typed (schedule not loaded yet)"
-                        },
+                        } ?: m.autoMatch?.let { "Guide: $it. Tap to change" },
                         enabled = !busy,
                         onClick = {
                             onEditText("EPG channel name or tvg-id for ${m.name}", m.manualMatch.orEmpty()) { typed ->
@@ -1071,12 +1090,48 @@ private fun TvBuddyUnmatchedSubMenu(
                                     busy = true
                                     info = try { onSetMatch(playlistId, m.name, typed) } catch (e: Exception) { "Could not match: ${e.localizedMessage ?: "unknown error"}" }
                                     rows = load(playlistId)
+                                    refreshTick++
                                     busy = false
                                 }
                             }
                         }
                     )
                 }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// TVBuddy EPG: which guide sources are used
+// ============================================================================
+
+@Composable
+private fun TvBuddySourcesSubMenu(
+    sourceOn: Map<String, Boolean>,
+    onToggle: (String, Boolean) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "TVBuddy EPG sources")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            item {
+                Text(
+                    "Every turned-on source is downloaded and used to match the channels. A change applies at once to " +
+                        "every playlist that has TVBuddy EPG on. Large country guides (USA) take longer to download.",
+                    color = TiviSecondaryText, fontSize = 13.sp,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+            }
+            items(com.example.data.epg.TvBuddyEpg.SOURCES, key = { it.key }) { src ->
+                TiviSwitchRow(
+                    title = src.label,
+                    subtitle = src.url.substringAfter("://").substringBefore('/'),
+                    checked = sourceOn[src.key] ?: src.defaultOn,
+                    onCheckedChange = { onToggle(src.key, it) }
+                )
             }
         }
     }
@@ -1350,6 +1405,7 @@ private fun PlaylistDetailSubMenu(
     tvBuddyStatus: com.example.data.epg.TvBuddyEpgStatus?,
     onToggleTvBuddyEpg: (Boolean) -> Unit,
     onOpenTvBuddyUnmatched: () -> Unit,
+    onOpenTvBuddySources: () -> Unit,
     onUpdatePlaylistEntity: (PlaylistEntity) -> Unit,
     onEditName: () -> Unit,
     onEditUrl: () -> Unit,
@@ -1425,6 +1481,13 @@ private fun PlaylistDetailSubMenu(
                         },
                         checked = st?.enabled == true,
                         onCheckedChange = { if (st?.running != true) onToggleTvBuddyEpg(it) }
+                    )
+                }
+                item {
+                    TiviMenuRow(
+                        title = "Configure sources",
+                        subtitle = "Turn guide sources on or off: India, USA, UK, Australia and the default TVBuddy guide",
+                        onClick = onOpenTvBuddySources
                     )
                 }
                 if (tvBuddyStatus?.enabled == true) {
