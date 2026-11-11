@@ -220,7 +220,7 @@ fun HomeScreen(
     var tvBrowse by remember { mutableStateOf<TvBrowseLevel?>(null) }
     // true when the TV page was opened from full-screen playback (LEFT, LEFT): video stays full-screen behind it
     var tvBrowseOverlay by remember { mutableStateOf(false) }
-    val tvWarpState by viewModel.warpState.collectAsStateWithLifecycle()
+    val tvTunnelState by viewModel.tunnelState.collectAsStateWithLifecycle()
     LaunchedEffect(tvBrowse) { if (tvBrowse == null) tvBrowseOverlay = false }
     // Opening the TV page while a channel plays starts on the group that channel was started from
     LaunchedEffect(tvBrowse != null) { if (tvBrowse != null) viewModel.syncSelectionToPlayContext() }
@@ -546,8 +546,8 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
-                    warpState = tvWarpState,
-                    onToggleWarp = { viewModel.setWarpEnabled(!tvWarpState.enabled) },
+                    tunnelState = tvTunnelState,
+                    onToggleTunnel = { viewModel.setTunnelEnabled(!tvTunnelState.enabled) },
                     onOpenSettings = { openSettings(TiviSettingsRoute.Main) },
                     modifier = Modifier.fillMaxSize().zIndex(2f)
                 )
@@ -579,8 +579,8 @@ fun HomeScreen(
                     onSelectAudioTrack = { viewModel.playerManager.selectTrack(it) },
                     onDisableAudio = { viewModel.playerManager.disableAudio() },
                     onOpenSubtitles = { showSubtitleDialog = true },
-                    warpState = tvWarpState,
-                    onToggleWarp = { viewModel.setWarpEnabled(!tvWarpState.enabled) },
+                    tunnelState = tvTunnelState,
+                    onToggleTunnel = { viewModel.setTunnelEnabled(!tvTunnelState.enabled) },
                     epgByChannel = epgByChannel,
                     recentChannels = recentChannels,
                     onRemoveRecent = { viewModel.removeFromHistory(it) },
@@ -694,23 +694,17 @@ fun HomeScreen(
                                                 showAddDialog = true
                                             }
                                         )
-                                        val menuWarp by viewModel.warpState.collectAsStateWithLifecycle()
-                                        val warpStarting = menuWarp.phase == com.example.data.network.WarpManager.Phase.STARTING
-                                        // fixed title + small status line, so the menu keeps its width while WARP connects
-                                        val warpStatus = when (menuWarp.phase) {
-                                            com.example.data.network.WarpManager.Phase.STARTING -> "Connecting"
-                                            com.example.data.network.WarpManager.Phase.RUNNING -> "On"
-                                            com.example.data.network.WarpManager.Phase.ERROR -> "Failed"
-                                            com.example.data.network.WarpManager.Phase.OFF -> "Off"
-                                        }
+                                        val menuTunnel by viewModel.tunnelState.collectAsStateWithLifecycle()
+                                        val tunnelStarting = menuTunnel.phase == com.example.data.network.TunnelPhase.STARTING
+                                        // fixed title + small status line, so the menu keeps its width while the tunnel connects
                                         DropdownMenuItem(
                                             leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, tint = AccentCyan) },
                                             text = {
                                                 Column {
-                                                    Text("WARP Mode", color = Color.White)
+                                                    Text("${menuTunnel.modeTitle} Mode", color = Color.White)
                                                     Text(
-                                                        warpStatus,
-                                                        color = if (menuWarp.phase == com.example.data.network.WarpManager.Phase.RUNNING) AccentCyan else Color.LightGray,
+                                                        menuTunnel.statusText,
+                                                        color = if (menuTunnel.phase == com.example.data.network.TunnelPhase.RUNNING) AccentCyan else Color.LightGray,
                                                         fontSize = 11.sp,
                                                         lineHeight = 13.sp,
                                                         maxLines = 1
@@ -719,11 +713,27 @@ fun HomeScreen(
                                             },
                                             trailingIcon = {
                                                 com.example.ui.dialogs.SlimSwitch(
-                                                    checked = menuWarp.enabled,
+                                                    checked = menuTunnel.enabled,
                                                     accent = AccentCyan
                                                 )
                                             },
-                                            onClick = { if (!warpStarting) viewModel.setWarpEnabled(!menuWarp.enabled) }
+                                            onClick = { if (!tunnelStarting) viewModel.setTunnelEnabled(!menuTunnel.enabled) }
+                                        )
+                                        DropdownMenuItem(
+                                            leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, tint = Color.LightGray) },
+                                            text = {
+                                                Text(
+                                                    "Switch to ${if (menuTunnel.mode == com.example.data.network.TunnelManager.Mode.VPN) "WARP" else "VPN"} mode",
+                                                    color = Color.White
+                                                )
+                                            },
+                                            onClick = {
+                                                if (!tunnelStarting) viewModel.setTunnelMode(
+                                                    if (menuTunnel.mode == com.example.data.network.TunnelManager.Mode.VPN)
+                                                        com.example.data.network.TunnelManager.Mode.WARP
+                                                    else com.example.data.network.TunnelManager.Mode.VPN
+                                                )
+                                            }
                                         )
                                         DropdownMenuItem(
                                             leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, tint = StatusDrm) },
@@ -1192,7 +1202,7 @@ fun HomeScreen(
         val updateStates by viewModel.updateStates.collectAsStateWithLifecycle()
         val playbackLogEnabled by viewModel.playbackLogEnabled.collectAsStateWithLifecycle()
         val playbackLogCount by viewModel.playbackLogCount.collectAsStateWithLifecycle()
-        val warpState by viewModel.warpState.collectAsStateWithLifecycle()
+        val tunnelState by viewModel.tunnelState.collectAsStateWithLifecycle()
         val playbackSettings by viewModel.playbackSettings.collectAsStateWithLifecycle()
         val tvBuddyEpgStatus by viewModel.tvBuddyEpgStatus.collectAsStateWithLifecycle()
         val tvBuddySourceOn by viewModel.tvBuddySourceOn.collectAsStateWithLifecycle()
@@ -1243,8 +1253,9 @@ fun HomeScreen(
             onChangePlaybackSettings = { viewModel.setPlaybackSettings(it) },
             audioBoostProfile = audioBoostProfile,
             onSelectAudioBoost = { viewModel.setAudioBoostProfile(it) },
-            warpState = warpState,
-            onToggleWarp = { viewModel.setWarpEnabled(it) },
+            tunnelState = tunnelState,
+            onToggleTunnel = { viewModel.setTunnelEnabled(it) },
+            onSelectTunnelMode = { viewModel.setTunnelMode(it) },
             onEditPlaylistSpoof = { spoofPlaylistId = it.id },
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
             onTriggerClearEpg = { viewModel.triggerClearEpg() },
