@@ -136,8 +136,8 @@ fun TvVodPlayerOverlay(
     onSelectAudioTrack: (TrackInfo) -> Unit,
     onDisableAudio: () -> Unit,
     onOpenSubtitles: () -> Unit,
-    warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
-    onToggleWarp: () -> Unit = {},
+    tunnelState: com.example.data.network.TunnelManager.State = com.example.data.network.TunnelManager.State(),
+    onToggleTunnel: () -> Unit = {},
     onOpenSettings: () -> Unit,
     /** Episodes of a show: null = no such button (a movie, or the first / last episode). */
     onPreviousEpisode: (() -> Unit)? = null,
@@ -227,12 +227,7 @@ fun TvVodPlayerOverlay(
         val subLabel = subSel?.let { audioTrackText(it) } ?: "Off"
         val videoLabel = if (streamInfo.width > 0 && streamInfo.height > 0) "${streamInfo.width} × ${streamInfo.height}"
         else videoQuality.title.substringBefore(" ")
-        val warpLabel = "WARP: " + when (warpState.phase) {
-            com.example.data.network.WarpManager.Phase.STARTING -> "Connecting"
-            com.example.data.network.WarpManager.Phase.RUNNING -> "On"
-            com.example.data.network.WarpManager.Phase.ERROR -> "Failed"
-            com.example.data.network.WarpManager.Phase.OFF -> if (warpState.enabled) "Enabled" else "Off"
-        }
+        val tunnelLabel = "${tunnelState.modeTitle}: ${tunnelState.statusText}"
         return listOf(
             VodMenuItem("TV", Icons.Default.Tv) { panel = VodPanel.NONE; onWatchTv() },
             VodMenuItem("Audio boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq) { onCycleAudioBoost() },
@@ -242,7 +237,7 @@ fun TvVodPlayerOverlay(
                 audioIndex = if (sel >= 0) sel + 1 else 0
                 panel = VodPanel.AUDIO
             },
-            VodMenuItem(warpLabel, Icons.Default.Security) { onToggleWarp() },
+            VodMenuItem(tunnelLabel, Icons.Default.Security) { onToggleTunnel() },
             VodMenuItem(subLabel, Icons.Default.ClosedCaption) { panel = VodPanel.NONE; onOpenSubtitles() },
             VodMenuItem("Settings", Icons.Default.Settings) { panel = VodPanel.NONE; onOpenSettings() }
         )
