@@ -153,6 +153,8 @@ sealed class TiviSettingsRoute {
     data class EditEpgSourceUrl(val sourceId: Long) : TiviSettingsRoute()
     data object AudioBoost : TiviSettingsRoute()
     data object Playback : TiviSettingsRoute()
+    /** WARP / VPN mode and the WireGuard config import. */
+    data object Tunnel : TiviSettingsRoute()
     data class TvBuddyUnmatched(val playlistId: Long) : TiviSettingsRoute()
     data class TvBuddySources(val playlistId: Long) : TiviSettingsRoute()
 }
@@ -235,7 +237,7 @@ private val LocalDrawerFocus = compositionLocalOf<DrawerFocusMemory?> { null }
  */
 private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when (route) {
     is TiviSettingsRoute.Main -> listOf(route)
-    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback, is TiviSettingsRoute.Tunnel -> listOf(TiviSettingsRoute.Main, route)
     is TiviSettingsRoute.ReorderPlaylists, is TiviSettingsRoute.PlaylistDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, route)
     is TiviSettingsRoute.PlaylistEpgSources ->
@@ -372,8 +374,9 @@ fun PlaylistManagerDialog(
     onChangePlaybackSettings: (com.example.player.PlaybackSettings) -> Unit = {},
     audioBoostProfile: com.example.player.AudioBoostProfile = com.example.player.AudioBoostProfile.OFF,
     onSelectAudioBoost: (com.example.player.AudioBoostProfile) -> Unit = {},
-    warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
-    onToggleWarp: (Boolean) -> Unit = {},
+    tunnelState: com.example.data.network.TunnelManager.State = com.example.data.network.TunnelManager.State(),
+    onToggleTunnel: (Boolean) -> Unit = {},
+    onSelectTunnelMode: (com.example.data.network.TunnelManager.Mode) -> Unit = {},
     onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {},
     // Phone only: opacity of the floating navbar (null = no such setting, e.g. TV mode)
     navbarOpacity: Float? = null,
@@ -416,6 +419,8 @@ fun PlaylistManagerDialog(
 
     // Sub-dialogs for inline text/number edits
     var textEditDialogState by remember { mutableStateOf<TextEditPrompt?>(null) }
+    val tunnelContext = androidx.compose.ui.platform.LocalContext.current
+    val tunnelScope = rememberCoroutineScope()
 
     SettingsHost(
         phone = mobileNav != null,
@@ -515,8 +520,9 @@ fun PlaylistManagerDialog(
                                 onOpenPlayback = { navigateTo(TiviSettingsRoute.Playback) },
                                 audioBoostProfile = audioBoostProfile,
                                 onOpenAudioBoost = { navigateTo(TiviSettingsRoute.AudioBoost) },
-                                warpState = warpState,
-                                onToggleWarp = onToggleWarp,
+                                tunnelState = tunnelState,
+                                onToggleTunnel = onToggleTunnel,
+                                onOpenTunnel = { navigateTo(TiviSettingsRoute.Tunnel) },
                                 logEnabled = playbackLogEnabled,
                                 logCount = playbackLogCount,
                                 onToggleLog = onTogglePlaybackLog,
@@ -801,6 +807,19 @@ fun PlaylistManagerDialog(
                                 onChange = onChangePlaybackSettings
                             )
 
+                            is TiviSettingsRoute.Tunnel -> TunnelSubMenu(
+                                state = tunnelState,
+                                onSelectMode = onSelectTunnelMode,
+                                onImportUrl = {
+                                    textEditDialogState = TextEditPrompt("WireGuard config URL", "https://") { url ->
+                                        tunnelScope.launch {
+                                            val err = com.example.data.network.TunnelManager.importFromUrl(url)
+                                            toastTunnelImport(tunnelContext, err)
+                                        }
+                                    }
+                                }
+                            )
+
                             is TiviSettingsRoute.AudioBoost -> AudioBoostSubMenu(
                                 selected = audioBoostProfile,
                                 onSelect = onSelectAudioBoost
@@ -883,8 +902,9 @@ private fun MainSettingsMenu(
     onOpenPlayback: () -> Unit,
     audioBoostProfile: com.example.player.AudioBoostProfile,
     onOpenAudioBoost: () -> Unit,
-    warpState: com.example.data.network.WarpManager.State,
-    onToggleWarp: (Boolean) -> Unit,
+    tunnelState: com.example.data.network.TunnelManager.State,
+    onToggleTunnel: (Boolean) -> Unit,
+    onOpenTunnel: () -> Unit,
     logEnabled: Boolean,
     logCount: Int,
     onToggleLog: (Boolean) -> Unit,
@@ -939,18 +959,29 @@ private fun MainSettingsMenu(
                 }
             }
             item {
-                val starting = warpState.phase == com.example.data.network.WarpManager.Phase.STARTING
+                val starting = tunnelState.phase == com.example.data.network.TunnelPhase.STARTING
+                val vpn = tunnelState.mode == com.example.data.network.TunnelManager.Mode.VPN
                 TiviSwitchRow(
-                    title = "WARP mode",
-                    subtitle = when (warpState.phase) {
-                        com.example.data.network.WarpManager.Phase.STARTING -> "Connecting to Cloudflare WARP..."
-                        com.example.data.network.WarpManager.Phase.RUNNING -> "Connected. App traffic goes through Cloudflare WARP"
-                        com.example.data.network.WarpManager.Phase.ERROR -> "Failed: ${warpState.message ?: "could not start"}"
-                        com.example.data.network.WarpManager.Phase.OFF ->
-                            if (warpState.enabled) "Enabled, not running" else "Route app traffic through Cloudflare WARP"
+                    title = "${tunnelState.modeTitle} mode",
+                    subtitle = when (tunnelState.phase) {
+                        com.example.data.network.TunnelPhase.STARTING ->
+                            if (vpn) "Connecting WireGuard..." else "Connecting to Cloudflare WARP..."
+                        com.example.data.network.TunnelPhase.RUNNING ->
+                            if (vpn) "Connected. App traffic goes through WireGuard" else "Connected. App traffic goes through Cloudflare WARP"
+                        com.example.data.network.TunnelPhase.ERROR -> "Failed: ${tunnelState.message ?: "could not start"}"
+                        com.example.data.network.TunnelPhase.OFF ->
+                            if (tunnelState.enabled) "Enabled, not running"
+                            else if (vpn) "Route app traffic through your WireGuard config" else "Route app traffic through Cloudflare WARP"
                     },
-                    checked = warpState.enabled,
-                    onCheckedChange = { if (!starting) onToggleWarp(it) }
+                    checked = tunnelState.enabled,
+                    onCheckedChange = { if (!starting) onToggleTunnel(it) }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "WARP / VPN mode and WireGuard config",
+                    subtitle = "Mode: ${tunnelState.modeTitle} · Config: ${tunnelState.vpnConfigName ?: "none imported"}",
+                    onClick = onOpenTunnel
                 )
             }
             item {
@@ -1244,6 +1275,119 @@ private fun AudioBoostSubMenu(
                         }
                     }
                 )
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 1c. WARP / VPN SUBMENU (mode + WireGuard config import)
+// ============================================================================
+
+private fun toastTunnelImport(context: android.content.Context, error: String?) {
+    val text = if (error == null) {
+        val name = com.example.data.network.TunnelManager.state.value.vpnConfigName ?: "config"
+        "WireGuard config imported: $name. Choose VPN mode to use it"
+    } else "Import failed: $error"
+    android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show()
+}
+
+@Composable
+private fun TunnelSubMenu(
+    state: com.example.data.network.TunnelManager.State,
+    onSelectMode: (com.example.data.network.TunnelManager.Mode) -> Unit,
+    onImportUrl: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) scope.launch {
+            toastTunnelImport(context, com.example.data.network.TunnelManager.importFromUri(context, uri))
+        }
+    }
+    val hasConfig = state.vpnConfigName != null
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "WARP / VPN mode")
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
+            item { DrawerSectionHeader(title = "Mode") }
+            item {
+                TiviMenuRow(
+                    title = "WARP mode",
+                    subtitle = "Cloudflare WARP, no setup needed",
+                    onClick = { onSelectMode(com.example.data.network.TunnelManager.Mode.WARP) },
+                    trailingContent = { isFocused ->
+                        if (state.mode == com.example.data.network.TunnelManager.Mode.WARP) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = if (isFocused) TiviFocusText else TiviAccentBlue)
+                        }
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "VPN mode (WireGuard)",
+                    subtitle = if (hasConfig) "Uses your imported config. Only tvBuddy traffic is tunnelled"
+                    else "Import a WireGuard config below first",
+                    onClick = { onSelectMode(com.example.data.network.TunnelManager.Mode.VPN) },
+                    trailingContent = { isFocused ->
+                        if (state.mode == com.example.data.network.TunnelManager.Mode.VPN) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = if (isFocused) TiviFocusText else TiviAccentBlue)
+                        }
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Status",
+                    subtitle = "${state.modeTitle}: ${state.statusText}" + (state.message?.let { " · $it" } ?: ""),
+                    isError = state.phase == com.example.data.network.TunnelPhase.ERROR,
+                    locked = true,
+                    onClick = {}
+                )
+            }
+            item { DrawerSectionHeader(title = "WireGuard config") }
+            if (hasConfig) {
+                item {
+                    TiviMenuRow(
+                        title = "Current config",
+                        subtitle = "${state.vpnConfigName}" + (state.vpnEndpoint?.let { " · $it" } ?: ""),
+                        locked = true,
+                        onClick = {}
+                    )
+                }
+            }
+            item {
+                TiviMenuRow(
+                    title = "Import from file",
+                    subtitle = "Pick a WireGuard .conf file",
+                    onClick = {
+                        try { picker.launch(arrayOf("*/*")) } catch (_: Exception) {
+                            android.widget.Toast.makeText(
+                                context, "No file picker on this device. Use Import from URL", android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Import from URL",
+                    subtitle = "Download a .conf from a link",
+                    onClick = onImportUrl
+                )
+            }
+            if (hasConfig) {
+                item {
+                    TiviMenuRow(
+                        title = "Remove config",
+                        subtitle = "Deletes the saved config and turns VPN off",
+                        onClick = {
+                            com.example.data.network.TunnelManager.removeConfig()
+                            android.widget.Toast.makeText(context, "WireGuard config removed", android.widget.Toast.LENGTH_SHORT).show()
+                        }
+                    )
+                }
             }
         }
     }
