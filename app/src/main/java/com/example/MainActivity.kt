@@ -11,13 +11,15 @@ import android.util.Rational
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
-import com.example.data.network.WarpManager
+import com.example.data.network.TunnelManager
+import com.example.data.network.VpnManager
 import com.example.ui.LogoLoader
 import java.net.CookieHandler
 import java.net.CookieManager
@@ -33,9 +35,17 @@ class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
     private val _isInPipMode = MutableStateFlow(false)
 
+    // VPN mode: the system "Connection request" dialog
+    private val vpnPermissionLauncher = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        VpnManager.onPermissionResult(result.resultCode == RESULT_OK)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        VpnManager.permissionRequester = { intent ->
+            try { vpnPermissionLauncher.launch(intent); true } catch (_: Exception) { false }
+        }
         installNetworkDefaults()
 
         // Detect if running on an Android TV device
@@ -66,12 +76,12 @@ class MainActivity : ComponentActivity() {
      * - Cookie handler: HLS providers (Akamai/Hotstar style) hand out auth cookies on the master playlist
      *   that the variant playlists / segments need; HttpURLConnection (used by ExoPlayer) only keeps
      *   them when a default CookieHandler exists.
-     * - WARP mode: installs the proxy selector (must happen before any HTTP client is built) and
+     * - WARP / VPN mode: installs the proxy selector (must happen before any HTTP client is built) and
      *   restarts the tunnel if it was left enabled.
      * - Logo loader: see [LogoLoader].
      */
     private fun installNetworkDefaults() {
-        WarpManager.init(applicationContext)
+        TunnelManager.init(applicationContext)
         if (CookieHandler.getDefault() == null) {
             CookieHandler.setDefault(CookieManager(null, CookiePolicy.ACCEPT_ALL))
         }
@@ -149,7 +159,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         if (!isChangingConfigurations) viewModel.closePlayer()
-        if (isFinishing) WarpManager.shutdown()
+        VpnManager.permissionRequester = null
+        if (isFinishing) TunnelManager.shutdown()
     }
 
     private fun isRunningOnTv(): Boolean {
