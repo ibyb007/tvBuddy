@@ -35,3 +35,9 @@
 # ExoPlayer looks up optional renderers by name
 -dontwarn androidx.media3.decoder.**
 -dontwarn org.jellyfin.media3.**
+
+# VPN mode (wireguard-android): JNI entry points and config classes
+-keep class com.wireguard.android.backend.** { *; }
+-keep class com.wireguard.config.** { *; }
+-keep class com.wireguard.crypto.** { *; }
+-dontwarn com.wireguard.**
