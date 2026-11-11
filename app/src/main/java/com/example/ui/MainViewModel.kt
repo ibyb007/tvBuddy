@@ -824,24 +824,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         ).show()
     }
 
-    // ---- WARP mode (Settings > WARP mode) ----
-    val warpState: StateFlow<com.example.data.network.WarpManager.State> = com.example.data.network.WarpManager.state
+    // ---- WARP / VPN mode (Settings > WARP / VPN mode) ----
+    val tunnelState: StateFlow<com.example.data.network.TunnelManager.State> = com.example.data.network.TunnelManager.state
 
-    fun setWarpEnabled(enabled: Boolean) {
-        com.example.data.network.WarpManager.setEnabled(enabled)
-        if (enabled) {
-            // reopen the playing channel once the tunnel is up so it streams through WARP
-            viewModelScope.launch {
-                val result = com.example.data.network.WarpManager.state
-                    .first { it.phase != com.example.data.network.WarpManager.Phase.STARTING }
-                if (result.phase == com.example.data.network.WarpManager.Phase.RUNNING) {
-                    restartCurrentChannel(null, _globalSpoof.value)
-                } else if (result.phase == com.example.data.network.WarpManager.Phase.ERROR) {
-                    _uiMessage.value = UiMessage(text = "WARP: ${result.message ?: "failed to start"}", isError = true)
-                }
+    fun setTunnelEnabled(enabled: Boolean) {
+        com.example.data.network.TunnelManager.setEnabled(enabled)
+        followTunnelChange()
+    }
+
+    fun setTunnelMode(mode: com.example.data.network.TunnelManager.Mode) {
+        val wasOn = com.example.data.network.TunnelManager.state.value.enabled
+        com.example.data.network.TunnelManager.setMode(mode)
+        if (wasOn) followTunnelChange()
+    }
+
+    /** Re-opens the playing channel once the tunnel settled (up or off), so it streams through the right route. */
+    private fun followTunnelChange() {
+        viewModelScope.launch {
+            val result = com.example.data.network.TunnelManager.state
+                .first { it.phase != com.example.data.network.TunnelPhase.STARTING }
+            if (result.phase == com.example.data.network.TunnelPhase.ERROR) {
+                val text = "${result.modeTitle}: ${result.message ?: "failed to start"}"
+                _uiMessage.value = UiMessage(text = text, isError = true)
+                android.widget.Toast.makeText(getApplication<Application>(), text, android.widget.Toast.LENGTH_LONG).show()
+            } else {
+                restartCurrentChannel(null, _globalSpoof.value)
             }
-        } else {
-            viewModelScope.launch { restartCurrentChannel(null, _globalSpoof.value) }
         }
     }
 
