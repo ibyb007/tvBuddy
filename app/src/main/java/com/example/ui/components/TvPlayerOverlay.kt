@@ -164,8 +164,8 @@ fun TvPlayerOverlay(
     onSelectAudioTrack: (TrackInfo) -> Unit = {},
     onDisableAudio: () -> Unit = {},
     onOpenSubtitles: () -> Unit,
-    warpState: com.example.data.network.WarpManager.State = com.example.data.network.WarpManager.State(),
-    onToggleWarp: () -> Unit = {},
+    tunnelState: com.example.data.network.TunnelManager.State = com.example.data.network.TunnelManager.State(),
+    onToggleTunnel: () -> Unit = {},
     onClosePlayer: () -> Unit,
     onOpenSpoofSettings: () -> Unit = {},
     onOpenPlaylists: () -> Unit = {},
@@ -305,12 +305,7 @@ fun TvPlayerOverlay(
             if (mbps > 0f) "${streamInfo.width} × ${streamInfo.height}, ${"%.2f".format(mbps)} Mbps"
             else "${streamInfo.width} × ${streamInfo.height}"
         } else videoQuality.title.substringBefore(" ")
-        val warpLabel = "WARP: " + when (warpState.phase) {
-            com.example.data.network.WarpManager.Phase.STARTING -> "Connecting"
-            com.example.data.network.WarpManager.Phase.RUNNING -> "On"
-            com.example.data.network.WarpManager.Phase.ERROR -> "Failed"
-            com.example.data.network.WarpManager.Phase.OFF -> if (warpState.enabled) "Enabled" else "Off"
-        }
+        val tunnelLabel = "${tunnelState.modeTitle}: ${tunnelState.statusText}"
         return listOf(
             TvMenuItem("Channels list", Icons.Default.FormatListBulleted) { openChannelList() },
             TvMenuItem("Audio boost: ${audioBoostProfile.shortTitle}", Icons.Default.GraphicEq) { onCycleAudioBoost() },
@@ -320,7 +315,7 @@ fun TvPlayerOverlay(
                 audioIndex = if (sel >= 0) sel + 1 else 0
                 panel = TvPanel.AUDIO
             },
-            TvMenuItem(warpLabel, Icons.Default.Security) { onToggleWarp() },
+            TvMenuItem(tunnelLabel, Icons.Default.Security) { onToggleTunnel() },
             TvMenuItem("Subtitles", Icons.Default.ClosedCaption) { panel = TvPanel.NONE; onOpenSubtitles() },
             TvMenuItem(
                 if (channel?.isFavorite == true) "Remove from Favorites" else "Add to Favorites",
