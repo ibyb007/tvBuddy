@@ -61,6 +61,8 @@ android {
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11
     targetCompatibility = JavaVersion.VERSION_11
+    // wireguard-android's tunnel library is built with core library desugaring
+    isCoreLibraryDesugaringEnabled = true
   }
   buildFeatures {
     compose = true
@@ -130,6 +132,9 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.okhttp)
+  // VPN mode: WireGuard (GoBackend + config parser)
+  implementation(libs.wireguard.tunnel)
+  coreLibraryDesugaring(libs.desugar.jdk.libs)
   // implementation(libs.play.services.location)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
