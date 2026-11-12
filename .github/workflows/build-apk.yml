@@ -139,7 +139,7 @@ jobs:
       # ---------- WARP binary ----------
       # WARP mode runs a patched build of usque (https://github.com/Diniboy1123/usque) as a local
       # HTTP proxy. native-src/usque/main.go adds USQUE_DNS_SERVERS support, because Android apps
-      # have no readable /etc/resolv.conf. Built here (not committed) so it stays reproducible.
+      # have no readable /etc/resolv.conf; native-src/usque/prefer-ipv6.patch makes it dial IPv6 first. Built here (not committed) so it stays reproducible.
       - name: Set up Go for WARP binary build
         uses: actions/setup-go@v6
         with:
@@ -153,6 +153,8 @@ jobs:
           cd /tmp/usque-src
           git checkout --quiet "$USQUE_COMMIT"
           cp "$GITHUB_WORKSPACE/native-src/usque/main.go" ./main.go
+          # IPv6-first dialling (shared WARP IPv4 exit addresses are blocked by many sites)
+          git apply "$GITHUB_WORKSPACE/native-src/usque/prefer-ipv6.patch"
 
           build_abi() {
             local goarch="$1" goarm="$2" abi="$3"
