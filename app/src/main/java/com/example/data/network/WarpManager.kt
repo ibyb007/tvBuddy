@@ -178,9 +178,16 @@ object WarpManager {
     private fun warpDir(): File = File(appContext.filesDir, "warp").also { if (!it.exists()) it.mkdirs() }
 
     // Android apps can't read /etc/resolv.conf, so the Go binary would fall back to loopback DNS
-    // and fail. Pass the device's real DNS servers (plus public fallbacks) via USQUE_DNS_SERVERS.
+    // and fail. Pass DNS servers via USQUE_DNS_SERVERS. The binary only ever asks the FIRST server
+    // (a UDP "connect" never fails, so there is no fallback), so the order matters: Cloudflare/public
+    // DNS first, because some ISPs poison or redirect lookups for blocked domains, which breaks
+    // streams in WARP mode even though the traffic itself is tunnelled. The device's own DNS
+    // servers come last and are only used if the public ones are not listed first.
     private fun dnsServersEnv(): String {
         val servers = LinkedHashSet<String>()
+        servers.add("1.1.1.1:53")
+        servers.add("1.0.0.1:53")
+        servers.add("8.8.8.8:53")
         try {
             val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
             val lp = cm?.activeNetwork?.let { cm.getLinkProperties(it) }
@@ -193,8 +200,6 @@ object WarpManager {
         } catch (e: Exception) {
             Log.w(TAG, "Failed to read device DNS servers: ${e.message}")
         }
-        servers.add("1.1.1.1:53")
-        servers.add("8.8.8.8:53")
         return servers.joinToString(",")
     }
 
