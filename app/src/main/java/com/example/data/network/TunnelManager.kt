@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import java.util.concurrent.TimeUnit
 
 enum class TunnelPhase { OFF, STARTING, RUNNING, ERROR }
 
@@ -74,6 +77,33 @@ object TunnelManager {
                 // only a trigger: recompute() always reads the latest values, so it can never publish stale ones
                 combine(mode, WarpManager.state, VpnManager.state) { _, _, _ -> }.collect { recompute() }
             }
+            // log switched on while the tunnel is already up: record the exit then
+            CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
+                com.example.player.PlaybackLog.enabled.collect { on ->
+                    if (on && _state.value.phase == TunnelPhase.RUNNING) logExit(_state.value.modeTitle)
+                }
+            }
+        }
+    }
+
+    @Volatile private var lastPhase = TunnelPhase.OFF
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** Playback-log diagnostic: which address / data centre the tunnel exits from (sites block by exit address). */
+    private fun logExit(modeTitle: String) {
+        if (!com.example.player.PlaybackLog.enabled.value) return
+        ioScope.launch {
+            try {
+                val client = OkHttpClient.Builder().connectTimeout(8, TimeUnit.SECONDS).readTimeout(8, TimeUnit.SECONDS).build()
+                val body = client.newCall(Request.Builder().url("https://www.cloudflare.com/cdn-cgi/trace").build())
+                    .execute().use { it.body?.string().orEmpty() }
+                val keep = setOf("ip", "colo", "loc", "warp", "http", "tls")
+                val info = body.lines().map { it.split("=", limit = 2) }
+                    .filter { it.size == 2 && it[0] in keep }.joinToString(" ") { "${it[0]}=${it[1]}" }
+                com.example.player.PlaybackLog.info("EXIT", "$modeTitle exit: $info")
+            } catch (e: Exception) {
+                com.example.player.PlaybackLog.warn("EXIT", "$modeTitle exit check failed: ${e.message}")
+            }
         }
     }
 
@@ -92,6 +122,9 @@ object TunnelManager {
             }
             State(m, w.enabled, wp, w.message, v.configName, v.endpoint)
         }
+        val cur = _state.value
+        if (cur.phase == TunnelPhase.RUNNING && lastPhase != TunnelPhase.RUNNING) logExit(cur.modeTitle)
+        lastPhase = cur.phase
     }
 
     fun setEnabled(enabled: Boolean) {
