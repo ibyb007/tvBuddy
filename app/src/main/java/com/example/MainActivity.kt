@@ -19,6 +19,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.example.data.network.TunnelManager
@@ -33,6 +34,8 @@ import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.TvBuddyTheme
 import com.example.updater.UpdateViewModel
 import com.example.updater.ui.UpdateBannerHost
+import com.example.updater.ui.UpdateBannerRemote
+import com.example.updater.ui.updateBannerKeys
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
@@ -69,7 +72,9 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = DarkBackground
                 ) {
-                    Box(modifier = Modifier.fillMaxSize()) {
+                    // the banner takes the remote's D-pad while it is showing (the TV screens never give up focus)
+                    val bannerRemote = remember { UpdateBannerRemote() }
+                    Box(modifier = Modifier.fillMaxSize().updateBannerKeys(bannerRemote)) {
                         HomeScreen(
                             viewModel = viewModel,
                             updateViewModel = updateViewModel,
@@ -86,7 +91,9 @@ class MainActivity : ComponentActivity() {
                                 onInstall = { updateViewModel.installUpdateOrRequestPermission() },
                                 onDismissUnknownSources = { updateViewModel.dismissUnknownSourcesDialog() },
                                 onOpenUnknownSources = { updateViewModel.openUnknownSourcesSettings() },
-                                onFeedbackShown = { updateViewModel.consumeFeedbackMessage() }
+                                onFeedbackShown = { updateViewModel.consumeFeedbackMessage() },
+                                onAutoDismiss = { updateViewModel.hideBanner() },
+                                remote = bannerRemote
                             )
                         }
                     }
