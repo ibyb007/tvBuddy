@@ -321,6 +321,14 @@ private fun SettingsHost(phone: Boolean, onDismiss: () -> Unit, content: @Compos
     }
 }
 
+/** List padding; on the phone the end of the list also clears the floating navbar, which now overlays the page. */
+@Composable
+private fun settingsListPadding(top: androidx.compose.ui.unit.Dp, bottom: androidx.compose.ui.unit.Dp): PaddingValues {
+    if (!LocalPhoneSettings.current) return PaddingValues(top = top, bottom = bottom)
+    val nav = androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+    return PaddingValues(top = top, bottom = bottom + 84.dp + nav)
+}
+
 private val TiviDrawerBg = Color(0xFF181B20)
 private val TiviModalBg = Color(0xFF1E2229)
 private val TiviFocusBg = Color(0xFFE8EAED)
@@ -510,11 +518,8 @@ fun PlaylistManagerDialog(
                         .pointerInput(Unit) { detectTapGestures(onTap = { }) } // Consume taps inside drawer
                 ) {
                     AnimatedContent(
-                        modifier = if (phone) Modifier
-                            .statusBarsPadding()
-                            // keep the last rows clear of the floating navbar
-                            .padding(bottom = 84.dp + androidx.compose.foundation.layout.WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding())
-                        else Modifier,
+                        // phone: the page runs full height behind the floating navbar (lists add their own end padding)
+                        modifier = if (phone) Modifier.statusBarsPadding() else Modifier,
                         targetState = currentEntry,
                         transitionSpec = {
                             val forward = targetState.depth >= initialState.depth
@@ -960,7 +965,7 @@ private fun MainSettingsMenu(
         DrawerHeader(title = "Settings")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
             item {
                 TiviMenuRow(
@@ -1120,7 +1125,7 @@ private fun TvBuddyUnmatchedSubMenu(
             list == null -> Text("Checking...", color = TiviSecondaryText, fontSize = 15.sp, modifier = Modifier.padding(24.dp))
             else -> LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(vertical = 8.dp)
+                contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
             ) {
                 item {
                     TiviMenuRow(
@@ -1199,7 +1204,7 @@ private fun TvBuddySourcesSubMenu(
         DrawerHeader(title = "TVBuddy EPG sources")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
             item {
                 Text(
@@ -1244,7 +1249,7 @@ private fun PlaybackSubMenu(
         DrawerHeader(title = "Playback")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
             item { DrawerSectionHeader(title = "Buffer size") }
             items(com.example.player.BufferSize.entries.toList()) { size ->
@@ -1321,7 +1326,7 @@ private fun AboutSubMenu(
         DrawerHeader(title = "About")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
             item {
                 TiviMenuRow(
@@ -1416,7 +1421,7 @@ private fun UpdateChannelSubMenu(
         DrawerHeader(title = "Update channel")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
             items(UpdateChannel.entries.toList()) { channel ->
                 TiviMenuRow(
@@ -1447,7 +1452,7 @@ private fun AudioBoostSubMenu(
         DrawerHeader(title = "Audio boost")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
             items(com.example.player.AudioBoostProfile.entries.toList()) { profile ->
                 TiviMenuRow(
@@ -1499,7 +1504,7 @@ private fun TunnelSubMenu(
     val hasConfig = state.vpnConfigName != null
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "WARP / VPN mode")
-        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(vertical = 8.dp)) {
+        LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)) {
             item { DrawerSectionHeader(title = "Mode") }
             item {
                 TiviMenuRow(
@@ -1609,7 +1614,7 @@ private fun PlaylistsSubMenu(
         DrawerHeader(title = "Playlists")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             items(displayedPlaylists, key = { it.id }) { pl ->
                 TiviMenuRow(
@@ -1698,7 +1703,7 @@ private fun ReorderPlaylistsSubMenu(
         DrawerHeader(title = "Reorder playlists")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             itemsIndexed(mutableList, key = { _, item -> item.id }) { index, item ->
                 TiviReorderRow(
@@ -1764,7 +1769,7 @@ private fun PlaylistDetailSubMenu(
         DrawerHeader(title = playlist.name)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             item {
                 TiviSwitchRow(
@@ -1955,7 +1960,7 @@ private fun PlaylistEpgSourcesSubMenu(
         DrawerHeader(title = "EPG sources (${playlist.name})")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             item {
                 TiviMenuRow(
@@ -2012,7 +2017,7 @@ private fun PlaylistEpgPrioritySubMenu(
         DrawerHeader(title = "Change sources priority ($playlistName)")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             itemsIndexed(mutableList, key = { _, item -> item.id }) { index, src ->
                 TiviReorderRow(
@@ -2085,7 +2090,7 @@ private fun ManageGroupsSubMenu(
         DrawerHeader(title = if (contentType == ContentType.TV) "Manage groups" else "Manage groups  •  ${ContentType.label(contentType)}")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             item {
                 TiviMenuRow(
@@ -2151,7 +2156,7 @@ private fun ManageGroupTypesSubMenu(
         DrawerHeader(title = "Manage groups")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             items(types, key = { it }) { type ->
                 TiviMenuRow(
@@ -2202,7 +2207,7 @@ private fun PortalParamsSubMenu(
         DrawerHeader(title = if (isStalker) "Stalker Portal parameters" else "Xtream Codes parameters")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             item { TextParam("Server address", draft.sourceUrl) { if (it.isNotBlank()) draft = draft.copy(sourceUrl = it) } }
             if (isStalker) {
@@ -2260,7 +2265,7 @@ private fun ReorderGroupsSubMenu(
         DrawerHeader(title = "Reorder groups")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             itemsIndexed(mutableList, key = { _, g -> g.groupTitle }) { index, group ->
                 TiviReorderRow(
@@ -2309,7 +2314,7 @@ private fun EpgSettingsSubMenu(
         DrawerHeader(title = "EPG")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             item {
                 TiviMenuRow(
@@ -2451,7 +2456,7 @@ private fun EpgSourcesSubMenu(
         DrawerHeader(title = "EPG sources")
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             items(sources, key = { it.id }) { src ->
                 val assigned = src.id in assignedIds
@@ -2507,7 +2512,7 @@ private fun EpgSourceDetailSubMenu(
         DrawerHeader(title = if (source.isDefault) "${source.name} (default)" else source.name)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 24.dp)
+            contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
             if (!portal) {
                 item {
