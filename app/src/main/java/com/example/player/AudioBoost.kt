@@ -97,8 +97,11 @@ internal class AudioBoostEngine {
                 loudness = it
                 loudnessSession = session
             }
-            effect.setTargetGain((gainDb.coerceIn(0f, 30f) * 100).toInt())
+            // enable first, then set the gain: some devices ignore a gain that was set while the effect was still
+            // disabled (this is what a manual mode change effectively did, and why it "fixed" the sound)
+            val target = (gainDb.coerceIn(0f, 30f) * 100).toInt()
             effect.setEnabled(true)
+            effect.setTargetGain(target)
         } catch (t: Throwable) {
             Log.w(TAG, "Failed to apply audio boost: ${t.message}")
         }
