@@ -458,8 +458,14 @@ fun TvBrowseScreen(
         return true
     }
 
-    fun moveRow(to: Int) {
-        guideRow = to.coerceIn(0, (channels.size - 1).coerceAtLeast(0))
+    // UP on the first channel jumps to the last one and DOWN on the last to the first (a held key stops at the ends)
+    fun moveRow(to: Int, isRepeat: Boolean = true) {
+        val last = (channels.size - 1).coerceAtLeast(0)
+        guideRow = when {
+            to < 0 -> if (isRepeat) 0 else last
+            to > last -> if (isRepeat) last else 0
+            else -> to
+        }
         cursorMs = maxOf(cursorMs, originMs)
     }
 
@@ -528,8 +534,8 @@ fun TvBrowseScreen(
         }
         when (level) {
             TvBrowseLevel.GUIDE -> when (key) {
-                Key.DirectionUp -> moveRow(safeRow - 1)
-                Key.DirectionDown -> moveRow(safeRow + 1)
+                Key.DirectionUp -> moveRow(safeRow - 1, isRepeat)
+                Key.DirectionDown -> moveRow(safeRow + 1, isRepeat)
                 Key.DirectionRight -> if (overlayMode) { if (!isRepeat) onDismiss() } else moveCell(+1)
                 Key.DirectionLeft -> {
                     // nothing earlier on this channel -> reveal the playlist groups page
