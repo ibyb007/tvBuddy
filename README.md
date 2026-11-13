@@ -111,3 +111,24 @@ The APKs will be located at:
 - **Local Persistence**: AndroidX Room Database (Playlists, Channels, Programs, Favorites, Playback History)
 - **Image Loading**: Coil 2.7.0
 - **Network**: OkHttp 4.10.0
+
+---
+
+## 🚀 Releases & in-app updates
+
+Releases are built by the **tvBuddy - Build & Release** workflow (Actions tab > Run workflow):
+
+| Channel | GitHub shows it as | Tag | Version in the app |
+|---|---|---|---|
+| `stable` (enter a version, e.g. `1.2.0`) | **Release** (Latest) | `v1.2.0` | `1.2.0` |
+| `canary` | **Pre-release** | `v1.2.0-canary.1` | `1.2.0 (1)` |
+
+After a stable release `1.2.0`, the next canaries are numbered `1.2.0 (1)`, `1.2.0 (2)`, ... until the next stable
+version restarts the count. Every release lists the 4 newest changes (taken from the commit messages since the
+previous release) and has the APK attached.
+
+**Settings > About** shows the app version and developer, and holds the update options: update channel
+(Stable / Canary), automatic update banner, install updates automatically, and *Check for updates*.
+
+> To let installed apps update in place, add the repository secrets `RELEASE_KEYSTORE_BASE64`, `STORE_PASSWORD`
+> and `KEY_PASSWORD` (key alias `upload`) so every release is signed with the same key.
