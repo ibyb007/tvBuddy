@@ -813,8 +813,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         showBoostToast(profile)
     }
 
+    /** Player UI (action bar / long-OK menu): the menu entry already shows the new mode, so no toast. */
     fun cycleAudioBoost() {
-        showBoostToast(playerManager.cycleAudioBoostProfile())
+        playerManager.cycleAudioBoostProfile()
     }
 
     private fun showBoostToast(profile: com.example.player.AudioBoostProfile) {
