@@ -1,8 +1,13 @@
 name: tvBuddy - Build & Release
 
 # Manual only: Actions tab > "tvBuddy - Build & Release" > Run workflow
-#   canary : GitHub *pre-release* (tag: canary-<run number>)
-#   stable : normal GitHub release (tag: v<version>)
+#
+#   stable : normal GitHub *Release*     tag v<version>            e.g. v1.2.0        shown as "1.2.0"
+#   canary : GitHub *Pre-release*        tag v<stable>-canary.<n>  e.g. v1.2.0-canary.1  shown as "1.2.0 (1)"
+#
+# Canary numbers count up from 1 after every stable release: stable 1.2.0 is followed by 1.2.0 (1), 1.2.0 (2), ...
+# until the next stable (1.2.1 / 1.3.0 / ...) restarts the count. The in-app updater (Settings > About) reads these
+# releases: the Stable channel only offers stable releases, the Canary channel offers both.
 
 on:
   workflow_dispatch:
@@ -13,7 +18,7 @@ on:
         options: [ canary, stable ]
         default: canary
       version:
-        description: "Stable only: version number, e.g. 1.2.0 (no leading v)"
+        description: "Stable only: version number, e.g. 1.2.0 (no leading v). Must be higher than the last stable."
         type: string
         required: false
 
@@ -27,7 +32,7 @@ permissions:
 env:
   # run every JavaScript action on Node 24 (softprops/action-gh-release has no Node 24 tag yet)
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  BASE_VERSION: "1.0.0"   # used for canary version names; bump when you start a new line
+  BASE_VERSION: "1.0.0"   # canary base before the first stable release exists
 
 jobs:
   build:
@@ -45,41 +50,90 @@ jobs:
       - name: Resolve channel and version
         id: meta
         shell: bash
+        env:
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          SHORT_SHA="${GITHUB_SHA::7}"
-          CHANNEL="canary"
-          if [[ "${{ inputs.channel }}" == "stable" ]]; then
-            CHANNEL="stable"
-            VERSION="${{ inputs.version }}"
-            if [[ -z "$VERSION" ]]; then echo "::error::Stable manual runs need a 'version' input"; exit 1; fi
-          fi
+          git fetch --tags --force --quiet || true
 
-          if [[ "$CHANNEL" == "stable" ]]; then
+          # newest stable release (tags like v1.2.0); canaries after it are numbered from it
+          LAST_STABLE="$( { git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sed 's/^v//' | sort -V | tail -n1 )"
+          # highest version any tag was made for (stable or canary base)
+          HIGHEST="$( { git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+(-canary\.[0-9]+)?$' || true; } \
+                      | sed -E 's/^v//; s/-canary\.[0-9]+$//' | sort -V | tail -n1 )"
+
+          if [[ "$INPUT_CHANNEL" == "stable" ]]; then
+            CHANNEL="stable"
+            VERSION="${INPUT_VERSION#v}"
+            if [[ -z "$VERSION" ]]; then echo "::error::Stable runs need a 'version' input, e.g. 1.2.0"; exit 1; fi
+            if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::Version must look like 1.2.0"; exit 1; fi
+            if git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then echo "::error::Tag v${VERSION} already exists"; exit 1; fi
+            # must be higher than every earlier stable AND than the base of earlier canaries, otherwise
+            # devices on a canary of that version would never be offered it
+            if [[ -n "$HIGHEST" && ( "$VERSION" == "$HIGHEST" || "$(printf '%s\n%s\n' "$VERSION" "$HIGHEST" | sort -V | tail -n1)" != "$VERSION" ) ]]; then
+              echo "::error::Stable version $VERSION must be higher than $HIGHEST"; exit 1
+            fi
             VERSION_NAME="$VERSION"
             TAG="v${VERSION}"
-            ID_SUFFIX=""
+            TITLE="${VERSION}"
             PRERELEASE=false
           else
-            VERSION_NAME="${BASE_VERSION}-canary.${GITHUB_RUN_NUMBER}+${SHORT_SHA}"
-            TAG="canary-${GITHUB_RUN_NUMBER}"
-            ID_SUFFIX=".canary"
+            CHANNEL="canary"
+            BASE="${LAST_STABLE:-$BASE_VERSION}"
+            LAST_N="$( { git tag -l "v${BASE}-canary.*" || true; } | sed -E 's/.*-canary\.//' | sort -n | tail -n1 )"
+            N=$(( ${LAST_N:-0} + 1 ))
+            VERSION_NAME="${BASE}-canary.${N}"
+            TAG="v${VERSION_NAME}"
+            TITLE="Canary ${BASE} (${N})"
             PRERELEASE=true
           fi
-
-          PUBLISH=true
 
           {
             echo "channel=$CHANNEL"
             echo "version_name=$VERSION_NAME"
             echo "version_code=${GITHUB_RUN_NUMBER}"
             echo "tag=$TAG"
-            echo "id_suffix=$ID_SUFFIX"
+            echo "title=$TITLE"
             echo "prerelease=$PRERELEASE"
-            echo "publish=$PUBLISH"
-            echo "apk_name=tvBuddy-${VERSION_NAME//+/-}-${CHANNEL}.apk"
+            echo "apk_name=tvBuddy-${VERSION_NAME}.apk"
           } >> "$GITHUB_OUTPUT"
-          echo "Channel=$CHANNEL  Version=$VERSION_NAME  Tag=$TAG  Publish=$PUBLISH"
+          echo "Channel=$CHANNEL  Version=$VERSION_NAME  Tag=$TAG  Title=$TITLE"
+
+      # ---------- Release notes: the 4 newest changes since the previous release ----------
+      - name: Generate release notes
+        shell: bash
+        env:
+          CHANNEL: ${{ steps.meta.outputs.channel }}
+        run: |
+          set -euo pipefail
+          # stable: changes since the previous stable release; canary: since the previous release of any kind
+          if [[ "$CHANNEL" == "stable" ]]; then
+            PREV="$( { git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true; } | sort -V | tail -n1 )"
+          else
+            PREV="$(git describe --tags --abbrev=0 --match 'v[0-9]*' HEAD 2>/dev/null || true)"
+          fi
+          if [[ -n "$PREV" ]]; then RANGE="${PREV}..HEAD"; else RANGE="HEAD"; fi
+
+          git log "$RANGE" --no-merges --pretty='%s' -n 100 \
+            | sed -E 's/^[A-Za-z]+(\([^)]*\))?!?:[[:space:]]*//' \
+            | grep -v -i -E '^(merge |wip|update readme|bump |release )' \
+            | awk 'NF && !seen[tolower($0)]++' \
+            | head -n 4 \
+            | sed -E 's/^(.)/\U\1/; s/^/- /' > changes.md || true
+
+          if [[ ! -s changes.md ]]; then echo "- Maintenance and stability improvements" > changes.md; fi
+
+          {
+            if [[ "$CHANNEL" == "canary" ]]; then
+              echo "> [!IMPORTANT]"
+              echo "> **Canary builds are for testing and may contain bugs or regressions.** If you prefer a reliable experience, stay on the **Stable** channel."
+              echo
+            fi
+            echo "### What's changed"
+            cat changes.md
+          } > release-notes.md
+          cat release-notes.md
 
       # ---------- Toolchain ----------
       - name: Set up JDK 17
@@ -179,7 +233,6 @@ jobs:
           gradle assembleRelease --stacktrace --no-daemon
           -PappVersionName="${{ steps.meta.outputs.version_name }}"
           -PappVersionCode="${{ steps.meta.outputs.version_code }}"
-          -PappIdSuffix="${{ steps.meta.outputs.id_suffix }}"
 
       - name: Collect APK
         id: apk
@@ -199,36 +252,34 @@ jobs:
           retention-days: 30
 
       # ---------- Release ----------
+      # A real GitHub Release (stable) or Pre-release (canary) with the APK attached - not just a tag.
       - name: Publish GitHub release
-        if: steps.meta.outputs.publish == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag }}
-          target_commitish: ${{ github.sha }}
-          name: ${{ steps.meta.outputs.channel == 'canary' && format('Canary {0} ({1})', github.run_number, steps.meta.outputs.version_name) || format('tvBuddy {0}', steps.meta.outputs.version_name) }}
-          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
-          make_latest: ${{ steps.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
-          generate_release_notes: true
-          body: |
-            **Channel:** `${{ steps.meta.outputs.channel }}`
-            **Version:** `${{ steps.meta.outputs.version_name }}`
-            **Commit:** ${{ github.sha }}
-
-            ${{ steps.meta.outputs.channel == 'canary' && '⚠️ Pre-release build from the latest `main`. May be unstable. Installs side-by-side with the stable app.' || '' }}
-          files: |
-            dist/${{ steps.meta.outputs.apk_name }}
-            dist/${{ steps.meta.outputs.apk_name }}.sha256
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          TITLE: ${{ steps.meta.outputs.title }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
+          APK_NAME: ${{ steps.meta.outputs.apk_name }}
+        run: |
+          set -euo pipefail
+          args=( "$TAG" "dist/${APK_NAME}" "dist/${APK_NAME}.sha256"
+                 --target "$GITHUB_SHA" --title "$TITLE" --notes-file release-notes.md )
+          if [[ "$PRERELEASE" == "true" ]]; then
+            args+=( --prerelease --latest=false )
+          else
+            args+=( --latest )
+          fi
+          gh release create "${args[@]}"
 
       # Keep only the 10 newest canary pre-releases so the Releases page stays tidy.
       - name: Prune old canary releases
-        if: steps.meta.outputs.publish == 'true' && steps.meta.outputs.channel == 'canary'
+        if: steps.meta.outputs.prerelease == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release list --limit 200 --json tagName,createdAt \
-            --jq '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
+            --jq '[.[] | select((.tagName | test("-canary\\.")) or (.tagName | startswith("canary-")))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' \
           | while read -r tag; do
               echo "Deleting old canary $tag"
               gh release delete "$tag" --cleanup-tag --yes || true
