@@ -630,11 +630,9 @@ fun HomeScreen(
                                         .background(AccentCyan),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Tv,
-                                        contentDescription = null,
+                                    com.example.ui.components.TvAntennaLogo(
                                         tint = Color.Black,
-                                        modifier = Modifier.size(22.dp)
+                                        modifier = Modifier.size(28.dp)
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(10.dp))
@@ -742,14 +740,6 @@ fun HomeScreen(
                                             onClick = {
                                                 showMoreMenu = false
                                                 showDrmDebugger = true
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            leadingIcon = { Icon(Icons.Default.Tv, contentDescription = null, tint = AccentCyan) },
-                                            text = { Text("Switch to TV Mode", color = AccentCyan, fontWeight = FontWeight.Bold) },
-                                            onClick = {
-                                                showMoreMenu = false
-                                                viewModel.setTvMode(true)
                                             }
                                         )
                                     }
