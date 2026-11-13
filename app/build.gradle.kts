@@ -14,10 +14,14 @@ android {
     minSdk = 24
     targetSdk = 36
     // CI passes these in (see .github/workflows/build-apk.yml); local builds use the defaults.
+    // Stable: "1.2.0". Canary: "1.2.0-canary.3" (shown as "1.2.0 (3)"). Both channels use the same applicationId and
+    // signing key, so the in-app updater can switch between them and install over the running app.
     versionCode = (findProperty("appVersionCode") as String?)?.toIntOrNull() ?: 1
     versionName = (findProperty("appVersionName") as String?) ?: "1.0"
-    // Canary builds get a ".canary" suffix so they install side-by-side with the stable app.
-    (findProperty("appIdSuffix") as String?)?.takeIf { it.isNotBlank() }?.let { applicationIdSuffix = it }
+
+    // Where the in-app updater looks for releases (GitHub Releases of this repository)
+    buildConfigField("String", "GITHUB_OWNER", "\"ibyb007\"")
+    buildConfigField("String", "GITHUB_REPO", "\"tvBuddy\"")
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
