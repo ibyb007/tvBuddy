@@ -107,6 +107,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun HomeScreen(
     viewModel: MainViewModel,
+    updateViewModel: com.example.updater.UpdateViewModel,
     isInPipMode: Boolean = false,
     onEnterPip: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -1206,6 +1207,7 @@ fun HomeScreen(
         val playbackSettings by viewModel.playbackSettings.collectAsStateWithLifecycle()
         val tvBuddyEpgStatus by viewModel.tvBuddyEpgStatus.collectAsStateWithLifecycle()
         val tvBuddySourceOn by viewModel.tvBuddySourceOn.collectAsStateWithLifecycle()
+        val appUpdate by updateViewModel.uiState.collectAsStateWithLifecycle()
         PlaylistManagerDialog(
             playlists = playlists,
             onDismiss = { showPlaylistManager = false },
@@ -1257,6 +1259,14 @@ fun HomeScreen(
             onToggleTunnel = { viewModel.setTunnelEnabled(it) },
             onSelectTunnelMode = { viewModel.setTunnelMode(it) },
             onEditPlaylistSpoof = { spoofPlaylistId = it.id },
+            appUpdate = appUpdate,
+            onSetUpdateChannel = { updateViewModel.setUpdateChannel(it) },
+            onSetUpdateBannerEnabled = { updateViewModel.setUpdateBannerEnabled(it) },
+            onSetAutoInstallEnabled = { updateViewModel.setAutoInstallEnabled(it) },
+            onSetAutoInstallNoticeEnabled = { updateViewModel.setAutoInstallNoticeEnabled(it) },
+            onCheckForUpdates = { updateViewModel.checkForUpdates(force = true, showNoUpdateFeedback = true) },
+            onDownloadUpdate = { updateViewModel.downloadUpdate() },
+            onInstallUpdate = { updateViewModel.installUpdateOrRequestPermission() },
             onTriggerUpdateEpg = { viewModel.triggerUpdateEpg() },
             onTriggerClearEpg = { viewModel.triggerClearEpg() },
             navbarOpacity = if (isTvMode) null else navbarOpacity,
