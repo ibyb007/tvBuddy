@@ -3,4 +3,5 @@
 <full-backup-content>
     <exclude domain="file" path="wireguard/" />
     <exclude domain="file" path="warp/" />
+    <exclude domain="file" path="updates/" />
 </full-backup-content>
