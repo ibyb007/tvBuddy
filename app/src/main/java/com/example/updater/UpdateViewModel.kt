@@ -166,6 +166,11 @@ class UpdateViewModel(application: Application) : AndroidViewModel(application) 
         if (tag != null) viewModelScope.launch(Dispatchers.IO) { prefs.ignoredTag = tag }
     }
 
+    /** Auto-timeout: hides the banner for now without remembering it as ignored, so it can come back next launch. */
+    fun hideBanner() {
+        _uiState.update { it.copy(showBanner = false, errorMessage = null, installedUpdate = null) }
+    }
+
     fun dismissUnknownSourcesDialog() {
         _uiState.update { it.copy(showUnknownSourcesDialog = false) }
     }
