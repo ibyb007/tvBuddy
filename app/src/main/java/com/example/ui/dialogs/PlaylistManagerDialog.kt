@@ -118,6 +118,9 @@ import com.example.data.model.PlaylistType
 import com.example.data.local.entity.EpgSourceEntity
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.PlaylistEpgCrossRef
+import com.example.updater.UpdateChannel
+import com.example.updater.UpdateUiState
+import com.example.updater.VersionUtils
 
 // ---- UI State Models for Global EPG Settings ----
 
@@ -155,6 +158,9 @@ sealed class TiviSettingsRoute {
     data object Playback : TiviSettingsRoute()
     /** WARP / VPN mode and the WireGuard config import. */
     data object Tunnel : TiviSettingsRoute()
+    /** App version, developer, update channel and update options. */
+    data object About : TiviSettingsRoute()
+    data object UpdateChannelPicker : TiviSettingsRoute()
     data class TvBuddyUnmatched(val playlistId: Long) : TiviSettingsRoute()
     data class TvBuddySources(val playlistId: Long) : TiviSettingsRoute()
 }
@@ -237,7 +243,8 @@ private val LocalDrawerFocus = compositionLocalOf<DrawerFocusMemory?> { null }
  */
 private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when (route) {
     is TiviSettingsRoute.Main -> listOf(route)
-    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback, is TiviSettingsRoute.Tunnel -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback, is TiviSettingsRoute.Tunnel, is TiviSettingsRoute.About -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.UpdateChannelPicker -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.About, route)
     is TiviSettingsRoute.ReorderPlaylists, is TiviSettingsRoute.PlaylistDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, route)
     is TiviSettingsRoute.PlaylistEpgSources ->
@@ -378,6 +385,15 @@ fun PlaylistManagerDialog(
     onToggleTunnel: (Boolean) -> Unit = {},
     onSelectTunnelMode: (com.example.data.network.TunnelManager.Mode) -> Unit = {},
     onEditPlaylistSpoof: (PlaylistEntity) -> Unit = {},
+    // About page: in-app updates
+    appUpdate: UpdateUiState = UpdateUiState(),
+    onSetUpdateChannel: (UpdateChannel) -> Unit = {},
+    onSetUpdateBannerEnabled: (Boolean) -> Unit = {},
+    onSetAutoInstallEnabled: (Boolean) -> Unit = {},
+    onSetAutoInstallNoticeEnabled: (Boolean) -> Unit = {},
+    onCheckForUpdates: () -> Unit = {},
+    onDownloadUpdate: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
     // Phone only: opacity of the floating navbar (null = no such setting, e.g. TV mode)
     navbarOpacity: Float? = null,
     onNavbarOpacityChange: (Float) -> Unit = {},
@@ -528,7 +544,14 @@ fun PlaylistManagerDialog(
                                 onToggleLog = onTogglePlaybackLog,
                                 onExportLog = onExportPlaybackLog,
                                 navbarOpacity = navbarOpacity,
-                                onNavbarOpacityChange = onNavbarOpacityChange
+                                onNavbarOpacityChange = onNavbarOpacityChange,
+                                aboutSubtitle = buildString {
+                                    append("Version ").append(VersionUtils.display(com.example.BuildConfig.VERSION_NAME))
+                                    if (appUpdate.isUpdateAvailable && appUpdate.update != null) {
+                                        append(" · Update available: ").append(VersionUtils.display(appUpdate.update.tag))
+                                    }
+                                },
+                                onOpenAbout = { navigateTo(TiviSettingsRoute.About) }
                             )
 
                             is TiviSettingsRoute.Playlists -> PlaylistsSubMenu(
@@ -820,6 +843,25 @@ fun PlaylistManagerDialog(
                                 }
                             )
 
+                            is TiviSettingsRoute.About -> AboutSubMenu(
+                                update = appUpdate,
+                                onOpenChannel = { navigateTo(TiviSettingsRoute.UpdateChannelPicker) },
+                                onToggleBanner = onSetUpdateBannerEnabled,
+                                onToggleAutoInstall = onSetAutoInstallEnabled,
+                                onToggleAutoInstallNotice = onSetAutoInstallNoticeEnabled,
+                                onCheckForUpdates = onCheckForUpdates,
+                                onDownloadUpdate = onDownloadUpdate,
+                                onInstallUpdate = onInstallUpdate
+                            )
+
+                            is TiviSettingsRoute.UpdateChannelPicker -> UpdateChannelSubMenu(
+                                selected = appUpdate.updateChannel,
+                                onSelect = { channel ->
+                                    onSetUpdateChannel(channel)
+                                    navigateBack()
+                                }
+                            )
+
                             is TiviSettingsRoute.AudioBoost -> AudioBoostSubMenu(
                                 selected = audioBoostProfile,
                                 onSelect = onSelectAudioBoost
@@ -910,7 +952,9 @@ private fun MainSettingsMenu(
     onToggleLog: (Boolean) -> Unit,
     onExportLog: () -> Unit,
     navbarOpacity: Float? = null,
-    onNavbarOpacityChange: (Float) -> Unit = {}
+    onNavbarOpacityChange: (Float) -> Unit = {},
+    aboutSubtitle: String = "",
+    onOpenAbout: () -> Unit = {}
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "Settings")
@@ -1002,6 +1046,13 @@ private fun MainSettingsMenu(
                         onClick = onExportLog
                     )
                 }
+            }
+            item {
+                TiviMenuRow(
+                    title = "About",
+                    subtitle = aboutSubtitle,
+                    onClick = onOpenAbout
+                )
             }
         }
     }
@@ -1248,6 +1299,144 @@ private fun PlaybackSubMenu(
 // ============================================================================
 // 1b. AUDIO BOOST SUBMENU ("Audio boost")
 // ============================================================================
+
+// ============================================================================
+// ABOUT: version, developer, update channel and in-app update options
+// ============================================================================
+
+@Composable
+private fun AboutSubMenu(
+    update: UpdateUiState,
+    onOpenChannel: () -> Unit,
+    onToggleBanner: (Boolean) -> Unit,
+    onToggleAutoInstall: (Boolean) -> Unit,
+    onToggleAutoInstallNotice: (Boolean) -> Unit,
+    onCheckForUpdates: () -> Unit,
+    onDownloadUpdate: () -> Unit,
+    onInstallUpdate: () -> Unit
+) {
+    val installedName = com.example.BuildConfig.VERSION_NAME
+    val build = if (VersionUtils.isCanary(installedName)) "Canary build" else "Stable release"
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "About")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            item {
+                TiviMenuRow(
+                    title = "tvBuddy",
+                    subtitle = "Version ${VersionUtils.display(installedName)} · $build",
+                    onClick = {}
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Developed by",
+                    subtitle = "Bony Biswas",
+                    onClick = {}
+                )
+            }
+            item { DrawerSectionHeader("Updates") }
+            val available = update.update
+            if (update.isUpdateAvailable && available != null) {
+                item {
+                    TiviMenuRow(
+                        title = "Update available: ${VersionUtils.display(available.tag)}",
+                        subtitle = when {
+                            update.isDownloading ->
+                                update.downloadProgress?.let { "Downloading… ${(it * 100).toInt().coerceIn(0, 100)}%" } ?: "Preparing download…"
+                            update.errorMessage != null -> update.errorMessage
+                            update.downloadedApkPath != null -> "Downloaded. Select to install"
+                            else -> "Select to download and install"
+                        },
+                        isError = update.errorMessage != null,
+                        busy = update.isDownloading,
+                        onClick = { if (update.downloadedApkPath != null) onInstallUpdate() else onDownloadUpdate() }
+                    )
+                }
+            }
+            item {
+                TiviMenuRow(
+                    title = "Update channel",
+                    subtitle = update.updateChannel.title,
+                    onClick = onOpenChannel
+                )
+            }
+            item {
+                TiviSwitchRow(
+                    title = "Automatic update banner",
+                    subtitle = "Check for updates in the background and show a banner when a new version is available",
+                    checked = update.updateBannerEnabled,
+                    onCheckedChange = onToggleBanner
+                )
+            }
+            if (update.autoInstallSupported) {
+                item {
+                    TiviSwitchRow(
+                        title = "Install updates automatically",
+                        subtitle = "Download new versions in the background and install them while the device is idle",
+                        checked = update.autoInstallEnabled,
+                        onCheckedChange = onToggleAutoInstall
+                    )
+                }
+                if (update.autoInstallEnabled) {
+                    item {
+                        TiviSwitchRow(
+                            title = "Show a notice after an automatic update",
+                            subtitle = "Tell me once when the app was updated",
+                            checked = update.autoInstallNoticeEnabled,
+                            onCheckedChange = onToggleAutoInstallNotice
+                        )
+                    }
+                }
+            }
+            item {
+                TiviMenuRow(
+                    title = "Check for updates",
+                    subtitle = if (update.isChecking) "Checking…" else "Look for a newer ${update.updateChannel.title.lowercase()} version",
+                    busy = update.isChecking,
+                    onClick = onCheckForUpdates
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateChannelSubMenu(
+    selected: UpdateChannel,
+    onSelect: (UpdateChannel) -> Unit
+) {
+    val descriptions = mapOf(
+        UpdateChannel.STABLE to "Tested releases only. Recommended",
+        UpdateChannel.CANARY to "Newest builds with the latest changes. May contain bugs"
+    )
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Update channel")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 8.dp)
+        ) {
+            items(UpdateChannel.entries.toList()) { channel ->
+                TiviMenuRow(
+                    title = channel.title,
+                    subtitle = descriptions[channel],
+                    onClick = { onSelect(channel) },
+                    trailingContent = { isFocused ->
+                        if (channel == selected) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = "Selected",
+                                tint = if (isFocused) TiviFocusText else TiviAccentBlue
+                            )
+                        }
+                    }
+                )
+            }
+        }
+    }
+}
 
 @Composable
 private fun AudioBoostSubMenu(
