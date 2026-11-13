@@ -50,6 +50,12 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -71,7 +77,39 @@ private val BannerSubText = Color(0xFF9AA0A6)
 private val BannerAccent = Color(0xFF4285F4)
 private val BannerSuccess = Color(0xFF34A853)
 private val BannerError = Color(0xFFFF8A80)
-private const val AUTO_DISMISS_MS = 20_000L
+private const val AUTO_DISMISS_MS = 25_000L
+
+/**
+ * Remote-control (D-pad) support for the banner. The TV screens keep Compose focus for themselves and swallow
+ * keys in onPreviewKeyEvent, so the banner can never receive focus there. Instead, while the banner is showing
+ * it owns LEFT / RIGHT / OK (and BACK = close) at the activity root, and highlights its own selected button.
+ * Attach with [Modifier.updateBannerKeys] on the root Box that holds the app and the banner.
+ */
+class UpdateBannerRemote {
+    /** Banner is on screen and should take the remote. */
+    var active by mutableStateOf(false)
+    var selected by mutableStateOf(0)
+    internal var actions: List<() -> Unit> = emptyList()
+    internal var primaryIndex: Int = 0
+
+    internal fun handle(e: KeyEvent): Boolean {
+        if (!active || actions.isEmpty()) return false
+        val k = e.key
+        val isOk = k == Key.DirectionCenter || k == Key.Enter || k == Key.NumPadEnter
+        val isNav = k == Key.DirectionLeft || k == Key.DirectionRight || k == Key.DirectionUp || k == Key.DirectionDown
+        if (!isOk && !isNav) return false
+        // consume key-up too, so the screen underneath never sees half of an OK press
+        if (e.type != KeyEventType.KeyDown) return true
+        when {
+            k == Key.DirectionLeft || k == Key.DirectionUp -> selected = (selected - 1).coerceAtLeast(0)
+            k == Key.DirectionRight || k == Key.DirectionDown -> selected = (selected + 1).coerceAtMost(actions.size - 1)
+            else -> if (e.nativeKeyEvent.repeatCount == 0) actions.getOrNull(selected)?.invoke()
+        }
+        return true
+    }
+}
+
+fun Modifier.updateBannerKeys(remote: UpdateBannerRemote): Modifier = onPreviewKeyEvent { remote.handle(it) }
 
 /**
  * Draws the update banner over the top of the app, plus the release notes / unknown-sources dialogs and the
@@ -86,7 +124,10 @@ fun UpdateBannerHost(
     onDismissUnknownSources: () -> Unit,
     onOpenUnknownSources: () -> Unit,
     onFeedbackShown: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** Auto-timeout hide (does not mark the release as ignored). */
+    onAutoDismiss: () -> Unit = onDismissBanner,
+    remote: UpdateBannerRemote? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -114,12 +155,32 @@ fun UpdateBannerHost(
     val showBanner = state.showBanner && update != null
     val isInstalled = state.update == null && state.installedUpdate != null
 
-    // "Updated" banner closes by itself
-    LaunchedEffect(showBanner, isInstalled, showReleaseNotes) {
-        if (showBanner && isInstalled && !showReleaseNotes) {
+    // Every banner closes by itself after 25 s, except while downloading or while a dialog is open.
+    // Restarts whenever the banner changes (e.g. download finished -> "Install").
+    val busy = state.isDownloading || showReleaseNotes || state.showUnknownSourcesDialog
+    LaunchedEffect(showBanner, busy, state.downloadedApkPath, state.errorMessage, isInstalled) {
+        if (showBanner && !busy) {
             delay(AUTO_DISMISS_MS)
-            onDismissBanner()
+            if (isInstalled) onDismissBanner() else onAutoDismiss()
         }
+    }
+
+    // Remote control: buttons in on-screen order, primary (Download / Install / Retry) selected first
+    val hasNotes = update != null && ReleaseNotes.summarize(update.notes).isNotEmpty()
+    val canClose = !state.isDownloading
+    val primaryOn = !isInstalled && !state.isDownloading
+    if (remote != null) {
+        val actions = buildList<() -> Unit> {
+            if (hasNotes) add { showReleaseNotes = true }
+            if (!isInstalled) add { if (!state.isDownloading) { if (state.downloadedApkPath != null) onInstall() else onDownload() } }
+            if (canClose) add { onDismissBanner() }
+        }
+        val primaryIdx = if (!isInstalled) (if (hasNotes) 1 else 0) else 0
+        remote.actions = actions
+        remote.primaryIndex = primaryIdx
+        remote.active = showBanner && !showReleaseNotes && !state.showUnknownSourcesDialog
+        LaunchedEffect(showBanner, update?.tag, actions.size) { remote.selected = primaryIdx.coerceIn(0, (actions.size - 1).coerceAtLeast(0)) }
+        DisposableEffect(Unit) { onDispose { remote.active = false } }
     }
 
     AnimatedVisibility(
@@ -136,7 +197,8 @@ fun UpdateBannerHost(
                 onDownload = onDownload,
                 onInstall = onInstall,
                 onShowReleaseNotes = { showReleaseNotes = true },
-                onDismiss = onDismissBanner
+                onDismiss = onDismissBanner,
+                remote = remote
             )
         }
     }
@@ -158,9 +220,16 @@ private fun UpdateBanner(
     onDownload: () -> Unit,
     onInstall: () -> Unit,
     onShowReleaseNotes: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    remote: UpdateBannerRemote? = null
 ) {
     val context = LocalContext.current
+    // index of each button in the remote's list (same order as the actions built in the host)
+    val hasNotes = ReleaseNotes.summarize(update.notes).isNotEmpty()
+    val notesIdx = 0
+    val primaryIdx = if (hasNotes) 1 else 0
+    val closeIdx = (if (hasNotes) 1 else 0) + (if (!isInstalledUpdate) 1 else 0)
+    val sel = if (remote != null && remote.active) remote.selected else -1
     val progress by animateFloatAsState(
         targetValue = (if (state.isDownloading) state.downloadProgress ?: 0f else 0f).coerceIn(0f, 1f),
         animationSpec = tween(180),
@@ -220,7 +289,7 @@ private fun UpdateBanner(
             }
 
             if (ReleaseNotes.summarize(update.notes).isNotEmpty()) {
-                BannerButton(icon = Icons.Default.Info, description = "Release notes", onClick = onShowReleaseNotes)
+                BannerButton(icon = Icons.Default.Info, description = "Release notes", remoteFocused = sel == notesIdx, onClick = onShowReleaseNotes)
             }
 
             if (!isInstalledUpdate) {
@@ -233,12 +302,13 @@ private fun UpdateBanner(
                     },
                     primary = true,
                     enabled = !state.isDownloading,
+                    remoteFocused = sel == primaryIdx,
                     onClick = { if (state.downloadedApkPath != null) onInstall() else onDownload() }
                 )
             }
 
             if (!state.isDownloading) {
-                BannerButton(icon = Icons.Default.Close, description = "Close", onClick = onDismiss)
+                BannerButton(icon = Icons.Default.Close, description = "Close", remoteFocused = sel == closeIdx, onClick = onDismiss)
             }
         }
     }
@@ -252,10 +322,11 @@ private fun BannerButton(
     description: String? = null,
     primary: Boolean = false,
     enabled: Boolean = true,
+    remoteFocused: Boolean = false,
     onClick: () -> Unit
 ) {
     val source = remember { MutableInteractionSource() }
-    val focused by source.collectIsFocusedAsState()
+    val focused = source.collectIsFocusedAsState().value || remoteFocused
     val shape = if (label != null) RoundedCornerShape(50) else CircleShape
     Row(
         modifier = Modifier
