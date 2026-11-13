@@ -230,12 +230,22 @@ class TvBuddyPlayerManager(
         if (_audioBoostProfile.value != AudioBoostProfile.OFF) applyAudioBoost(rebuild = true)
     }
 
+    // Same call a manual mode change makes (re-sets gain / bands on the live effect, no rebuild). On some devices
+    // this is what finally makes the restored mode audible after a relaunch, so repeat it while audio settles.
+    private val boostRefreshRunnable = Runnable {
+        if (_audioBoostProfile.value != AudioBoostProfile.OFF) applyAudioBoost(rebuild = false)
+    }
+
     private fun scheduleBoostRebuild() {
         if (_audioBoostProfile.value == AudioBoostProfile.OFF) return
         mainHandler.removeCallbacks(boostRebuildRunnable)
+        mainHandler.removeCallbacks(boostRefreshRunnable)
         applyAudioBoost(rebuild = true)
         mainHandler.postDelayed(boostRebuildRunnable, 700L)
+        mainHandler.postDelayed(boostRefreshRunnable, 1500L)
         mainHandler.postDelayed(boostRebuildRunnable, 2500L)
+        mainHandler.postDelayed(boostRefreshRunnable, 3500L)
+        mainHandler.postDelayed(boostRefreshRunnable, 6000L)
     }
 
     /** True until the effects were rebuilt once for the current player / audio session (see [scheduleBoostRebuild]). */
