@@ -13,10 +13,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import com.example.data.network.TunnelManager
 import com.example.data.network.VpnManager
@@ -28,11 +31,14 @@ import com.example.ui.MainViewModel
 import com.example.ui.screens.HomeScreen
 import com.example.ui.theme.DarkBackground
 import com.example.ui.theme.TvBuddyTheme
+import com.example.updater.UpdateViewModel
+import com.example.updater.ui.UpdateBannerHost
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
+    private val updateViewModel: UpdateViewModel by viewModels()
     private val _isInPipMode = MutableStateFlow(false)
 
     // VPN mode: the system "Connection request" dialog
@@ -56,17 +62,34 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val inPip by _isInPipMode.collectAsState()
+            val updateState by updateViewModel.uiState.collectAsStateWithLifecycle()
 
             TvBuddyTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = DarkBackground
                 ) {
-                    HomeScreen(
-                        viewModel = viewModel,
-                        isInPipMode = inPip,
-                        onEnterPip = { enterPipMode() }
-                    )
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        HomeScreen(
+                            viewModel = viewModel,
+                            updateViewModel = updateViewModel,
+                            isInPipMode = inPip,
+                            onEnterPip = { enterPipMode() }
+                        )
+                        // Update banner over the top of the app (hidden in picture-in-picture)
+                        if (!inPip) {
+                            UpdateBannerHost(
+                                modifier = Modifier.align(Alignment.TopCenter),
+                                state = updateState,
+                                onDismissBanner = { updateViewModel.dismissBanner() },
+                                onDownload = { updateViewModel.downloadUpdate() },
+                                onInstall = { updateViewModel.installUpdateOrRequestPermission() },
+                                onDismissUnknownSources = { updateViewModel.dismissUnknownSourcesDialog() },
+                                onOpenUnknownSources = { updateViewModel.openUnknownSourcesSettings() },
+                                onFeedbackShown = { updateViewModel.consumeFeedbackMessage() }
+                            )
+                        }
+                    }
                 }
             }
         }
