@@ -6,6 +6,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -115,7 +116,17 @@ private val TvPanelBg = Color(0xE6101418)
 private val TvSelected = Color(0xFFF1F3F4)
 // Recent-channel cards: 50% opaque so the video shows through
 private val StripCard = Color(0xFF22262C).copy(alpha = 0.5f)
-private val StripCardSelected = Color(0xFF3A3F47).copy(alpha = 0.5f)
+private val StripCardSelected = Color(0xFF14506B)   // opaque, clearly brighter than the translucent idle cards
+private val StripFocusRing = Color(0xFF67E8F9)
+
+/** Recent-strip tile: idle = faint translucent card; focused = solid teal fill + thick bright ring. */
+private fun Modifier.stripCard(selected: Boolean): Modifier {
+    val shape = RoundedCornerShape(6.dp)
+    return this
+        .clip(shape)
+        .background(if (selected) StripCardSelected else StripCard)
+        .then(if (selected) Modifier.border(3.dp, StripFocusRing, shape) else Modifier)
+}
 
 /**
  * TiviMate-style Android TV player UI.
@@ -953,8 +964,7 @@ private fun InfoBanner(
                 Column(
                     modifier = Modifier
                         .width(132.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(if (selected) StripCardSelected else StripCard)
+                        .stripCard(selected)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -962,14 +972,14 @@ private fun InfoBanner(
                         Icon(
                             Icons.Default.Schedule,
                             contentDescription = "TV guide",
-                            tint = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                            tint = Color.White.copy(alpha = if (selected) 1f else 0.65f),
                             modifier = Modifier.size(32.dp)
                         )
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "TV guide",
-                        color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                        color = Color.White.copy(alpha = if (selected) 1f else 0.65f),
                         fontSize = 12.sp,
                         lineHeight = 14.sp,
                         maxLines = 1
@@ -985,8 +995,7 @@ private fun InfoBanner(
                 Column(
                     modifier = Modifier
                         .width(132.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(if (selected) StripCardSelected else StripCard)
+                        .stripCard(selected)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -1004,7 +1013,7 @@ private fun InfoBanner(
                     Spacer(Modifier.height(6.dp))
                     Text(
                         chSlot.title,
-                        color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                        color = Color.White.copy(alpha = if (selected) 1f else 0.65f),
                         fontSize = 12.sp,
                         lineHeight = 14.sp,
                         maxLines = 1,
@@ -1035,8 +1044,7 @@ private fun InfoBanner(
                 Column(
                     modifier = Modifier
                         .width(132.dp)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(if (selected) StripCardSelected else StripCard)
+                        .stripCard(selected)
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -1044,14 +1052,14 @@ private fun InfoBanner(
                         Icon(
                             Icons.Default.Delete,
                             contentDescription = "Clear",
-                            tint = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                            tint = Color.White.copy(alpha = if (selected) 1f else 0.65f),
                             modifier = Modifier.size(32.dp)
                         )
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "Clear",
-                        color = Color.White.copy(alpha = if (selected) 1f else 0.8f),
+                        color = Color.White.copy(alpha = if (selected) 1f else 0.65f),
                         fontSize = 12.sp,
                         lineHeight = 14.sp,
                         maxLines = 1
