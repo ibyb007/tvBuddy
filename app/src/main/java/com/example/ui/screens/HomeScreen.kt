@@ -644,7 +644,7 @@ fun HomeScreen(
                                         fontWeight = FontWeight.ExtraBold
                                     )
                                     Text(
-                                        text = "IPTV Player • DRM Ready",
+                                        text = "IPTV • DRM Ready",
                                         style = MaterialTheme.typography.labelSmall,
                                         color = AccentCyan
                                     )
