@@ -51,10 +51,10 @@
 
 ### 🎭 Player Signature Spoofing
 Some IPTV providers block generic media players or enforce specific client signatures. **tvBuddy** includes a built-in spoofing engine that disguises all stream segments, manifests, and license requests:
-- **TiviMate** (`TiviMate/5.0.4 Android TV`)
-- **OTT Navigator** (`OTT Navigator/1.6.8.5 Android TV`)
-- **VLC Media Player** (`LibVLC/3.5.4`)
-- **Apple TV / CoreMedia** (`AppleCoreMedia/1.0.0`)
+- **TiviMate**
+- **OTT Navigator**
+- **VLC Media Player**
+- **Sparkle TV**
 - **ExoPlayer Standard**
 - **Custom User-Agent & Headers**
 
