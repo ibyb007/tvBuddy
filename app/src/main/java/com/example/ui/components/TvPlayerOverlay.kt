@@ -478,7 +478,12 @@ fun TvPlayerOverlay(
             TvPanel.GUIDE -> {
                 val lastRow = (channelsList.size - 1).coerceAtLeast(0)
                 fun moveRow(to: Int) {
-                    guideRow = to.coerceIn(0, lastRow)
+                    // UP on the first channel -> last, DOWN on the last -> first (a held key stops at the ends)
+                    guideRow = when {
+                        to < 0 -> if (isRepeat) 0 else lastRow
+                        to > lastRow -> if (isRepeat) lastRow else 0
+                        else -> to
+                    }
                     guideCursorMs = maxOf(guideCursorMs, guideOriginMs)
                 }
                 fun moveCell(delta: Int) {
@@ -501,8 +506,14 @@ fun TvPlayerOverlay(
                 }
             }
             TvPanel.CHANNELS -> when (key) {
-                Key.DirectionUp -> listIndex = (listIndex - 1).coerceAtLeast(0)
-                Key.DirectionDown -> listIndex = (listIndex + 1).coerceAtMost((channelsList.size - 1).coerceAtLeast(0))
+                Key.DirectionUp -> {
+                    val last = (channelsList.size - 1).coerceAtLeast(0)
+                    listIndex = if (listIndex <= 0) { if (isRepeat) 0 else last } else listIndex - 1
+                }
+                Key.DirectionDown -> {
+                    val last = (channelsList.size - 1).coerceAtLeast(0)
+                    listIndex = if (listIndex >= last) { if (isRepeat) last else 0 } else listIndex + 1
+                }
                 Key.DirectionLeft -> if (!isRepeat) onOpenGroups()      // reveal the playlist groups page
                 Key.DirectionRight -> if (!isRepeat && channel != null) panel = TvPanel.NONE
                 else -> return false
