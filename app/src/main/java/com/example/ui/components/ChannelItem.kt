@@ -1,7 +1,9 @@
 package com.example.ui.components
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
@@ -18,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.outlined.StarOutline
@@ -52,6 +53,7 @@ import com.example.ui.theme.DarkSurfaceVariant
 import com.example.ui.theme.StatusDrm
 import com.example.ui.theme.StatusWarning
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChannelListItem(
     channel: ChannelEntity,
@@ -161,34 +163,28 @@ fun ChannelListItem(
                         color = Color.White,
                         fontWeight = if (isSelected || isFocused) FontWeight.Bold else FontWeight.Medium,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        softWrap = false,
+                        overflow = TextOverflow.Clip,
+                        // long names scroll on their own instead of being cut with "..."
+                        modifier = Modifier
+                            .weight(1f, fill = false)
+                            .basicMarquee(iterations = Int.MAX_VALUE, initialDelayMillis = 1000)
                     )
 
                     if (!channel.drmType.isNullOrBlank() && channel.drmType != "NONE") {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Box(
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = channel.drmType ?: "DRM",
+                            fontSize = 7.5.sp,
+                            lineHeight = 9.sp,
+                            color = StatusDrm,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
+                                .clip(RoundedCornerShape(3.dp))
                                 .background(StatusDrm.copy(alpha = 0.2f))
-                                .padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "DRM",
-                                    tint = StatusDrm,
-                                    modifier = Modifier.size(10.dp)
-                                )
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Text(
-                                    text = channel.drmType ?: "DRM",
-                                    fontSize = 9.sp,
-                                    color = StatusDrm,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
+                                .padding(horizontal = 3.dp, vertical = 1.dp)
+                        )
                     }
                 }
 
