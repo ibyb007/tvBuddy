@@ -223,6 +223,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
 
+        // "Update on app start": refresh every active URL-based playlist that has the toggle on, once per app launch.
+        // Runs quietly in the background, one playlist at a time, a few seconds after startup.
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(3_000)
+            val startupList = repository.allPlaylists.first()
+                .filter { it.isActive && it.updateOnStart && it.sourceUrl.startsWith("http", ignoreCase = true) }
+            for (pl in startupList) {
+                val key = UpdateKeys.playlist(pl.id)
+                if (isUpdateRunning(key)) continue
+                runCatching { repository.refreshPlaylist(pl.id) }
+            }
+        }
+
         // Warm the logo cache in the background a few seconds after the channel list settles
         viewModelScope.launch {
             repository.allChannels.collectLatest { chs ->
