@@ -1324,70 +1324,68 @@ private fun AboutSubMenu(
     val build = if (VersionUtils.isCanary(installedName)) "Canary build" else "Stable release"
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "About")
+        // Fixed (not part of the scrolling list) so focus scrolling can never push it under the header
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 16.dp, bottom = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = androidx.compose.ui.text.buildAnnotatedString {
+                    pushStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFF1D6FD1)))
+                    append("tv")
+                    pop()
+                    pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.White))
+                    append("Buddy")
+                    pop()
+                },
+                style = TextStyle(
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    letterSpacing = (-0.5).sp
+                )
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                text = androidx.compose.ui.text.buildAnnotatedString {
+                    pushStyle(
+                        androidx.compose.ui.text.SpanStyle(
+                            color = Color(0xFF9AA0A6),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            letterSpacing = 2.sp
+                        )
+                    )
+                    append("DEVELOPED BY  ")
+                    pop()
+                    pushStyle(
+                        androidx.compose.ui.text.SpanStyle(
+                            color = Color(0xFF8AB4F8),
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
+                            letterSpacing = 1.sp
+                        )
+                    )
+                    append("Bony Biswas")
+                    pop()
+                }
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Version ${VersionUtils.display(installedName)} · $build",
+                style = TextStyle(
+                    color = Color(0xFF9AA0A6),
+                    fontSize = 12.sp,
+                    letterSpacing = 0.5.sp
+                )
+            )
+        }
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxWidth().weight(1f),
             contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
-            item {
-                // Plain, non-focusable brand block (like Nuvio's About screen)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 16.dp, bottom = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Text(
-                        text = androidx.compose.ui.text.buildAnnotatedString {
-                            pushStyle(androidx.compose.ui.text.SpanStyle(color = Color(0xFF1D6FD1)))
-                            append("tv")
-                            pop()
-                            pushStyle(androidx.compose.ui.text.SpanStyle(color = Color.White))
-                            append("Buddy")
-                            pop()
-                        },
-                        style = TextStyle(
-                            fontSize = 34.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = (-0.5).sp
-                        )
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = androidx.compose.ui.text.buildAnnotatedString {
-                            pushStyle(
-                                androidx.compose.ui.text.SpanStyle(
-                                    color = Color(0xFF9AA0A6),
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    letterSpacing = 2.sp
-                                )
-                            )
-                            append("DEVELOPED BY  ")
-                            pop()
-                            pushStyle(
-                                androidx.compose.ui.text.SpanStyle(
-                                    color = Color(0xFF8AB4F8),
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                                    letterSpacing = 1.sp
-                                )
-                            )
-                            append("Bony Biswas")
-                            pop()
-                        }
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        text = "Version ${VersionUtils.display(installedName)} · $build",
-                        style = TextStyle(
-                            color = Color(0xFF9AA0A6),
-                            fontSize = 12.sp,
-                            letterSpacing = 0.5.sp
-                        )
-                    )
-                }
-            }
             item { DrawerSectionHeader("Updates") }
             val available = update.update
             if (update.isUpdateAvailable && available != null) {
