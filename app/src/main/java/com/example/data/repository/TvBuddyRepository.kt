@@ -933,7 +933,9 @@ class TvBuddyRepository(
             var etag: String? = null
             var lastModified: String? = null
             val cacheKey = Integer.toHexString(urlOrContent.hashCode())
-            val signature = wanted?.takeIf { !it.isEmpty }?.signature ?: 0
+            val forcedOffset = if (isRawText) null else com.example.data.epg.TvBuddyEpg.forcedOffsetMs(urlOrContent)
+            // the offset rule is part of the signature: a guide already cached with wrong times must be read again
+            val signature = (wanted?.takeIf { !it.isEmpty }?.signature ?: 0) + (if (forcedOffset != null) 7919 else 0)
 
             if (isRawText) {
                 XmltvParser.parseStreaming(
@@ -969,7 +971,7 @@ class TvBuddyRepository(
                     // and ".gz" links that serve plain XML both exist
                     val stream = if (b0 == 0x1f && b1 == 0x8b) GZIPInputStream(bodyStream, 64 * 1024) else bodyStream
                     stream.use {
-                        XmltvParser.parseStreaming(it, storeDescriptions, minTime, maxStart, onChannels = onChannels, acceptChannel = accept, onPrograms = onPrograms)
+                        XmltvParser.parseStreaming(it, storeDescriptions, minTime, maxStart, onChannels = onChannels, acceptChannel = accept, forcedOffsetMs = forcedOffset, onPrograms = onPrograms)
                     }
                 }
             }
