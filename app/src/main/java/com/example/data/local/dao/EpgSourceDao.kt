@@ -49,6 +49,9 @@ interface EpgSourceDao {
     @Query("UPDATE epg_sources SET isEnabled = :enabled WHERE id = :id")
     suspend fun setSourceEnabled(id: Long, enabled: Boolean)
 
+    @Query("UPDATE epg_sources SET timeOffsetMin = :minutes WHERE id = :id")
+    suspend fun setTimeOffset(id: Long, minutes: Int)
+
     @Query("UPDATE epg_sources SET lastUpdated = :timestamp WHERE id = :id")
     suspend fun updateLastUpdated(id: Long, timestamp: Long = System.currentTimeMillis())
 
