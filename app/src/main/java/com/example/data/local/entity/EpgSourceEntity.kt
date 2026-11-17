@@ -23,6 +23,8 @@ data class EpgSourceEntity(
     val isDefault: Boolean = false,
     val isEnabled: Boolean = true,
     val lastUpdated: Long = 0L,
+    /** Minutes added to every programme time of this guide (negative = earlier); for guides in the wrong time zone. */
+    val timeOffsetMin: Int = 0,
     val createdAt: Long = System.currentTimeMillis()
 )
 
