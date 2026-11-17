@@ -365,6 +365,7 @@ fun PlaylistManagerDialog(
     onDeleteEpgSource: (EpgSourceEntity) -> Unit = {},
     onSetDefaultEpgSource: (Long) -> Unit = {},
     onUpdateEpgSource: (Long, String, String) -> Unit = { _, _, _ -> },
+    onSetEpgSourceTimeOffset: (Long, String) -> Unit = { _, _ -> },
     onTogglePlaylistEpgAssignment: (Long, Long, Boolean) -> Unit = { _, _, _ -> },
     onReorderPlaylistEpgPriority: (Long, List<Long>) -> Unit = { _, _ -> },
     epgSettings: EpgGlobalSettingsState = EpgGlobalSettingsState(),
@@ -806,6 +807,12 @@ fun PlaylistManagerDialog(
                                             }
                                         },
                                         onEditUrl = { navigateTo(TiviSettingsRoute.EditEpgSourceUrl(src.id)) },
+                                        onEditTimeOffset = {
+                                            textEditDialogState = TextEditPrompt(
+                                                "Time offset, h:min (e.g. 2:30 or -3:00)",
+                                                formatEpgOffset(src.timeOffsetMin, plusSign = false)
+                                            ) { v -> onSetEpgSourceTimeOffset(src.id, v) }
+                                        },
                                         onSetDefault = { onSetDefaultEpgSource(src.id) },
                                         onDelete = {
                                             onDeleteEpgSource(src)
@@ -928,6 +935,13 @@ fun PlaylistManagerDialog(
         }
         }
     }
+}
+
+/** 150 -> "2:30", -180 -> "-3:00", 0 -> "0:00". */
+private fun formatEpgOffset(minutes: Int, plusSign: Boolean = false): String {
+    val a = kotlin.math.abs(minutes)
+    val sign = if (minutes < 0) "-" else if (plusSign && minutes > 0) "+" else ""
+    return "$sign${a / 60}:${(a % 60).toString().padStart(2, '0')}"
 }
 
 private data class TextEditPrompt(
@@ -2549,6 +2563,7 @@ private fun EpgSourceDetailSubMenu(
     lockedBy: String?,
     onEditName: () -> Unit,
     onEditUrl: () -> Unit,
+    onEditTimeOffset: () -> Unit,
     onSetDefault: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -2571,6 +2586,13 @@ private fun EpgSourceDetailSubMenu(
                         title = "EPG URL",
                         subtitle = source.url,
                         onClick = onEditUrl
+                    )
+                }
+                item {
+                    TiviMenuRow(
+                        title = "Time offset, h:min",
+                        subtitle = formatEpgOffset(source.timeOffsetMin),
+                        onClick = onEditTimeOffset
                     )
                 }
                 item {
