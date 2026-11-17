@@ -28,7 +28,7 @@ object XmltvParser {
      * XMLTV times: "20261014120000 +0200", "20261014120000" (UTC), "202610141200", "20261014120000Z" and the ISO
      * forms some feeds use. Returns epoch millis, 0 when unparseable.
      */
-    fun parseDate(dateStr: String?, forcedOffsetMs: Long? = null): Long {
+    fun parseDate(dateStr: String?): Long {
         if (dateStr.isNullOrBlank()) return 0L
         val s = dateStr.trim()
         val g = (dateRegex.find(s) ?: isoRegex.find(s))?.groupValues ?: return 0L
@@ -38,10 +38,7 @@ object XmltvParser {
             val mm = g[5].ifEmpty { "0" }.toInt()
             val ss = g[6].ifEmpty { "0" }.toInt()
             var utc = (days * 86400L + hh * 3600L + mm * 60L + ss) * 1000L
-            if (forcedOffsetMs != null) {
-                // the feed's own offset is wrong / missing: the clock digits are local time of a known zone
-                utc -= forcedOffsetMs
-            } else if (g[8].isNotEmpty()) {
+            if (g[8].isNotEmpty()) {
                 val offset = (g[9].toInt() * 60 + g[10].toInt()) * 60_000L
                 utc -= if (g[8] == "-") -offset else offset
             }
@@ -64,12 +61,12 @@ object XmltvParser {
         batchSize: Int = 2000,
         onChannels: (List<XmltvChannel>) -> Unit = {},
         acceptChannel: ((String) -> Boolean)? = null,
-        forcedOffsetMs: Long? = null,
+        timeShiftMs: Long = 0L,
         onPrograms: (List<ProgramEntity>) -> Unit
     ) {
         val parser = Xml.newPullParser()
         parser.setInput(inputStream, null) // let the XML declaration decide the encoding
-        run(parser, storeDescriptions, minEndTimeMs, maxStartTimeMs, batchSize, onChannels, acceptChannel, forcedOffsetMs, onPrograms)
+        run(parser, storeDescriptions, minEndTimeMs, maxStartTimeMs, batchSize, onChannels, acceptChannel, timeShiftMs, onPrograms)
     }
 
     fun parse(
@@ -90,7 +87,7 @@ object XmltvParser {
         val parser = Xml.newPullParser()
         parser.setInput(StringReader(xmlContent))
         val all = ArrayList<ProgramEntity>()
-        run(parser, storeDescriptions, minEndTimeMs, Long.MAX_VALUE, 2000, {}, null, null, { all.addAll(it) })
+        run(parser, storeDescriptions, minEndTimeMs, Long.MAX_VALUE, 2000, {}, null, 0L, { all.addAll(it) })
         return all
     }
 
@@ -109,7 +106,7 @@ object XmltvParser {
         batchSize: Int,
         onChannels: (List<XmltvChannel>) -> Unit,
         acceptChannel: ((String) -> Boolean)?,
-        forcedOffsetMs: Long?,
+        timeShiftMs: Long,
         onPrograms: (List<ProgramEntity>) -> Unit
     ) {
         var programs = ArrayList<ProgramEntity>(batchSize)
@@ -155,8 +152,13 @@ object XmltvParser {
                         pChannel = parser.getAttributeValue(null, "channel")?.trim()
                         wanted = !pChannel.isNullOrBlank() && (acceptChannel == null || acceptChannel(pChannel!!))
                         if (wanted) {
-                            pStart = parseDate(parser.getAttributeValue(null, "start"), forcedOffsetMs)
-                            pStop = parseDate(parser.getAttributeValue(null, "stop"), forcedOffsetMs)
+                            pStart = parseDate(parser.getAttributeValue(null, "start"))
+                            pStop = parseDate(parser.getAttributeValue(null, "stop"))
+                            // the source's time offset; 0 stays 0 so an unparseable time is still dropped
+                            if (timeShiftMs != 0L) {
+                                if (pStart > 0L) pStart += timeShiftMs
+                                if (pStop > 0L) pStop += timeShiftMs
+                            }
                         }
                         pTitle = ""; pDesc = ""; pCategory = ""; pIcon = null
                     }
