@@ -147,7 +147,7 @@ fun HomeScreen(
     val tvSelection by viewModel.tvSelection.collectAsStateWithLifecycle()
     val tvGroupSections by viewModel.tvGroupSections.collectAsStateWithLifecycle()
     val favOnlyGroups by viewModel.favOnlyGroups.collectAsStateWithLifecycle()
-    val nameSortedGroups by viewModel.nameSortedGroups.collectAsStateWithLifecycle()
+    val groupSortModes by viewModel.groupSortModes.collectAsStateWithLifecycle()
     val collapsedSections by viewModel.collapsedSections.collectAsStateWithLifecycle()
     val playContext by viewModel.playContext.collectAsStateWithLifecycle()
     val mobilePlaylistId by viewModel.mobilePlaylistId.collectAsStateWithLifecycle()
@@ -417,7 +417,7 @@ fun HomeScreen(
                     onSetSectionCollapsed = { key, c -> viewModel.setSectionCollapsed(key, c) },
                     epgByChannel = epgByChannel,
                     favoriteOnlyGroups = favOnlyGroups,
-                    nameSortedGroups = nameSortedGroups,
+                    groupSortModes = groupSortModes,
                     searchQuery = searchQuery,
                     onSelectGroup = { viewModel.selectTvGroup(it) },
                     numbering = browseNumbering,
@@ -427,7 +427,7 @@ fun HomeScreen(
                     },
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
                     onToggleGroupFavoritesOnly = { id, title -> viewModel.toggleGroupFavoritesOnly(id, title) },
-                    onToggleGroupNameSort = { id, title -> viewModel.toggleGroupNameSort(id, title) },
+                    onSetGroupSort = { id, title, mode -> viewModel.setGroupSortMode(id, title, mode) },
                     onHideGroup = { id, title -> viewModel.hideGroup(id, title) },
                     onManageGroups = { id -> openSettings(TiviSettingsRoute.ManageGroups(id)) },
                     onOpenSearch = { showTvSearch = true },
@@ -444,7 +444,7 @@ fun HomeScreen(
                     onOptionsVisible = { tvOptionsOpen = it },
                     // normal TV page sits under the video (which only shows in its preview slot);
                     // the overlay page must sit ABOVE the full-screen video
-                    modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay || tvOptionsOpen) 2f else 0f)
+                    modifier = Modifier.fillMaxSize().zIndex(if (tvBrowseOverlay) 2f else 0f)
                 ) }
             }
 
