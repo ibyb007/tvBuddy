@@ -214,7 +214,7 @@ class TvBuddyPlayerManager(
     private fun applyAudioBoost(rebuild: Boolean = false) {
         val p = exoPlayer ?: return
         try {
-            if (rebuild) audioBoost.rebuild(p.audioSessionId, _audioBoostProfile.value)
+            if (rebuild) audioBoost.kick(p.audioSessionId, _audioBoostProfile.value)
             else audioBoost.apply(p.audioSessionId, _audioBoostProfile.value)
         } catch (t: Throwable) {
             PlaybackLog.info("AUDIO", "Audio boost failed: ${t.message}")
@@ -241,11 +241,10 @@ class TvBuddyPlayerManager(
         mainHandler.removeCallbacks(boostRebuildRunnable)
         mainHandler.removeCallbacks(boostRefreshRunnable)
         applyAudioBoost(rebuild = true)
-        mainHandler.postDelayed(boostRebuildRunnable, 700L)
-        mainHandler.postDelayed(boostRefreshRunnable, 1500L)
+        mainHandler.postDelayed(boostRebuildRunnable, 400L)
+        mainHandler.postDelayed(boostRebuildRunnable, 1200L)
         mainHandler.postDelayed(boostRebuildRunnable, 2500L)
-        mainHandler.postDelayed(boostRefreshRunnable, 3500L)
-        mainHandler.postDelayed(boostRefreshRunnable, 6000L)
+        mainHandler.postDelayed(boostRefreshRunnable, 4000L)
     }
 
     /** True until the effects were rebuilt once for the current player / audio session (see [scheduleBoostRebuild]). */
@@ -387,7 +386,8 @@ class TvBuddyPlayerManager(
             .setSeekForwardIncrementMs(10_000)
             .build().apply {
                 playWhenReady = true
-                audioBoost.apply(audioSessionId, _audioBoostProfile.value)
+                // No effect is created here: one made before the AudioTrack exists is the one that stays silent after a
+                // relaunch. It is created / kicked once audio is really playing (see scheduleBoostRebuild).
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         PlaybackLog.info("STATE", PlaybackLog.stateName(playbackState) + " (playWhenReady=$playWhenReady)")
@@ -420,8 +420,10 @@ class TvBuddyPlayerManager(
                     }
 
                     override fun onAudioSessionIdChanged(audioSessionId: Int) {
-                        boostNeedsRebuild = true
-                        try { audioBoost.rebuild(audioSessionId, _audioBoostProfile.value) } catch (_: Throwable) {}
+                        if (_audioBoostProfile.value != AudioBoostProfile.OFF) {
+                            boostNeedsRebuild = false
+                            scheduleBoostRebuild()
+                        } else boostNeedsRebuild = true
                     }
 
                     override fun onPlayerError(error: PlaybackException) {
