@@ -931,6 +931,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** [text]: "h:mm", "-2:30", "+5:30" or whole hours; added to every programme time of the source, then the guide is re-read. */
+    fun setEpgSourceTimeOffset(id: Long, text: String) {
+        val m = Regex("^\\s*([+-]?)(\\d{1,2})(?::(\\d{1,2}))?\\s*$").find(text)
+        val minutes = m?.let {
+            val v = it.groupValues[2].toInt() * 60 + (it.groupValues[3].ifEmpty { "0" }.toInt())
+            if (it.groupValues[3].isNotEmpty() && it.groupValues[3].toInt() > 59) null
+            else if (it.groupValues[1] == "-") -v else v
+        }
+        if (minutes == null) {
+            _uiMessage.value = UiMessage(text = "Use hours:minutes, for example 2:30 or -3:00")
+            return
+        }
+        viewModelScope.launch {
+            repository.setEpgSourceTimeOffset(id, minutes)
+            _uiMessage.value = UiMessage(text = "Time offset saved, updating guide...")
+            triggerUpdateEpg()
+        }
+    }
+
     fun setDefaultEpgSource(id: Long) {
         viewModelScope.launch {
             repository.setDefaultEpgSource(id)
