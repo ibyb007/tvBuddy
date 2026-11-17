@@ -150,8 +150,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _favOnlyGroups = MutableStateFlow(prefs.getStringSet(KEY_GROUP_FAV_ONLY, emptySet()).orEmpty().toSet())
     val favOnlyGroups: StateFlow<Set<String>> = _favOnlyGroups.asStateFlow()
 
-    /** Keys of groups whose channels are sorted by name instead of playlist order. */
-    private val _nameSortedGroups = MutableStateFlow(prefs.getStringSet(KEY_GROUP_NAME_SORT, emptySet()).orEmpty().toSet())
+    /** Group key ("playlistId_title") -> SORT_NAME / SORT_WATCH; a group that is not listed keeps the playlist order. */
+    private val _groupSortModes = MutableStateFlow(loadGroupSortModes())
+
+    private fun loadGroupSortModes(): Map<String, String> {
+        val out = HashMap<String, String>()
+        // groups sorted by name before sort modes existed
+        prefs.getStringSet(KEY_GROUP_NAME_SORT, emptySet()).orEmpty().forEach { out[it] = SORT_NAME }
+        prefs.getStringSet(KEY_GROUP_SORT_MODES, emptySet()).orEmpty().forEach { e ->
+            val i = e.indexOf('|')
+            if (i > 0) out[e.substring(i + 1)] = e.substring(0, i)
+        }
+        return out
+    }
+
+    /** Accumulated live watch time per channel id (ms); feeds "By watch time". Updated while a live channel plays. */
+    private val watchPrefs = application.getSharedPreferences("tvbuddy_watchtime", android.content.Context.MODE_PRIVATE)
+    private val watchMs = java.util.concurrent.ConcurrentHashMap<Long, Long>().also { m ->
+        watchPrefs.all.forEach { (k, v) -> val id = k.toLongOrNull(); if (id != null && v is Long) m[id] = v }
+    }
+
+    init {
+        viewModelScope.launch {
+            while (true) {
+                kotlinx.coroutines.delay(WATCH_TICK_MS)
+                val cur = playerManager.currentChannel.value
+                if (cur != null && cur.contentType == ContentType.TV && playerManager.isPlaying.value) {
+                    val total = (watchMs[cur.id] ?: 0L) + WATCH_TICK_MS
+                    watchMs[cur.id] = total
+                    watchPrefs.edit().putLong(cur.id.toString(), total).apply()
+                }
+            }
+        }
+    }
 
     // Playlists the user collapsed in the TV groups panel (key = playlist id, -1 = "All playlists"); remembered across launches
     private val _collapsedSections = MutableStateFlow(
@@ -166,7 +197,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _collapsedSections.value = next
         prefs.edit().putStringSet(KEY_COLLAPSED_SECTIONS, next.map { it.toString() }.toSet()).apply()
     }
-    val nameSortedGroups: StateFlow<Set<String>> = _nameSortedGroups.asStateFlow()
+    val groupSortModes: StateFlow<Map<String, String>> = _groupSortModes.asStateFlow()
 
     private val _globalSpoof = MutableStateFlow(SpoofProfile(SpoofPreset.TIVIMATE))
     val globalSpoof: StateFlow<SpoofProfile> = _globalSpoof.asStateFlow()
@@ -321,11 +352,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val tvMode: Boolean,
         val selection: TvGroupSelection,
         val favOnly: Set<String>,
-        val nameSorted: Set<String>,
+        val sortModes: Map<String, String>,
         val mobilePlaylistId: Long? = null
     )
 
-    private val groupViewPrefs = combine(_favOnlyGroups, _nameSortedGroups) { fav, byName -> fav to byName }
+    private val groupViewPrefs = combine(_favOnlyGroups, _groupSortModes) { fav, modes -> fav to modes }
 
     private val modeState = combine(_isTvMode, _mobilePlaylistId) { tvMode, plId -> tvMode to plId }
 
@@ -346,7 +377,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         groups: List<ChannelGroupEntity>,
         selection: TvGroupSelection,
         favOnly: Set<String>,
-        nameSorted: Set<String>
+        sortModes: Map<String, String>
     ): List<ChannelEntity> {
         val activePlaylistIds = if (playlists.isEmpty()) null else playlists.filter { it.isActive }.map { it.id }.toSet()
         // playlist id -> hidden group titles: a set lookup per channel instead of building a "id_title" string
@@ -372,7 +403,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     channel.groupTitle == sel.groupTitle && (selKey == null || selKey !in favOnly || channel.isFavorite)
             }
         }
-        return if (selKey != null && selKey in nameSorted) filtered.sortedBy { it.name.lowercase() } else filtered
+        return when (if (selKey != null) sortModes[selKey] else null) {
+            SORT_NAME -> filtered.sortedBy { it.name.lowercase() }
+            // most watched first; never watched channels keep their playlist order (the sort is stable)
+            SORT_WATCH -> filtered.sortedByDescending { watchMs[it.id] ?: 0L }
+            else -> filtered
+        }
     }
 
     /**
@@ -387,10 +423,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         repository.playbackHistory
     ) { channels, playlists, groups, fs, history ->
         if (fs.tvMode) {
-            applySelection(channels, playlists, groups, fs.selection, fs.favOnly, fs.nameSorted)
+            applySelection(channels, playlists, groups, fs.selection, fs.favOnly, fs.sortModes)
         } else {
             // phone mode: category chip
-            val all = applySelection(channels, playlists, groups, TvGroupSelection(playlistId = fs.mobilePlaylistId), emptySet(), emptySet())
+            val all = applySelection(channels, playlists, groups, TvGroupSelection(playlistId = fs.mobilePlaylistId), emptySet(), emptyMap())
             when (fs.category) {
                 "All" -> all
                 "★ Favorites" -> all.filter { it.isFavorite }
@@ -428,7 +464,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     ) { channels, playlists, groups, (ctx, viewPrefs, cur) ->
         val inContext = applySelection(channels, playlists, groups, ctx, viewPrefs.first, viewPrefs.second)
         if (cur == null || inContext.any { it.id == cur.id }) inContext
-        else applySelection(channels, playlists, groups, TvGroupSelection(), emptySet(), emptySet())
+        else applySelection(channels, playlists, groups, TvGroupSelection(), emptySet(), emptyMap())
     }.flowOn(kotlinx.coroutines.Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
 
@@ -539,11 +575,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         prefs.edit().putStringSet(KEY_GROUP_FAV_ONLY, next).apply()
     }
 
-    fun toggleGroupNameSort(playlistId: Long, groupTitle: String) {
+    /** [mode]: SORT_PLAYLIST (order in the playlist), SORT_NAME or SORT_WATCH. */
+    fun setGroupSortMode(playlistId: Long, groupTitle: String, mode: String) {
         val key = "${playlistId}_$groupTitle"
-        val next = _nameSortedGroups.value.let { if (key in it) it - key else it + key }
-        _nameSortedGroups.value = next
-        prefs.edit().putStringSet(KEY_GROUP_NAME_SORT, next).apply()
+        val next = HashMap(_groupSortModes.value)
+        if (mode == SORT_NAME || mode == SORT_WATCH) next[key] = mode else next.remove(key)
+        _groupSortModes.value = next
+        prefs.edit()
+            .putStringSet(KEY_GROUP_SORT_MODES, next.map { "${it.value}|${it.key}" }.toSet())
+            .remove(KEY_GROUP_NAME_SORT) // folded into the modes above
+            .apply()
     }
 
     /** Hides a group (same flag as "Manage groups") and falls back to the playlist's channels if it was selected. */
@@ -704,7 +745,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun contextContains(channel: ChannelEntity): Boolean =
         applySelection(
             rawChannels.value, allPlaylists.value, liveGroups.value,
-            _playContext.value, _favOnlyGroups.value, _nameSortedGroups.value
+            _playContext.value, _favOnlyGroups.value, _groupSortModes.value
         ).any { it.id == channel.id }
 
     /** The live channel that was on before a movie was started: the TV button of the movie player returns to it. */
@@ -1439,6 +1480,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         const val KEY_CTX_GROUP = "tv_ctx_group"
         const val KEY_GROUP_FAV_ONLY = "tv_group_fav_only"
         const val KEY_GROUP_NAME_SORT = "tv_group_name_sort"
+        const val KEY_GROUP_SORT_MODES = "tv_group_sort_modes"
+        const val WATCH_TICK_MS = 10_000L
         const val KEY_COLLAPSED_SECTIONS = "tv_collapsed_sections"
     }
 }
+
+/** Per-group channel sort modes of the TV page ("Channels sorting"). */
+const val SORT_PLAYLIST = "PLAYLIST"
+const val SORT_NAME = "NAME"
+const val SORT_WATCH = "WATCH"
