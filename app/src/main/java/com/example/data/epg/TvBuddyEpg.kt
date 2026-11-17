@@ -41,6 +41,18 @@ object TvBuddyEpg {
         Source("epgpw_au", "Australia (epg.pw)", "https://epg.pw/xmltv/epg_AU.xml.gz", false)
     )
 
+    private const val IST_OFFSET_MS = 5 * 60 * 60_000L + 30 * 60_000L
+
+    /**
+     * epg.pw's India guide carries wrong zone offsets (the guide showed up in European time). For it the clock digits
+     * of every start / stop are read as India Standard Time and the feed's own offset is ignored.
+     * Null = trust the offset in the feed.
+     */
+    fun forcedOffsetMs(url: String): Long? {
+        val u = url.lowercase()
+        return if (u.contains("epg.pw/") && u.contains("epg_in.")) IST_OFFSET_MS else null
+    }
+
     /** Name of the guide source entry; the default keeps the plain name. */
     fun sourceName(s: Source) = if (s.key == "default") SOURCE_NAME else "$NAME_PREFIX - ${s.label}"
 
