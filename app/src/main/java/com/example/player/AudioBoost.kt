@@ -87,6 +87,23 @@ internal class AudioBoostEngine {
         apply(audioSessionId, profile)
     }
 
+    /**
+     * What a manual mode change does to a live effect, done on purpose: the effect is switched off, the gain is moved
+     * to a different value and then to the real one, and it is switched on again. After a relaunch an effect that
+     * only gets "enabled + same gain" can report success while the sound stays unchanged; an off -> on transition with
+     * a real gain change always takes. Effects are NOT released here (release + re-create in quick succession is what
+     * left some devices without boost).
+     */
+    fun kick(audioSessionId: Int, profile: AudioBoostProfile) {
+        if (audioSessionId <= 0) return
+        if (profile.gainDb <= 0f) { disable(); return }
+        runCatching { loudness?.takeIf { loudnessSession == audioSessionId }?.setEnabled(false) }
+        runCatching { dynamics?.takeIf { dynamicsSession == audioSessionId }?.setEnabled(false) }
+        val nudge = ((profile.gainDb.coerceIn(0f, 30f) * 100).toInt() - 150).coerceAtLeast(0)
+        runCatching { loudness?.takeIf { loudnessSession == audioSessionId }?.setTargetGain(nudge) }
+        apply(audioSessionId, profile) // enables and sets the real gain / bands
+    }
+
     private fun applyLoudness(session: Int, gainDb: Float) {
         try {
             if (loudness != null && loudnessSession != session) {
