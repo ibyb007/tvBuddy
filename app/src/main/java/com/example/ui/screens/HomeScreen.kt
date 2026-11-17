@@ -1221,6 +1221,7 @@ fun HomeScreen(
             onDeleteEpgSource = { viewModel.deleteEpgSource(it) },
             onSetDefaultEpgSource = { viewModel.setDefaultEpgSource(it) },
             onUpdateEpgSource = { id, name, url -> viewModel.updateEpgSource(id, name, url) },
+            onSetEpgSourceTimeOffset = { id, text -> viewModel.setEpgSourceTimeOffset(id, text) },
             onTogglePlaylistEpgAssignment = { pl, src, assign -> viewModel.togglePlaylistEpgAssignment(pl, src, assign) },
             onReorderPlaylistEpgPriority = { pl, ids -> viewModel.reorderPlaylistEpgPriority(pl, ids) },
             epgSettings = epgSettings,
