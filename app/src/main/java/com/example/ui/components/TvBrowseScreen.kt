@@ -110,6 +110,10 @@ import com.example.ui.TvGroupSection
 import com.example.ui.TvGroupSelection
 import com.example.ui.dialogs.iptvTextFieldColors
 import kotlinx.coroutines.delay
+import androidx.compose.foundation.border
+import com.example.ui.SORT_NAME
+import com.example.ui.SORT_PLAYLIST
+import com.example.ui.SORT_WATCH
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -133,8 +137,17 @@ private val BrowseBlue = Color(0xFF3B9BFF)
 private val DateBlue = Color(0xFF8DB9F5)
 private val CellBg = Color(0xFF25282D)
 private val CellFocused = Color(0xFF5B5F65)
-private val OptionsBg = Color(0xFF1F2327)
-private val OptionsHeaderBg = Color(0xFF2A2E33)
+// same look as the settings drawer (PlaylistManagerDialog): 0xFF181B20 at 50 % opacity
+private val OptionsBg = Color(0xFF181B20).copy(alpha = 0.5f)
+
+/** Sort modes offered by "Channels sorting" (value stored per group, label). */
+private val SORT_CHOICES = listOf(
+    SORT_PLAYLIST to "By order in playlist",
+    SORT_NAME to "By name",
+    SORT_WATCH to "By watch time"
+)
+
+private fun sortLabel(mode: String?) = SORT_CHOICES.firstOrNull { it.first == mode }?.second ?: SORT_CHOICES[0].second
 
 // ---- geometry on the 1080p design grid (scaled with rememberUiScale()) ----
 internal const val RAIL_COLLAPSED_PX = 112f
@@ -257,7 +270,7 @@ fun TvBrowseScreen(
     /** programmes per lower-case EPG channel id, grouped + sorted off the main thread by the view model */
     epgByChannel: Map<String, List<ProgramEntity>>,
     favoriteOnlyGroups: Set<String>,
-    nameSortedGroups: Set<String>,
+    groupSortModes: Map<String, String>,
     searchQuery: String,
     /** channel id -> number inside the selected group (falls back to the row position) */
     numbering: Map<Long, Int> = emptyMap(),
@@ -265,7 +278,7 @@ fun TvBrowseScreen(
     onPlayChannel: (ChannelEntity) -> Unit,
     onToggleFavorite: (ChannelEntity) -> Unit,
     onToggleGroupFavoritesOnly: (Long, String) -> Unit,
-    onToggleGroupNameSort: (Long, String) -> Unit,
+    onSetGroupSort: (Long, String, String) -> Unit,
     onHideGroup: (Long, String) -> Unit,
     onManageGroups: (Long) -> Unit,
     onOpenSearch: () -> Unit,
@@ -317,6 +330,10 @@ fun TvBrowseScreen(
     var railIndex by remember { mutableIntStateOf(1) }                 // index into railEntries (Search, TV, [Movies], [Shows], Favorites, Settings)
     var optionsRow by remember { mutableStateOf<GroupRow?>(null) }
     var optionsIndex by remember { mutableIntStateOf(0) }
+    // the "Channels sorting" list inside the options panel (By order in playlist / By name / By watch time)
+    var sortMenuOpen by remember { mutableStateOf(false) }
+    var sortIndex by remember { mutableIntStateOf(0) }
+    LaunchedEffect(optionsRow == null) { sortMenuOpen = false }
     var okLongHandled by remember { mutableStateOf(false) }
     var lastBackAt by remember { mutableLongStateOf(0L) }
 
@@ -419,7 +436,7 @@ fun TvBrowseScreen(
     // ---------------- back ----------------
     BackHandler(enabled = true) {
         when {
-            optionsRow != null -> optionsRow = null
+            optionsRow != null -> if (sortMenuOpen) sortMenuOpen = false else optionsRow = null
             searchQuery.isNotBlank() -> onClearSearch()
             overlayMode -> onDismiss()          // back to full-screen playback
             level == TvBrowseLevel.GUIDE -> level = TvBrowseLevel.GROUPS
@@ -440,7 +457,7 @@ fun TvBrowseScreen(
     fun optionItems(row: GroupRow): List<OptionItem> {
         val key = "${row.playlistId}_${row.title}"
         return listOf(
-            OptionItem("Channels sorting", if (key in nameSortedGroups) "By name" else "By order in playlist", null),
+            OptionItem("Channels sorting", sortLabel(groupSortModes[key]), null),
             OptionItem("Show Favorites only", null, key in favoriteOnlyGroups),
             OptionItem("Hide group", null, null),
             OptionItem("Manage groups", null, null)
@@ -474,8 +491,16 @@ fun TvBrowseScreen(
         if (opts != null) {
             val pid = opts.playlistId
             if (pid != null) {
+                if (sortMenuOpen) {
+                    onSetGroupSort(pid, opts.title, SORT_CHOICES[sortIndex.coerceIn(0, SORT_CHOICES.lastIndex)].first)
+                    sortMenuOpen = false
+                    return
+                }
                 when (optionsIndex) {
-                    0 -> onToggleGroupNameSort(pid, opts.title)
+                    0 -> {
+                        sortIndex = SORT_CHOICES.indexOfFirst { it.first == (groupSortModes["${pid}_${opts.title}"] ?: SORT_PLAYLIST) }.coerceAtLeast(0)
+                        sortMenuOpen = true
+                    }
                     1 -> onToggleGroupFavoritesOnly(pid, opts.title)
                     2 -> { optionsRow = null; onHideGroup(pid, opts.title) }
                     else -> { optionsRow = null; onManageGroups(pid) }
@@ -525,9 +550,12 @@ fun TvBrowseScreen(
         val opts = optionsRow
         if (opts != null) {
             when (key) {
-                Key.DirectionUp -> optionsIndex = (optionsIndex - 1).coerceAtLeast(0)
-                Key.DirectionDown -> optionsIndex = (optionsIndex + 1).coerceAtMost(3)
-                Key.DirectionLeft -> if (!isRepeat) optionsRow = null
+                Key.DirectionUp ->
+                    if (sortMenuOpen) sortIndex = (sortIndex - 1).coerceAtLeast(0) else optionsIndex = (optionsIndex - 1).coerceAtLeast(0)
+                Key.DirectionDown ->
+                    if (sortMenuOpen) sortIndex = (sortIndex + 1).coerceAtMost(SORT_CHOICES.lastIndex)
+                    else optionsIndex = (optionsIndex + 1).coerceAtMost(3)
+                Key.DirectionLeft -> if (!isRepeat) { if (sortMenuOpen) sortMenuOpen = false else optionsRow = null }
                 else -> {}
             }
             return true
@@ -702,15 +730,20 @@ fun TvBrowseScreen(
         }
 
         // ---- group options (long-press OK on a group) ----
-        AnimatedVisibility(
-            visible = optionsRow != null,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.CenterEnd)
-        ) {
-            val row = optionsRow
-            if (row != null) {
-                OptionsPanel(k = k, row = row, items = optionItems(row), selectedIndex = optionsIndex)
+        // A Popup is its own window, so the panel sits above the shared video surface without the page having to be
+        // raised over it (which used to turn the small preview black while the panel was open). It takes no focus:
+        // the keys still arrive at this page.
+        val optRow = optionsRow
+        if (optRow != null) {
+            androidx.compose.ui.window.Popup(
+                alignment = Alignment.CenterEnd,
+                properties = androidx.compose.ui.window.PopupProperties(focusable = false, clippingEnabled = false)
+            ) {
+                OptionsPanel(
+                    k = k, row = optRow, items = optionItems(optRow), selectedIndex = optionsIndex,
+                    sortMenuOpen = sortMenuOpen, sortSelected = sortIndex,
+                    sortCurrent = groupSortModes["${optRow.playlistId}_${optRow.title}"] ?: SORT_PLAYLIST
+                )
             }
         }
     }
@@ -1298,7 +1331,15 @@ private fun GroupRowItem(
 // ---------------------------------------------------------------------------------------------
 
 @Composable
-private fun OptionsPanel(k: Float, row: GroupRow, items: List<OptionItem>, selectedIndex: Int) {
+private fun OptionsPanel(
+    k: Float,
+    row: GroupRow,
+    items: List<OptionItem>,
+    selectedIndex: Int,
+    sortMenuOpen: Boolean,
+    sortSelected: Int,
+    sortCurrent: String
+) {
     Column(
         modifier = Modifier
             .width((700 * k).dp)
@@ -1306,7 +1347,7 @@ private fun OptionsPanel(k: Float, row: GroupRow, items: List<OptionItem>, selec
             .background(OptionsBg)
     ) {
         Text(
-            "${row.playlistName} • ${row.title}",
+            if (sortMenuOpen) "Channels sorting" else "${row.playlistName} • ${row.title}",
             color = Color.White,
             fontSize = (40 * k).sp,
             fontWeight = FontWeight.Medium,
@@ -1314,10 +1355,38 @@ private fun OptionsPanel(k: Float, row: GroupRow, items: List<OptionItem>, selec
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
-                .background(OptionsHeaderBg)
                 .padding(horizontal = (32 * k).dp, vertical = (28 * k).dp)
         )
         Spacer(Modifier.height((12 * k).dp))
+        if (sortMenuOpen) {
+            SORT_CHOICES.forEachIndexed { i, (mode, label) ->
+                val sel = i == sortSelected
+                val fg = if (sel) Color.Black else Color.White
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = (16 * k).dp, vertical = (3 * k).dp)
+                        .clip(RoundedCornerShape((12 * k).dp))
+                        .background(if (sel) PillFocused else Color.Transparent)
+                        .padding(horizontal = (24 * k).dp, vertical = (18 * k).dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size((32 * k).dp)
+                            .border((3 * k).dp, fg, androidx.compose.foundation.shape.CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (mode == sortCurrent) {
+                            Box(Modifier.size((16 * k).dp).background(fg, androidx.compose.foundation.shape.CircleShape))
+                        }
+                    }
+                    Spacer(Modifier.width((24 * k).dp))
+                    Text(label, color = fg, fontSize = (30 * k).sp, maxLines = 1)
+                }
+            }
+            return@Column
+        }
         items.forEachIndexed { i, item ->
             val sel = i == selectedIndex
             val fg = if (sel) Color.Black else Color.White
