@@ -802,6 +802,33 @@ class TvBuddyPlayerManager(
         }
     }
 
+    /**
+     * Jio CDN (cdn.jio.com) signs the manifest URL with a `__hdnea__` token in its
+     * query string. DASH segment URLs are relative to the manifest, so they do NOT
+     * inherit that query string and are rejected (403) -- the stream opens, then
+     * stalls. Jio accepts the same token as a cookie, and the request properties
+     * set on the data source factory are sent with the manifest AND every segment
+     * request, so the token is also forwarded as a `Cookie` header (the manifest URL
+     * itself is left untouched).
+     */
+    private fun applyJioTokenCookie(streamUrl: String, headers: MutableMap<String, String>) {
+        try {
+            val uri = Uri.parse(streamUrl)
+            val host = uri.host?.lowercase() ?: return
+            if (host != "cdn.jio.com" && !host.endsWith(".cdn.jio.com")) return
+            val token = uri.getQueryParameter("__hdnea__")?.takeIf { it.isNotBlank() } ?: return
+
+            val cookieKey = headers.keys.firstOrNull { it.equals("Cookie", ignoreCase = true) }
+            val existing = cookieKey?.let { headers[it] }.orEmpty()
+            if (Regex("(?:^|;\\s*)__hdnea__=").containsMatchIn(existing)) return
+
+            if (cookieKey != null) headers.remove(cookieKey)
+            headers["Cookie"] = if (existing.isBlank()) "__hdnea__=$token" else "$existing; __hdnea__=$token"
+        } catch (_: Exception) {
+            // Never let header handling prevent playback from starting.
+        }
+    }
+
     private fun startPlaybackUnsafe(
         channel: ChannelEntity,
         globalSpoof: SpoofProfile
@@ -830,6 +857,7 @@ class TvBuddyPlayerManager(
             } catch (_: Exception) {}
         }
         headers["User-Agent"] = userAgent
+        applyJioTokenCookie(channel.streamUrl, headers)
         PlaybackLog.info(
             "START",
             "Channel '${channel.name}' (id=${channel.id}, playlist=${channel.playlistId}) url=${PlaybackLog.redactUrl(channel.streamUrl)} " +
