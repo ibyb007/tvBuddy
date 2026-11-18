@@ -144,12 +144,36 @@ object M3uParser {
                     val grp = trimmed.substringAfter(":").trim()
                     if (grp.isNotBlank()) currentGroup = grp
                 }
+                trimmed.startsWith("#EXTHTTP:", ignoreCase = true) -> {
+                    // JSON object of request headers for the next stream: #EXTHTTP:{"cookie":"...","user-agent":"..."}
+                    try {
+                        val json = org.json.JSONObject(trimmed.substringAfter(":"))
+                        val keys = json.keys()
+                        while (keys.hasNext()) {
+                            val k = keys.next()
+                            val v = json.optString(k, "")
+                            if (v.isNotBlank()) applyHeader(k, v, currentHeaders) { currentUserAgent = it }
+                        }
+                    } catch (_: Exception) {
+                        // A malformed optional header line must not discard the channel.
+                    }
+                }
                 trimmed.startsWith("#EXTVLCOPT:", ignoreCase = true) -> {
                     val opt = trimmed.substringAfter(":")
                     if (opt.startsWith("http-user-agent=", ignoreCase = true)) {
                         currentUserAgent = opt.substringAfter("=").trim()
                     } else if (opt.startsWith("http-referrer=", ignoreCase = true)) {
                         currentHeaders["Referer"] = opt.substringAfter("=").trim()
+                    } else if (opt.startsWith("http-cookie=", ignoreCase = true)) {
+                        applyHeader("Cookie", opt.substringAfter("=").trim(), currentHeaders) { currentUserAgent = it }
+                    } else if (opt.startsWith("http-extra-headers=", ignoreCase = true)) {
+                        // "Name: value" pairs separated by CRLF (literal "\r\n" or real newlines)
+                        for (part in opt.substringAfter("=").split("\\r\\n", "\\n", "\r\n", "\n")) {
+                            val colon = part.indexOf(':')
+                            if (colon > 0) {
+                                applyHeader(part.substring(0, colon).trim(), part.substring(colon + 1).trim(), currentHeaders) { currentUserAgent = it }
+                            }
+                        }
                     }
                 }
                 trimmed.startsWith("#KODIPROP:", ignoreCase = true) -> {
@@ -238,6 +262,25 @@ object M3uParser {
         }
 
         return channels
+    }
+
+    /** Stores a request header (case-insensitive name, canonical casing for common ones); User-Agent goes to [setUserAgent]. */
+    private fun applyHeader(
+        name: String,
+        value: String,
+        headers: MutableMap<String, String>,
+        setUserAgent: (String) -> Unit
+    ) {
+        if (name.isBlank() || value.isBlank() || name.any { it == '\r' || it == '\n' } || value.any { it == '\r' || it == '\n' }) return
+        val key = when (name.lowercase()) {
+            "user-agent", "useragent", "http-user-agent" -> { setUserAgent(value); return }
+            "cookie", "http-cookie" -> "Cookie"
+            "origin" -> "Origin"
+            "referer", "referrer", "http-referrer", "http-referer" -> "Referer"
+            else -> name
+        }
+        headers.keys.firstOrNull { it.equals(key, ignoreCase = true) }?.let { headers.remove(it) }
+        headers[key] = value
     }
 
     private fun extractAttribute(line: String, attribute: String): String {
