@@ -1077,7 +1077,7 @@ private fun MainSettingsMenu(
     }
 }
 
-/** Phone only: slider for the opacity of the floating navbar (10% - 100%). */
+/** Phone only: slider for the opacity of the floating navbar (0% - 100%); the blur behind it follows the same value. */
 @Composable
 private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp)) {
@@ -1092,8 +1092,8 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
         }
         Slider(
             value = value,
-            onValueChange = { onValueChange((Math.round(it * 20f) / 20f).coerceIn(0.1f, 1f)) },
-            valueRange = 0.1f..1f,
+            onValueChange = { onValueChange((Math.round(it * 20f) / 20f).coerceIn(0f, 1f)) },
+            valueRange = 0f..1f,
             colors = SliderDefaults.colors(
                 thumbColor = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
                 activeTrackColor = if (LocalPhoneSettings.current) com.example.ui.theme.AccentCyan else TiviAccentBlue,
@@ -1101,7 +1101,7 @@ private fun NavbarOpacityRow(value: Float, onValueChange: (Float) -> Unit) {
             )
         )
         Text(
-            text = "Floating bottom bar on the phone",
+            text = "Floating bottom bar on the phone (also sets its blur: 100% = max, 0% = none)",
             color = TiviSecondaryText,
             fontSize = 13.sp
         )
