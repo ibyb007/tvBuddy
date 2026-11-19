@@ -74,6 +74,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.MainViewModel
 import com.example.ui.components.ChannelListItem
+import androidx.compose.ui.graphics.drawscope.ContentDrawScope
+import com.example.ui.backdrop.backdrops.layerBackdrop
+import com.example.ui.backdrop.backdrops.rememberLayerBackdrop
+import com.example.ui.backdrop.isRenderEffectSupported
 import com.example.ui.components.MobileGlassNavBar
 import com.example.ui.components.MobilePlaylistPanel
 import com.example.ui.components.MobileSection
@@ -791,6 +795,10 @@ fun HomeScreen(
             val navInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
                 .asPaddingValues().calculateBottomPadding()
             val listBottomPadding = if (showNavBar) 84.dp + navInset else navInset
+            // Live background for the navbar glass (Android 12+): the list area is recorded into this layer.
+            val navBackdropPaint: ContentDrawScope.() -> Unit = remember { { drawRect(DarkBackground); drawContent() } }
+            val navBackdrop = rememberLayerBackdrop(onDraw = navBackdropPaint)
+            val glassBackdrop = if (isRenderEffectSupported()) navBackdrop else null
 
             Box(
                 modifier = Modifier
@@ -893,6 +901,14 @@ fun HomeScreen(
                 }
 
                 if (!isMobileFullscreen && !isInPipMode) {
+                    // Records the list area (not the video) so the floating navbar can blur and refract it.
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .then(if (glassBackdrop != null) Modifier.layerBackdrop(glassBackdrop) else Modifier)
+                    ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
                     if (!dbSettled && playlists.isEmpty()) {
                         // database still loading: plain background instead of flashing the start page
                         Box(modifier = Modifier.fillMaxWidth().weight(1f).background(DarkBackground))
@@ -1058,6 +1074,8 @@ fun HomeScreen(
                             }
                         }
                     }
+                    }
+                    }
                 }
             }
 
@@ -1077,7 +1095,8 @@ fun HomeScreen(
                         },
                         onDismiss = { showMobilePlaylists = false },
                         modifier = Modifier.fillMaxSize(),
-                        opacity = navbarOpacity
+                        opacity = navbarOpacity,
+                        backdrop = glassBackdrop
                     )
                 }
                 MobileGlassNavBar(
@@ -1098,7 +1117,8 @@ fun HomeScreen(
                         .align(Alignment.BottomCenter)
                         .navigationBarsPadding()
                         .padding(bottom = 12.dp),
-                    opacity = navbarOpacity
+                    opacity = navbarOpacity,
+                    backdrop = glassBackdrop
                 )
             }
             }
