@@ -1,6 +1,7 @@
 package com.example.data.parser
 
 import com.example.data.local.entity.ChannelEntity
+import com.example.player.PlaybackLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -42,12 +43,25 @@ object LiveEventsSource {
     private const val MAX_SOURCES_PER_CHANNEL = 3
     private const val PARALLEL_REQUESTS = 6
 
+    private const val PLAYLIST_PATH = "/api/public/playlist.m3u"
+
     private fun siteFor(url: String): Site? = try {
-        val host = URI(url.trim()).host
-        SITES.firstOrNull { it.host.equals(host, ignoreCase = true) }
+        val uri = URI(url.trim())
+        val host = uri.host
+        SITES.firstOrNull { it.host.equals(host, ignoreCase = true) } ?: run {
+            // same site behind another domain / mirror: the API sits next to the playlist
+            val path = uri.path.orEmpty()
+            if (host != null && path.endsWith(PLAYLIST_PATH, ignoreCase = true)) {
+                val origin = "${uri.scheme ?: "https"}://${uri.authority}"
+                val base = origin + path.dropLast(PLAYLIST_PATH.length) + "/api/public/channels"
+                Site(host, origin, base, "$base/", "live")
+            } else null
+        }
     } catch (_: Exception) {
         null
     }
+
+    private fun bust(url: String) = url + (if (url.contains('?')) "&" else "?") + "_t=" + System.currentTimeMillis()
 
     /** True when [url] is a playlist of a site this source knows how to add live events for. */
     fun isSupportedPlaylist(url: String): Boolean = siteFor(url) != null
@@ -67,15 +81,25 @@ object LiveEventsSource {
     private class ApiChannel(val id: String, val name: String, val category: String, val logo: String?)
 
     private fun parseList(site: Site, json: String): List<ApiChannel> {
-        val arr = JSONObject(json).optJSONArray("channels") ?: return emptyList()
-        val out = ArrayList<ApiChannel>(arr.length())
-        for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val id = o.opt("id")?.toString()?.trim().orEmpty()
-            val name = o.optString("name", "").trim()
-            if (id.isEmpty() || name.isEmpty() || id == "null") continue
-            val category = o.optString("category", "").trim().ifEmpty { "Other" }
-            out.add(ApiChannel(id, name, category, absoluteLogo(site, o.optString("logo", ""))))
+        val root = JSONObject(json)
+        val out = ArrayList<ApiChannel>()
+        // "channels" is the documented list; event-style lists are accepted too, defaulting to an events category
+        for ((key, defaultCategory) in listOf(
+            "channels" to "Other",
+            "events" to "Live Events",
+            "liveEvents" to "Live Events",
+            "live_events" to "Live Events",
+            "matches" to "Live Events"
+        )) {
+            val arr = root.optJSONArray(key) ?: continue
+            for (i in 0 until arr.length()) {
+                val o = arr.optJSONObject(i) ?: continue
+                val id = o.opt("id")?.toString()?.trim().orEmpty()
+                val name = (o.optString("name", "").ifBlank { o.optString("title", "") }).trim()
+                if (id.isEmpty() || name.isEmpty() || id == "null") continue
+                val category = o.optString("category", "").trim().ifEmpty { defaultCategory }
+                out.add(ApiChannel(id, name, category, absoluteLogo(site, o.optString("logo", o.optString("image", "")))))
+            }
         }
         return out
     }
@@ -182,11 +206,16 @@ object LiveEventsSource {
         val site = siteFor(playlistUrl) ?: return emptyList()
         return try {
             val have = existing.mapTo(HashSet()) { norm(it.name) + "|" + norm(it.groupTitle) }
-            val list = withContext(Dispatchers.IO) { parseList(site, download(site.channelsUrl)) }
+            val list = withContext(Dispatchers.IO) { parseList(site, download(bust(site.channelsUrl))) }
             val missing = list
                 .filter { (norm(it.name) + "|" + norm(it.category)) !in have }
                 .distinctBy { norm(it.name) + "|" + norm(it.category) }
                 .take(MAX_DETAIL_FETCHES)
+            PlaybackLog.info(
+                "LIVE-EVENTS",
+                "${site.host}: ${list.size} API channels, ${missing.size} not in the M3U " +
+                    "(categories: ${missing.map { it.category }.distinct().take(8).joinToString()})"
+            )
             if (missing.isEmpty()) return emptyList()
 
             val gate = Semaphore(PARALLEL_REQUESTS)
@@ -195,10 +224,12 @@ object LiveEventsSource {
                     async(Dispatchers.IO) {
                         gate.withPermit {
                             val sources = try {
-                                parseDetail(download(site.detailUrl + java.net.URLEncoder.encode(ch.id, "UTF-8").replace("+", "%20")))
-                            } catch (_: Exception) {
+                                parseDetail(download(bust(site.detailUrl + java.net.URLEncoder.encode(ch.id, "UTF-8").replace("+", "%20"))))
+                            } catch (e: Exception) {
+                                PlaybackLog.warn("LIVE-EVENTS", "'${ch.name}' (${ch.category}) detail failed: ${e.message}")
                                 emptyList()
                             }
+                            if (sources.isEmpty()) PlaybackLog.warn("LIVE-EVENTS", "'${ch.name}' (${ch.category}) has no usable source")
                             ch to sources
                         }
                     }
@@ -229,8 +260,10 @@ object LiveEventsSource {
                     )
                 }
             }
+            PlaybackLog.info("LIVE-EVENTS", "added ${result.size} channels in ${result.map { it.groupTitle }.distinct().size} groups")
             result
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            PlaybackLog.warn("LIVE-EVENTS", "skipped: ${e.javaClass.simpleName}: ${e.message}")
             emptyList()
         }
     }
