@@ -26,7 +26,22 @@ import java.net.URLDecoder
  */
 object LiveEventsSource {
     /** [detailUrl] gets the URL-encoded channel id appended. */
-    class Site(val host: String, val siteUrl: String, val channelsUrl: String, val detailUrl: String, val idPrefix: String)
+    class Site(
+        val host: String,
+        val siteUrl: String,
+        val channelsUrl: String,
+        val detailUrl: String,
+        val idPrefix: String,
+        /**
+         * Only API channels whose category matches this are added. The API lists every channel the site
+         * has (1000+), most of which the curated M3U deliberately leaves out; the dynamic rows are the
+         * ones we want here.
+         */
+        val eventCategory: Regex = DEFAULT_EVENT_CATEGORY
+    )
+
+    // must be declared before SITES: object properties initialize in order
+    private val DEFAULT_EVENT_CATEGORY = Regex("event|sport|match|fixture", RegexOption.IGNORE_CASE)
 
     private val SITES = listOf(
         // LiveTG TV (same data the Vega "LiveTG TV" provider reads)
@@ -208,13 +223,20 @@ object LiveEventsSource {
             val have = existing.mapTo(HashSet()) { norm(it.name) + "|" + norm(it.groupTitle) }
             val list = withContext(Dispatchers.IO) { parseList(site, download(bust(site.channelsUrl))) }
             val missing = list
+                .filter { site.eventCategory.containsMatchIn(it.category) }
                 .filter { (norm(it.name) + "|" + norm(it.category)) !in have }
                 .distinctBy { norm(it.name) + "|" + norm(it.category) }
                 .take(MAX_DETAIL_FETCHES)
             PlaybackLog.info(
                 "LIVE-EVENTS",
-                "${site.host}: ${list.size} API channels, ${missing.size} not in the M3U " +
-                    "(categories: ${missing.map { it.category }.distinct().take(8).joinToString()})"
+                "${site.host}: ${list.size} API channels, categories: " +
+                    list.groupingBy { it.category }.eachCount().entries.sortedByDescending { it.value }
+                        .take(40).joinToString { "${it.key} (${it.value})" }
+            )
+            PlaybackLog.info(
+                "LIVE-EVENTS",
+                "${missing.size} event channels not in the M3U: " +
+                    missing.groupingBy { it.category }.eachCount().entries.joinToString { "${it.key} (${it.value})" }
             )
             if (missing.isEmpty()) return emptyList()
 
