@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
@@ -48,6 +49,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -62,7 +64,18 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.TileMode
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.layer.GraphicsLayer
+import androidx.compose.ui.graphics.layer.drawLayer
+import androidx.compose.ui.graphics.rememberGraphicsLayer
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.runtime.Stable
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
@@ -93,42 +106,94 @@ const val DEFAULT_NAVBAR_OPACITY = 0.7f
 enum class MobileSection { LIVE, MOVIES, SHOWS }
 
 /**
- * Liquid-glass surface: dark tint at [alpha] opacity (so content scrolling underneath stays visible),
- * a soft top-to-bottom light sheen, a light-catching gradient rim (bright top-left, bright bottom-right,
- * dim in between) and a soft drop shadow outside the edge.
+ * The screen content that shows through (and gets blurred behind) the glass surfaces. Attach it to the
+ * content with [glassBackdropSource] and provide it to the navbar / playlist panel with [LocalGlassBackdrop].
  */
-fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): Modifier = this
-    .shadow(
-        elevation = 20.dp,
-        shape = shape,
-        clip = false,
-        ambientColor = Color.Black.copy(alpha = 0.45f),
-        spotColor = Color.Black.copy(alpha = 0.6f)
-    )
-    .clip(shape)
-    .background(Color(0xFF111726).copy(alpha = alpha))
-    .background(
-        Brush.verticalGradient(
-            listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.03f), Color.White.copy(alpha = 0.08f))
-        )
-    )
-    .dropletDepth()
-    .border(
-        1.dp,
-        Brush.linearGradient(
-            listOf(Color.White.copy(alpha = 0.65f), Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.40f))
-        ),
-        shape
-    )
+@Stable
+class GlassBackdrop(val layer: GraphicsLayer) {
+    var origin by mutableStateOf(Offset.Zero)
+}
+
+val LocalGlassBackdrop = compositionLocalOf<GlassBackdrop?> { null }
+
+@Composable
+fun rememberGlassBackdrop(): GlassBackdrop {
+    val layer = rememberGraphicsLayer()
+    return remember(layer) { GlassBackdrop(layer) }
+}
+
+/** Marks this content as the thing the glass blurs: it is drawn normally and also recorded into the backdrop layer. */
+fun Modifier.glassBackdropSource(backdrop: GlassBackdrop): Modifier = this
+    .onGloballyPositioned { backdrop.origin = it.positionInRoot() }
+    .drawWithContent {
+        backdrop.layer.record(size = IntSize(size.width.roundToInt(), size.height.roundToInt())) {
+            this@drawWithContent.drawContent()
+        }
+        drawLayer(backdrop.layer)
+    }
 
 /**
- * Fake 3D volume, drawn behind the content: darker edges that curve away, a shadowed lower belly,
- * a glossy highlight near the top and a thin line of refracted light along the bottom, like a water droplet.
+ * Liquid-glass surface: the content behind it is blurred (Android 12+; older phones get the plain tint),
+ * covered by a dark tint, soft edge shading for depth, a light-catching gradient rim and a drop shadow.
+ * [alpha] is the user's navbar opacity; with the blur on, the tint is lighter so the blurred content shows.
+ */
+@Composable
+fun Modifier.liquidGlass(
+    shape: Shape,
+    alpha: Float = DEFAULT_NAVBAR_OPACITY,
+    blurRadius: Dp = 22.dp
+): Modifier {
+    val backdrop = LocalGlassBackdrop.current
+    val blurLayer = rememberGraphicsLayer()
+    var origin by remember { mutableStateOf(Offset.Zero) }
+    val blurOn = backdrop != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    val tintAlpha = if (blurOn) alpha * 0.6f else alpha
+
+    return this
+        .shadow(
+            elevation = 20.dp,
+            shape = shape,
+            clip = false,
+            ambientColor = Color.Black.copy(alpha = 0.45f),
+            spotColor = Color.Black.copy(alpha = 0.6f)
+        )
+        .clip(shape)
+        .then(
+            if (blurOn && backdrop != null) {
+                Modifier
+                    .onGloballyPositioned { origin = it.positionInRoot() }
+                    .drawBehind {
+                        val r = blurRadius.toPx()
+                        blurLayer.renderEffect = BlurEffect(r, r, TileMode.Clamp)
+                        blurLayer.record(size = IntSize(size.width.roundToInt(), size.height.roundToInt())) {
+                            translate(left = backdrop.origin.x - origin.x, top = backdrop.origin.y - origin.y) {
+                                drawLayer(backdrop.layer)
+                            }
+                        }
+                        drawLayer(blurLayer)
+                    }
+            } else Modifier
+        )
+        .background(Color(0xFF111726).copy(alpha = tintAlpha))
+        .background(
+            Brush.verticalGradient(
+                listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f), Color.White.copy(alpha = 0.05f))
+            )
+        )
+        .dropletDepth()
+        .border(
+            1.dp,
+            Brush.linearGradient(
+                listOf(Color.White.copy(alpha = 0.65f), Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.40f))
+            ),
+            shape
+        )
+}
+
+/**
+ * Fake 3D volume, drawn behind the content: edges that darken as they curve away and a shadowed lower belly.
  */
 private fun Modifier.dropletDepth(strength: Float = 1f): Modifier = this.drawBehind {
-    val w = size.width
-    val h = size.height
-    // curved edges: darker towards the left / right ends
     drawRect(
         Brush.horizontalGradient(
             0f to Color.Black.copy(alpha = 0.22f * strength),
@@ -137,35 +202,11 @@ private fun Modifier.dropletDepth(strength: Float = 1f): Modifier = this.drawBeh
             1f to Color.Black.copy(alpha = 0.22f * strength)
         )
     )
-    // lower belly shadow
     drawRect(
         Brush.verticalGradient(
             0.5f to Color.Transparent,
             1f to Color.Black.copy(alpha = 0.30f * strength)
         )
-    )
-    // glossy highlight on the upper half
-    drawRoundRect(
-        brush = Brush.verticalGradient(
-            colors = listOf(Color.White.copy(alpha = 0.32f * strength), Color.White.copy(alpha = 0.02f * strength)),
-            startY = h * 0.05f,
-            endY = h * 0.5f
-        ),
-        topLeft = Offset(w * 0.07f, h * 0.06f),
-        size = Size(w * 0.86f, h * 0.40f),
-        cornerRadius = CornerRadius(h * 0.2f)
-    )
-    // refracted light along the bottom edge
-    val line = 1.5.dp.toPx()
-    drawRoundRect(
-        brush = Brush.horizontalGradient(
-            0f to Color.Transparent,
-            0.5f to Color.White.copy(alpha = 0.34f * strength),
-            1f to Color.Transparent
-        ),
-        topLeft = Offset(w * 0.14f, h - line - 2.5.dp.toPx()),
-        size = Size(w * 0.72f, line),
-        cornerRadius = CornerRadius(line)
     )
 }
 
@@ -316,7 +357,7 @@ fun MobileGlassNavBar(
                     .background(AccentCyan.copy(alpha = 0.20f))
                     .background(
                         Brush.verticalGradient(
-                            listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.04f))
+                            listOf(Color.White.copy(alpha = 0.10f), Color.White.copy(alpha = 0.02f))
                         )
                     )
                     .dropletDepth(0.9f)
