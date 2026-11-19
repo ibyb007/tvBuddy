@@ -122,12 +122,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedCategory = MutableStateFlow(prefs.getString(KEY_MOBILE_CATEGORY, null)?.takeIf { it.isNotBlank() } ?: "All")
     val selectedCategory: StateFlow<String> = _selectedCategory.asStateFlow()
 
-    /** Phone mode: opacity of the floating navbar and its playlist panel (0.1 - 1.0), saved across launches. */
-    private val _navbarOpacity = MutableStateFlow(prefs.getFloat("navbar_opacity", 0.7f).coerceIn(0.1f, 1f))
+    /** Phone mode: opacity of the floating navbar and its playlist panel (0.0 - 1.0; also drives its blur), saved across launches. */
+    private val _navbarOpacity = MutableStateFlow(prefs.getFloat("navbar_opacity", 0.7f).coerceIn(0f, 1f))
     val navbarOpacity: StateFlow<Float> = _navbarOpacity.asStateFlow()
 
     fun setNavbarOpacity(value: Float) {
-        val v = value.coerceIn(0.1f, 1f)
+        val v = value.coerceIn(0f, 1f)
         _navbarOpacity.value = v
         prefs.edit().putFloat("navbar_opacity", v).apply()
     }
@@ -816,8 +816,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deletePlaylist(playlist: PlaylistEntity) {
         viewModelScope.launch {
-            repository.deletePlaylist(playlist)
-            _uiMessage.value = UiMessage(text = "Deleted playlist: ${playlist.name}")
+            // Let go of everything that still points at this playlist BEFORE its rows disappear,
+            // so no screen / player / saved selection is left looking at data that no longer exists.
+            if (currentChannel.value?.playlistId == playlist.id) closePlayer()
+            if (_mobilePlaylistId.value == playlist.id) selectMobilePlaylist(null)
+            if (_tvSelection.value.playlistId == playlist.id) selectTvGroup(TvGroupSelection())
+            if (_playContext.value.playlistId == playlist.id) setPlayContext(TvGroupSelection())
+            runCatching { repository.deletePlaylist(playlist) }
+                .onSuccess { _uiMessage.value = UiMessage(text = "Deleted playlist: ${playlist.name}") }
+                .onFailure { _uiMessage.value = UiMessage(text = "Could not delete playlist: ${it.message ?: "unknown error"}") }
         }
     }
 
