@@ -1,6 +1,7 @@
 package com.example.data.parser
 
 import com.example.data.local.entity.ChannelEntity
+import com.example.data.util.LogoUrl
 import com.example.player.PlaybackLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -83,14 +84,26 @@ object LiveEventsSource {
 
     private fun norm(s: String) = s.trim().lowercase().replace(Regex("\\s+"), " ")
 
-    private fun absoluteLogo(site: Site, raw: String?): String? {
-        val v = raw?.trim().orEmpty()
-        return when {
-            v.isEmpty() -> null
-            v.startsWith("http", ignoreCase = true) -> v
-            v.startsWith("/") -> site.siteUrl + v
-            else -> null
+    private val IMAGE_KEYS = listOf("logo", "image", "thumbnail", "thumb", "poster", "banner", "icon", "cover", "logoUrl", "imageUrl")
+
+    /** First usable image URL in a channel/event JSON object, whatever the field is called. */
+    private fun imageOf(site: Site, o: JSONObject): String? {
+        for (key in IMAGE_KEYS) {
+            val raw = o.opt(key) as? String ?: continue
+            LogoUrl.normalize(raw, site.siteUrl)?.let { return it }
         }
+        return null
+    }
+
+    /**
+     * Event artwork is often SVG / WebP, hotlink-protected or oversized, which the TV's image loader cannot
+     * always show. The Vega provider sends every logo through the same image proxy (wsrv.nl) for that reason;
+     * it re-encodes to PNG at a fixed size. Embedded data: images are left alone.
+     */
+    private fun displayLogo(url: String?): String? {
+        if (url.isNullOrBlank()) return null
+        if (!url.startsWith("http", ignoreCase = true)) return url
+        return "https://wsrv.nl/?url=" + java.net.URLEncoder.encode(url, "UTF-8") + "&w=400&h=300&fit=contain&output=png"
     }
 
     private class ApiChannel(val id: String, val name: String, val category: String, val logo: String?)
@@ -113,7 +126,7 @@ object LiveEventsSource {
                 val name = (o.optString("name", "").ifBlank { o.optString("title", "") }).trim()
                 if (id.isEmpty() || name.isEmpty() || id == "null") continue
                 val category = o.optString("category", "").trim().ifEmpty { defaultCategory }
-                out.add(ApiChannel(id, name, category, absoluteLogo(site, o.optString("logo", o.optString("image", "")))))
+                out.add(ApiChannel(id, name, category, imageOf(site, o)))
             }
         }
         return out
@@ -169,9 +182,12 @@ object LiveEventsSource {
 
     private class Source(val url: String, val headers: Map<String, String>, val drm: Drm?)
 
-    private fun parseDetail(json: String): List<Source> {
+    private class Detail(val logo: String?, val sources: List<Source>)
+
+    private fun parseDetail(site: Site, json: String): Detail {
         val root = JSONObject(json)
-        val sources = root.optJSONArray("sources") ?: return emptyList()
+        val logo = imageOf(site, root)
+        val sources = root.optJSONArray("sources") ?: return Detail(logo, emptyList())
         val baseHeaders = LinkedHashMap<String, String>()
         readHeaders(root.optJSONObject("headers"), baseHeaders)
         val baseDrm = runCatching { parseDrm(root.opt("drm")) }
@@ -207,7 +223,7 @@ object LiveEventsSource {
             }
             out.add(Source(url, headers, parsedDrm))
         }
-        return out
+        return Detail(logo, out)
     }
 
     /** Channels of the site's API that [existing] (the parsed M3U) lacks, as ready-to-store entities. */
@@ -241,18 +257,18 @@ object LiveEventsSource {
             if (missing.isEmpty()) return emptyList()
 
             val gate = Semaphore(PARALLEL_REQUESTS)
-            val details: List<Pair<ApiChannel, List<Source>>> = coroutineScope {
+            val details: List<Pair<ApiChannel, Detail>> = coroutineScope {
                 missing.map { ch ->
                     async(Dispatchers.IO) {
                         gate.withPermit {
-                            val sources = try {
-                                parseDetail(download(bust(site.detailUrl + java.net.URLEncoder.encode(ch.id, "UTF-8").replace("+", "%20"))))
+                            val detail = try {
+                                parseDetail(site, download(bust(site.detailUrl + java.net.URLEncoder.encode(ch.id, "UTF-8").replace("+", "%20"))))
                             } catch (e: Exception) {
                                 PlaybackLog.warn("LIVE-EVENTS", "'${ch.name}' (${ch.category}) detail failed: ${e.message}")
-                                emptyList()
+                                Detail(null, emptyList())
                             }
-                            if (sources.isEmpty()) PlaybackLog.warn("LIVE-EVENTS", "'${ch.name}' (${ch.category}) has no usable source")
-                            ch to sources
+                            if (detail.sources.isEmpty()) PlaybackLog.warn("LIVE-EVENTS", "'${ch.name}' (${ch.category}) has no usable source")
+                            ch to detail
                         }
                     }
                 }.awaitAll()
@@ -260,8 +276,9 @@ object LiveEventsSource {
 
             val result = ArrayList<ChannelEntity>()
             var number = startNumber
-            for ((ch, sources) in details) {
-                val usable = sources.distinctBy { it.url }.take(MAX_SOURCES_PER_CHANNEL)
+            for ((ch, detail) in details) {
+                val logo = displayLogo(ch.logo ?: detail.logo)
+                val usable = detail.sources.distinctBy { it.url }.take(MAX_SOURCES_PER_CHANNEL)
                 usable.forEachIndexed { index, s ->
                     val headers = LinkedHashMap(s.headers)
                     val ua = headers.keys.firstOrNull { it.equals("User-Agent", ignoreCase = true) }?.let { headers.remove(it) }
@@ -271,7 +288,7 @@ object LiveEventsSource {
                             streamId = "${site.idPrefix}:${ch.id}" + if (index > 0) ":${index + 1}" else "",
                             name = if (index > 0) "${ch.name} (Source ${index + 1})" else ch.name,
                             streamUrl = s.url,
-                            logoUrl = ch.logo,
+                            logoUrl = logo,
                             groupTitle = ch.category,
                             channelNumber = number++,
                             drmType = if (s.drm != null) "CLEARKEY" else null,
@@ -282,6 +299,11 @@ object LiveEventsSource {
                     )
                 }
             }
+            PlaybackLog.info(
+                "LIVE-EVENTS",
+                "logos: ${result.count { it.logoUrl != null }}/${result.size} have one; e.g. " +
+                    result.mapNotNull { it.logoUrl }.take(2).joinToString { it.take(160) }
+            )
             PlaybackLog.info("LIVE-EVENTS", "added ${result.size} channels in ${result.map { it.groupTitle }.distinct().size} groups")
             result
         } catch (e: Exception) {
