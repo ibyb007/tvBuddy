@@ -245,6 +245,25 @@ class TvBuddyPlayerManager(
         mainHandler.postDelayed(boostRebuildRunnable, 1200L)
         mainHandler.postDelayed(boostRebuildRunnable, 2500L)
         mainHandler.postDelayed(boostRefreshRunnable, 4000L)
+        if (isTelevision()) {
+            // TV: HDMI / ARC / the audio HAL often settles several seconds after launch and drops or detaches effects
+            // created before that. Keep re-applying while it settles (same call a manual mode change makes).
+            mainHandler.postDelayed(boostRebuildRunnable, 6000L)
+            mainHandler.postDelayed(boostRefreshRunnable, 10_000L)
+            mainHandler.postDelayed(boostRefreshRunnable, 16_000L)
+            mainHandler.postDelayed(boostRefreshRunnable, 30_000L)
+        }
+    }
+
+    /** An output device appeared / went away (HDMI, ARC, Bluetooth): effects must be bound to the new route again. */
+    private fun onAudioRouteChanged() {
+        if (_audioBoostProfile.value == AudioBoostProfile.OFF || exoPlayer == null) return
+        scheduleBoostRebuild()
+    }
+
+    private val audioDeviceCallback = object : android.media.AudioDeviceCallback() {
+        override fun onAudioDevicesAdded(addedDevices: Array<out android.media.AudioDeviceInfo>?) = onAudioRouteChanged()
+        override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>?) = onAudioRouteChanged()
     }
 
     /** True until the effects were rebuilt once for the current player / audio session (see [scheduleBoostRebuild]). */
@@ -585,6 +604,14 @@ class TvBuddyPlayerManager(
                         PlaybackLog.error("DRM", "DRM session manager error", error)
                     }
 
+                    override fun onAudioTrackInitialized(
+                        eventTime: AnalyticsListener.EventTime,
+                        audioTrackConfig: androidx.media3.exoplayer.audio.AudioSink.AudioTrackConfig
+                    ) {
+                        // the track the effects must sit on now exists (a new one is made on every format change)
+                        if (isTelevision() && _audioBoostProfile.value != AudioBoostProfile.OFF) scheduleBoostRebuild()
+                    }
+
                     override fun onAudioSinkError(eventTime: AnalyticsListener.EventTime, audioSinkError: Exception) {
                         PlaybackLog.error("AUDIO", "Audio sink error", audioSinkError)
                     }
@@ -606,6 +633,16 @@ class TvBuddyPlayerManager(
     // Like TiviMate: bitrate only when the stream's video format declares it (no guessing from
     // network speed); frame rate from the format, else measured from the frames actually rendered.
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    init {
+        // TV only: re-apply the boost when the audio route changes after launch
+        if (isTelevision()) {
+            runCatching {
+                (context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager)
+                    ?.registerAudioDeviceCallback(audioDeviceCallback, mainHandler)
+            }
+        }
+    }
     private var declaredFps = false
     private var fpsLastCount = -1
     private var fpsLastTime = 0L
@@ -1228,6 +1265,11 @@ class TvBuddyPlayerManager(
         cancelRetry()
         mainHandler.removeCallbacks(fpsRunnable)
         mainHandler.removeCallbacks(boostRebuildRunnable)
+        mainHandler.removeCallbacks(boostRefreshRunnable)
+        runCatching {
+            (context.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager)
+                ?.unregisterAudioDeviceCallback(audioDeviceCallback)
+        }
         mainHandler.removeCallbacks(stallRunnable)
         exoPlayer?.stop()
         exoPlayer?.release()
