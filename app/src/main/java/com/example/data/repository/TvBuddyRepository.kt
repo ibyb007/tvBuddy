@@ -1272,7 +1272,7 @@ class TvBuddyRepository(
                     // dynamic rows (live sports events ...) that some sites only publish in their API, not in the M3U
                     if (LiveEventsSource.isSupportedPlaylist(pl.sourceUrl)) {
                         parsed + LiveEventsSource.fetchMissingChannels(pl.sourceUrl, pl.id, parsed, parsed.size + 1) {
-                            downloadText(it, mapOf("User-Agent" to ua))
+                            downloadText(it, mapOf("User-Agent" to ua, "Cache-Control" to "no-cache", "Pragma" to "no-cache"))
                         }
                     } else parsed
                 }
@@ -1682,7 +1682,7 @@ class TvBuddyRepository(
             // dynamic rows (live sports events ...) that some sites only publish in their API, not in the M3U
             val channels = if (!isRawContent && LiveEventsSource.isSupportedPlaylist(sourceUrlOrContent)) {
                 m3uChannels + LiveEventsSource.fetchMissingChannels(sourceUrlOrContent, playlistId, m3uChannels, m3uChannels.size + 1) {
-                    downloadText(it, mapOf("User-Agent" to spoof.getUserAgent()))
+                    downloadText(it, mapOf("User-Agent" to spoof.getUserAgent(), "Cache-Control" to "no-cache", "Pragma" to "no-cache"))
                 }
             } else m3uChannels
 
