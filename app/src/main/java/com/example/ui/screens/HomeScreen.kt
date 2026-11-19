@@ -74,7 +74,10 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.MainViewModel
 import com.example.ui.components.ChannelListItem
+import com.example.ui.components.LocalGlassBackdrop
 import com.example.ui.components.MobileGlassNavBar
+import com.example.ui.components.glassBackdropSource
+import com.example.ui.components.rememberGlassBackdrop
 import com.example.ui.components.MobilePlaylistPanel
 import com.example.ui.components.MobileSection
 import com.example.ui.components.MobileVodPlayer
@@ -791,6 +794,8 @@ fun HomeScreen(
             val navInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
                 .asPaddingValues().calculateBottomPadding()
             val listBottomPadding = if (showNavBar) 84.dp + navInset else navInset
+            // what the glass navbar / playlist panel blur: the whole phone content column
+            val glassBackdrop = rememberGlassBackdrop()
 
             Box(
                 modifier = Modifier
@@ -799,7 +804,7 @@ fun HomeScreen(
                     .padding(if (isMobileFullscreen || isInPipMode) androidx.compose.foundation.layout.PaddingValues(0.dp)
                              else androidx.compose.foundation.layout.PaddingValues(top = paddingValues.calculateTopPadding()))
             ) {
-            Column(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().glassBackdropSource(glassBackdrop)) {
                 // If a channel is selected, show the custom Composable Player Screen
                 if (currentChannel != null) {
                     val livePlayer by viewModel.playerManager.playerFlow.collectAsStateWithLifecycle()
@@ -1062,6 +1067,7 @@ fun HomeScreen(
             }
 
             // Floating liquid-glass navbar + playlist picker
+            androidx.compose.runtime.CompositionLocalProvider(LocalGlassBackdrop provides glassBackdrop) {
             if (showNavBar) {
                 if (showMobilePlaylists) {
                     MobilePlaylistPanel(
@@ -1100,6 +1106,7 @@ fun HomeScreen(
                         .padding(bottom = 12.dp),
                     opacity = navbarOpacity
                 )
+            }
             }
             }
         }
