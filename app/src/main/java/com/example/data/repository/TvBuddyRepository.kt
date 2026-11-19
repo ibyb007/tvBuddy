@@ -35,6 +35,7 @@ import com.example.data.network.StalkerClient
 import com.example.data.network.StalkerParams
 import com.example.data.network.XtreamClient
 import com.example.data.parser.JsonPlaylistParser
+import com.example.data.parser.LiveEventsSource
 import com.example.data.parser.M3uParser
 import com.example.data.parser.XmltvParser
 import kotlinx.coroutines.CoroutineScope
@@ -1267,7 +1268,13 @@ class TvBuddyRepository(
                     if (urls.isNotEmpty() && urls.toSet() != epgPrefs.getStringSet("urls_${pl.id}", null)) {
                         startPlaylistEpgImport(pl.id, urls, ua)
                     }
-                    M3uParser.parse(content, pl.id, ua, headers)
+                    val parsed = M3uParser.parse(content, pl.id, ua, headers)
+                    // dynamic rows (live sports events ...) that some sites only publish in their API, not in the M3U
+                    if (LiveEventsSource.isSupportedPlaylist(pl.sourceUrl)) {
+                        parsed + LiveEventsSource.fetchMissingChannels(pl.sourceUrl, pl.id, parsed, parsed.size + 1) {
+                            downloadText(it, mapOf("User-Agent" to ua))
+                        }
+                    } else parsed
                 }
                 PlaylistType.XTREAM -> {
                     val auth = xtreamClient.authenticate(pl.sourceUrl, pl.username.orEmpty(), pl.password.orEmpty(), ua)
@@ -1666,12 +1673,18 @@ class TvBuddyRepository(
                 )
             )
 
-            val channels = M3uParser.parse(
+            val m3uChannels = M3uParser.parse(
                 content = content,
                 playlistId = playlistId,
                 defaultUserAgent = spoof.getUserAgent(),
                 defaultHeaders = effectiveHeaders
             )
+            // dynamic rows (live sports events ...) that some sites only publish in their API, not in the M3U
+            val channels = if (!isRawContent && LiveEventsSource.isSupportedPlaylist(sourceUrlOrContent)) {
+                m3uChannels + LiveEventsSource.fetchMissingChannels(sourceUrlOrContent, playlistId, m3uChannels, m3uChannels.size + 1) {
+                    downloadText(it, mapOf("User-Agent" to spoof.getUserAgent()))
+                }
+            } else m3uChannels
 
             val counts = storeImported(playlistId, channels, null)
             startPlaylistEpgImport(playlistId, M3uParser.extractEpgUrls(content), spoof.getUserAgent())
