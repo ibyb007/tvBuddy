@@ -1,6 +1,8 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -47,44 +49,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.interaction.collectIsPressedAsState
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.CornerBasedShape
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateMapOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawOutline
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInParent
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.IntOffset
-import android.os.Build
-import android.view.HapticFeedbackConstants
-import com.example.ui.backdrop.backdrops.LayerBackdrop
-import com.example.ui.backdrop.drawBackdrop
-import com.example.ui.backdrop.effects.blur
-import com.example.ui.backdrop.effects.colorControls
-import com.example.ui.backdrop.effects.lens
-import com.example.ui.backdrop.highlight.Highlight
-import com.example.ui.backdrop.isRenderEffectSupported
-import com.example.ui.backdrop.shadow.Shadow
-import kotlinx.coroutines.launch
-import kotlin.math.abs
-import kotlin.math.roundToInt
 import com.example.data.local.entity.PlaylistEntity
 import com.example.ui.theme.AccentCyan
 
@@ -95,131 +59,13 @@ const val DEFAULT_NAVBAR_OPACITY = 0.7f
 enum class MobileSection { LIVE, MOVIES, SHOWS }
 
 /**
- * Liquid-glass surface: a frosted dark tint at [alpha] opacity, a soft specular sheen on the top edge,
- * a faint cyan glow along the bottom edge (light refracting through the lower rim), a diagonal
- * "light catch" rim (bright top-left, dim bottom-right) and a soft drop shadow so the bar floats.
- * List items scrolling underneath stay visible through it.
+ * Glass surface: a flat dark tint at [alpha] opacity with a thin plain rim, so list items scrolling
+ * underneath stay visible through it.
  */
 fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): Modifier = this
-    .shadow(
-        elevation = 14.dp,
-        shape = shape,
-        clip = false,
-        ambientColor = Color.Black.copy(alpha = 0.35f),
-        spotColor = Color.Black.copy(alpha = 0.45f)
-    )
     .clip(shape)
-    .background(
-        Brush.verticalGradient(
-            listOf(
-                Color(0xFF1B2540).copy(alpha = alpha),
-                Color(0xFF0B101C).copy(alpha = alpha)
-            )
-        )
-    )
-    .drawWithContent {
-        val w = size.width
-        val h = size.height
-        // specular sheen: bright cap on the top half that fades out
-        drawRect(
-            brush = Brush.verticalGradient(
-                0f to Color.White.copy(alpha = 0.17f),
-                0.45f to Color.White.copy(alpha = 0.03f),
-                1f to Color.Transparent,
-                startY = 0f,
-                endY = h
-            )
-        )
-        // light source glint near the top-left
-        drawRect(
-            brush = Brush.radialGradient(
-                colors = listOf(Color.White.copy(alpha = 0.16f), Color.Transparent),
-                center = Offset(w * 0.22f, 0f),
-                radius = w * 0.45f
-            )
-        )
-        // refracted glow along the bottom rim
-        drawRect(
-            brush = Brush.verticalGradient(
-                0f to Color.Transparent,
-                1f to AccentCyan.copy(alpha = 0.10f),
-                startY = h * 0.55f,
-                endY = h
-            )
-        )
-        drawContent()
-        // diagonal rim: catches light top-left and bottom-right, dark in between
-        val outline = shape.createOutline(size, layoutDirection, this)
-        drawOutline(
-            outline = outline,
-            brush = Brush.linearGradient(
-                0f to Color.White.copy(alpha = 0.60f),
-                0.35f to Color.White.copy(alpha = 0.10f),
-                0.65f to Color.White.copy(alpha = 0.04f),
-                1f to Color.White.copy(alpha = 0.32f),
-                start = Offset.Zero,
-                end = Offset(w, h)
-            ),
-            style = Stroke(width = 1.3.dp.toPx())
-        )
-    }
-
-private val NavPillShape = RoundedCornerShape(percent = 50)
-
-/** Resolution the backdrop is processed at; the blur hides the upscaling. Pixel sizes are scaled by it. */
-private const val GLASS_RESOLUTION_SCALE = 0.33f
-
-/**
- * Real liquid glass (Android 12+): blurs and saturates whatever is behind it in [backdrop], bends the
- * light along the rim (lens refraction with chromatic aberration on Android 13+), and adds a directional
- * edge highlight and a soft shadow. [alpha] is the Navbar opacity setting: it only sets how strongly the
- * dark tint covers the blurred background.
- */
-@Composable
-fun Modifier.backdropGlass(backdrop: LayerBackdrop, shape: CornerBasedShape, alpha: Float): Modifier {
-    val density = LocalDensity.current
-    val blurPx = with(density) { 8.dp.toPx() } * GLASS_RESOLUTION_SCALE
-    val lensHeightPx = with(density) { 24.dp.toPx() } * GLASS_RESOLUTION_SCALE
-    val lensAmountPx = with(density) { 24.dp.toPx() } * GLASS_RESOLUTION_SCALE
-    val tint = Color(0xFF0E1424).copy(alpha = (alpha * alpha).coerceIn(0.1f, 1f))
-    return drawBackdrop(
-        backdrop = backdrop,
-        shape = { shape },
-        effects = {
-            colorControls(saturation = 1.5f)
-            blur(blurPx)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                lens(
-                    refractionHeight = lensHeightPx,
-                    refractionAmount = lensAmountPx,
-                    depthEffect = true,
-                    chromaticAberration = true
-                )
-            }
-        },
-        highlight = { Highlight.Default },
-        shadow = { Shadow.Default },
-        onDrawSurface = { drawRect(color = tint, size = size) },
-        backdropScale = GLASS_RESOLUTION_SCALE
-    )
-}
-
-/** Backdrop glass when [backdrop] is given and the phone supports it, else the flat [liquidGlass] look. */
-@Composable
-fun Modifier.glassSurface(shape: CornerBasedShape, alpha: Float, backdrop: LayerBackdrop?): Modifier =
-    if (backdrop != null && isRenderEffectSupported()) backdropGlass(backdrop, shape, alpha)
-    else liquidGlass(shape, alpha)
-
-/** Layout of one nav item inside the bar, used to slide the glass lens under the selected item. */
-private data class NavBounds(val x: Float, val width: Float, val height: Float)
-
-private class NavEntry(
-    val key: String,
-    val label: String,
-    val icon: ImageVector,
-    val selected: Boolean,
-    val onClick: () -> Unit
-)
+    .background(Color(0xFF111726).copy(alpha = alpha))
+    .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)), shape)   // flat: no gradient sheen / rim
 
 /** Floating bottom bar: TV · Movies · Shows (VOD only) · Playlists · Settings. */
 @Composable
@@ -233,163 +79,60 @@ fun MobileGlassNavBar(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     opacity: Float = DEFAULT_NAVBAR_OPACITY,
-    settingsOpen: Boolean = false,
-    /** Recorded list content to blur behind the bar. Null (or Android 11 and older) keeps the flat glass. */
-    backdrop: LayerBackdrop? = null
+    settingsOpen: Boolean = false
 ) {
-    val sectionActive = !playlistsOpen && !settingsOpen
-    val entries = buildList {
-        add(NavEntry("tv", "TV", Icons.Default.Tv, section == MobileSection.LIVE && sectionActive) {
-            onSelectSection(MobileSection.LIVE)
-        })
-        if (hasMovies) {
-            add(NavEntry("movies", "Movies", Icons.Default.Movie, section == MobileSection.MOVIES && sectionActive) {
-                onSelectSection(MobileSection.MOVIES)
-            })
-        }
-        if (hasShows) {
-            add(NavEntry("shows", "Shows", Icons.Default.VideoLibrary, section == MobileSection.SHOWS && sectionActive) {
-                onSelectSection(MobileSection.SHOWS)
-            })
-        }
-        add(NavEntry("playlists", "Playlists", Icons.Default.FormatListBulleted, playlistsOpen, onTogglePlaylists))
-        add(NavEntry("settings", "Settings", Icons.Default.Settings, settingsOpen, onOpenSettings))
-    }
-
-    val density = LocalDensity.current
-    val view = LocalView.current
-    val bounds = remember { mutableStateMapOf<String, NavBounds>() }
-    val target = entries.firstOrNull { it.selected }?.let { bounds[it.key] }
-
-    // The lens glides to the selected item. Position and width use different springs, so it
-    // stretches slightly while travelling and settles with a small overshoot (liquid feel).
-    val lensX = remember { Animatable(0f) }
-    val lensW = remember { Animatable(0f) }
-    var lensPlaced by remember { mutableStateOf(false) }
-    LaunchedEffect(target) {
-        if (target == null) return@LaunchedEffect
-        if (!lensPlaced) {
-            lensX.snapTo(target.x)
-            lensW.snapTo(target.width)
-            lensPlaced = true
-        } else {
-            launch { lensX.animateTo(target.x, spring(dampingRatio = 0.68f, stiffness = 420f)) }
-            launch { lensW.animateTo(target.width, spring(dampingRatio = 0.8f, stiffness = 300f)) }
-        }
-    }
-
-    Box(
+    Row(
         modifier = modifier
-            .glassSurface(NavPillShape, opacity, backdrop)
-            .padding(horizontal = 5.dp, vertical = 4.dp)
+            .liquidGlass(RoundedCornerShape(26.dp), opacity)
+            .padding(horizontal = 6.dp, vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        if (target != null && lensPlaced) {
-            val lensShape = CircleShape
-            Box(
-                modifier = Modifier
-                    .offset { IntOffset(lensX.value.roundToInt(), 0) }
-                    .width(with(density) { lensW.value.toDp() })
-                    .height(with(density) { target.height.toDp() })
-                    .graphicsLayer {
-                        val lag = (abs(target.x - lensX.value) / target.width).coerceIn(0f, 1f)
-                        scaleX = 1f + lag * 0.16f
-                        scaleY = 1f - lag * 0.08f
-                    }
-                    .clip(lensShape)
-                    .background(
-                        Brush.verticalGradient(
-                            listOf(AccentCyan.copy(alpha = 0.30f), AccentCyan.copy(alpha = 0.12f))
-                        )
-                    )
-                    .drawBehind {
-                        // soft highlight on the upper half of the lens
-                        drawRect(
-                            brush = Brush.verticalGradient(
-                                0f to Color.White.copy(alpha = 0.22f),
-                                1f to Color.Transparent,
-                                startY = 0f,
-                                endY = size.height * 0.55f
-                            )
-                        )
-                    }
-                    .border(
-                        width = 1.dp,
-                        brush = Brush.linearGradient(
-                            listOf(
-                                Color.White.copy(alpha = 0.55f),
-                                Color.White.copy(alpha = 0.08f),
-                                Color.White.copy(alpha = 0.30f)
-                            )
-                        ),
-                        shape = lensShape
-                    )
-            )
+        NavItem("TV", Icons.Default.Tv, selected = section == MobileSection.LIVE && !playlistsOpen && !settingsOpen) {
+            onSelectSection(MobileSection.LIVE)
         }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            entries.forEach { e ->
-                NavItem(
-                    label = e.label,
-                    icon = e.icon,
-                    selected = e.selected,
-                    onClick = {
-                        if (!e.selected) view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
-                        e.onClick()
-                    },
-                    modifier = Modifier.onGloballyPositioned {
-                        val b = NavBounds(it.positionInParent().x, it.size.width.toFloat(), it.size.height.toFloat())
-                        if (bounds[e.key] != b) bounds[e.key] = b
-                    }
-                )
+        if (hasMovies) {
+            NavItem("Movies", Icons.Default.Movie, selected = section == MobileSection.MOVIES && !playlistsOpen && !settingsOpen) {
+                onSelectSection(MobileSection.MOVIES)
             }
         }
+        if (hasShows) {
+            NavItem("Shows", Icons.Default.VideoLibrary, selected = section == MobileSection.SHOWS && !playlistsOpen && !settingsOpen) {
+                onSelectSection(MobileSection.SHOWS)
+            }
+        }
+        NavItem("Playlists", Icons.Default.FormatListBulleted, selected = playlistsOpen, onClick = onTogglePlaylists)
+        NavItem("Settings", Icons.Default.Settings, selected = settingsOpen, onClick = onOpenSettings)
     }
 }
 
 @Composable
-private fun NavItem(
-    label: String,
-    icon: ImageVector,
-    selected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val tint by animateColorAsState(
-        if (selected) Color.White else Color.White.copy(alpha = 0.72f),
-        label = "navTint"
-    )
-    val iconTint by animateColorAsState(
-        if (selected) AccentCyan else Color.White.copy(alpha = 0.78f),
-        label = "navIconTint"
-    )
-    val source = remember { MutableInteractionSource() }
-    val pressed by source.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.9f else if (selected) 1.06f else 1f,
-        animationSpec = spring(dampingRatio = 0.55f, stiffness = 500f),
-        label = "navScale"
-    )
+private fun NavItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
+    val tint by animateColorAsState(if (selected) AccentCyan else Color.White.copy(alpha = 0.85f), label = "navTint")
+    val pill by animateColorAsState(if (selected) AccentCyan.copy(alpha = 0.22f) else Color.Transparent, label = "navPill")
     Column(
-        modifier = modifier
-            .widthIn(min = 58.dp)
-            .clip(CircleShape)
-            .clickable(interactionSource = source, indication = null, onClick = onClick)
-            .padding(horizontal = 6.dp, vertical = 5.dp),
+        modifier = Modifier
+            .widthIn(min = 52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 4.dp, vertical = 3.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = iconTint,
+        // slim indicator: only a small pill behind the icon, not the whole item
+        Box(
             modifier = Modifier
-                .size(21.dp)
-                .graphicsLayer { scaleX = scale; scaleY = scale }
-        )
-        Spacer(Modifier.height(2.dp))
+                .size(width = 40.dp, height = 24.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(pill),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(19.dp))
+        }
         Text(
             text = label,
             color = tint,
             fontSize = 9.5.sp,
-            fontWeight = FontWeight.SemiBold,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
             maxLines = 1
         )
     }
@@ -409,8 +152,7 @@ fun MobilePlaylistPanel(
     onAddPlaylist: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    opacity: Float = DEFAULT_NAVBAR_OPACITY,
-    backdrop: LayerBackdrop? = null
+    opacity: Float = DEFAULT_NAVBAR_OPACITY
 ) {
     BackHandler(onBack = onDismiss)
     Box(
@@ -428,7 +170,7 @@ fun MobilePlaylistPanel(
                 .navigationBarsPadding()
                 .padding(bottom = 76.dp)
                 .width(176.dp)
-                .glassSurface(RoundedCornerShape(20.dp), opacity, backdrop)
+                .liquidGlass(RoundedCornerShape(20.dp), opacity)
                 // swallow taps inside the panel so they don't reach the scrim
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
