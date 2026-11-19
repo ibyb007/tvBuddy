@@ -1,13 +1,22 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,12 +28,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -37,20 +47,38 @@ import androidx.compose.material.icons.filled.VideoLibrary
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.local.entity.PlaylistEntity
 import com.example.ui.theme.AccentCyan
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /** Default opacity of the glass bar and the playlist panel (changeable in Settings on the phone). */
 const val DEFAULT_NAVBAR_OPACITY = 0.7f
@@ -59,15 +87,49 @@ const val DEFAULT_NAVBAR_OPACITY = 0.7f
 enum class MobileSection { LIVE, MOVIES, SHOWS }
 
 /**
- * Glass surface: a flat dark tint at [alpha] opacity with a thin plain rim, so list items scrolling
- * underneath stay visible through it.
+ * Liquid-glass surface: dark tint at [alpha] opacity (so content scrolling underneath stays visible),
+ * a soft top-to-bottom light sheen, a light-catching gradient rim (bright top-left, bright bottom-right,
+ * dim in between) and a soft drop shadow outside the edge.
  */
 fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): Modifier = this
+    .shadow(
+        elevation = 14.dp,
+        shape = shape,
+        clip = false,
+        ambientColor = Color.Black.copy(alpha = 0.35f),
+        spotColor = Color.Black.copy(alpha = 0.45f)
+    )
     .clip(shape)
     .background(Color(0xFF111726).copy(alpha = alpha))
-    .border(BorderStroke(1.dp, Color.White.copy(alpha = 0.12f)), shape)   // flat: no gradient sheen / rim
+    .background(
+        Brush.verticalGradient(
+            listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.03f), Color.White.copy(alpha = 0.08f))
+        )
+    )
+    .border(
+        1.dp,
+        Brush.linearGradient(
+            listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.32f))
+        ),
+        shape
+    )
 
-/** Floating bottom bar: TV · Movies · Shows (VOD only) · Playlists · Settings. */
+private class NavEntry(
+    val label: String,
+    val icon: ImageVector,
+    val selected: Boolean,
+    /** icon starts rotated by this many degrees when it becomes active, then springs back */
+    val fromRotation: Float,
+    /** icon starts this many dp lower when it becomes active, then bounces up */
+    val fromLift: Float,
+    val onClick: () -> Unit
+)
+
+/**
+ * Floating bottom bar: TV · Movies · Shows (VOD only) · Playlists · Settings.
+ * The active item sits in a lighter glass "lens" that springs between items and reveals its label.
+ * You can also press and drag across the bar: the lens follows the finger and selects on release.
+ */
 @Composable
 fun MobileGlassNavBar(
     section: MobileSection,
@@ -81,60 +143,200 @@ fun MobileGlassNavBar(
     opacity: Float = DEFAULT_NAVBAR_OPACITY,
     settingsOpen: Boolean = false
 ) {
-    Row(
-        modifier = modifier
-            .liquidGlass(RoundedCornerShape(26.dp), opacity)
-            .padding(horizontal = 6.dp, vertical = 3.dp),
-        horizontalArrangement = Arrangement.spacedBy(0.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        NavItem("TV", Icons.Default.Tv, selected = section == MobileSection.LIVE && !playlistsOpen && !settingsOpen) {
+    val entries = buildList {
+        add(NavEntry("TV", Icons.Default.Tv, section == MobileSection.LIVE && !playlistsOpen && !settingsOpen, -10f, 4f) {
             onSelectSection(MobileSection.LIVE)
-        }
+        })
         if (hasMovies) {
-            NavItem("Movies", Icons.Default.Movie, selected = section == MobileSection.MOVIES && !playlistsOpen && !settingsOpen) {
+            add(NavEntry("Movies", Icons.Default.Movie, section == MobileSection.MOVIES && !playlistsOpen && !settingsOpen, -20f, 3f) {
                 onSelectSection(MobileSection.MOVIES)
-            }
+            })
         }
         if (hasShows) {
-            NavItem("Shows", Icons.Default.VideoLibrary, selected = section == MobileSection.SHOWS && !playlistsOpen && !settingsOpen) {
+            add(NavEntry("Shows", Icons.Default.VideoLibrary, section == MobileSection.SHOWS && !playlistsOpen && !settingsOpen, 0f, 6f) {
                 onSelectSection(MobileSection.SHOWS)
+            })
+        }
+        add(NavEntry("Playlists", Icons.Default.FormatListBulleted, playlistsOpen, 0f, 6f, onTogglePlaylists))
+        add(NavEntry("Settings", Icons.Default.Settings, settingsOpen, 140f, 0f, onOpenSettings))
+    }
+    val selectedIndex = entries.indexOfFirst { it.selected }
+    val currentEntries by rememberUpdatedState(entries)
+    val currentSelected by rememberUpdatedState(selectedIndex)
+
+    val density = LocalDensity.current
+    val haptic = LocalHapticFeedback.current
+
+    // item bounds (left, width) inside the row, in px; filled by onGloballyPositioned
+    val bounds = remember { mutableStateMapOf<Int, Pair<Float, Float>>() }
+    var dragIndex by remember { mutableStateOf<Int?>(null) }
+    val activeIndex = dragIndex ?: selectedIndex
+
+    // lens position / width, spring-animated towards the active item
+    val lensX = remember { Animatable(0f) }
+    val lensW = remember { Animatable(0f) }
+    var lensReady by remember { mutableStateOf(false) }
+    val activeBounds = bounds[activeIndex]
+    LaunchedEffect(activeIndex, activeBounds) {
+        val b = activeBounds ?: return@LaunchedEffect
+        if (activeIndex < 0) return@LaunchedEffect
+        if (!lensReady) {
+            lensX.snapTo(b.first)
+            lensW.snapTo(b.second)
+            lensReady = true
+        } else {
+            coroutineScope {
+                launch { lensX.animateTo(b.first, spring(dampingRatio = 0.72f, stiffness = 380f)) }
+                launch { lensW.animateTo(b.second, spring(dampingRatio = 0.8f, stiffness = 420f)) }
             }
         }
-        NavItem("Playlists", Icons.Default.FormatListBulleted, selected = playlistsOpen, onClick = onTogglePlaylists)
-        NavItem("Settings", Icons.Default.Settings, selected = settingsOpen, onClick = onOpenSettings)
+    }
+    val lensAlpha by animateFloatAsState(if (activeIndex >= 0 && lensReady) 1f else 0f, tween(180), label = "lensAlpha")
+    // the lens swells slightly while the finger is down and dragging
+    val lensSquish by animateFloatAsState(
+        if (dragIndex != null) 1.1f else 1f,
+        spring(dampingRatio = 0.5f, stiffness = 400f),
+        label = "lensSquish"
+    )
+
+    /** the last item whose left edge is at or before [x] (clamps to the first / last item) */
+    fun hit(x: Float): Int? {
+        var best: Int? = null
+        for (i in 0 until currentEntries.size) {
+            val b = bounds[i] ?: continue
+            if (best == null || x >= b.first) best = i
+        }
+        return best
+    }
+
+    Box(
+        modifier = modifier
+            .liquidGlass(RoundedCornerShape(50), opacity)
+    ) {
+        Box(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
+            contentAlignment = Alignment.CenterStart
+        ) {
+            // lens: lighter glass bubble behind the active item
+            Box(
+                modifier = Modifier
+                    .offset { IntOffset(lensX.value.roundToInt(), 0) }
+                    .width(with(density) { lensW.value.toDp() })
+                    .height(44.dp)
+                    .graphicsLayer {
+                        alpha = lensAlpha
+                        scaleX = lensSquish
+                        scaleY = 1f + (lensSquish - 1f) * 0.6f
+                    }
+                    .clip(CircleShape)
+                    .background(AccentCyan.copy(alpha = 0.20f))
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.04f))
+                        )
+                    )
+                    .border(
+                        1.dp,
+                        Brush.linearGradient(
+                            listOf(Color.White.copy(alpha = 0.6f), AccentCyan.copy(alpha = 0.15f), Color.White.copy(alpha = 0.35f))
+                        ),
+                        CircleShape
+                    )
+            )
+            Row(
+                modifier = Modifier.pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragStart = { dragIndex = hit(it.x) },
+                        onDragEnd = {
+                            val i = dragIndex
+                            dragIndex = null
+                            if (i != null && i != currentSelected) currentEntries.getOrNull(i)?.onClick?.invoke()
+                        },
+                        onDragCancel = { dragIndex = null }
+                    ) { change, _ ->
+                        change.consume()
+                        val i = hit(change.position.x)
+                        if (i != null && i != dragIndex) {
+                            dragIndex = i
+                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        }
+                    }
+                },
+                horizontalArrangement = Arrangement.spacedBy(0.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                entries.forEachIndexed { index, entry ->
+                    NavItem(
+                        entry = entry,
+                        active = index == activeIndex,
+                        onBounds = { x, w -> bounds[index] = x to w }
+                    )
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun NavItem(label: String, icon: ImageVector, selected: Boolean, onClick: () -> Unit) {
-    val tint by animateColorAsState(if (selected) AccentCyan else Color.White.copy(alpha = 0.85f), label = "navTint")
-    val pill by animateColorAsState(if (selected) AccentCyan.copy(alpha = 0.22f) else Color.Transparent, label = "navPill")
-    Column(
-        modifier = Modifier
-            .widthIn(min = 52.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 3.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        // slim indicator: only a small pill behind the icon, not the whole item
-        Box(
-            modifier = Modifier
-                .size(width = 40.dp, height = 24.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(pill),
-            contentAlignment = Alignment.Center
-        ) {
-            Icon(icon, contentDescription = label, tint = tint, modifier = Modifier.size(19.dp))
+private fun NavItem(entry: NavEntry, active: Boolean, onBounds: (Float, Float) -> Unit) {
+    val tint by animateColorAsState(if (active) AccentCyan else Color.White.copy(alpha = 0.85f), label = "navTint")
+
+    // icon "pop" when it becomes active: squash, then spring back with a bounce (plus tilt / lift)
+    val scale = remember { Animatable(1f) }
+    val rotation = remember { Animatable(0f) }
+    val lift = remember { Animatable(0f) }
+    LaunchedEffect(active) {
+        if (active) {
+            launch { scale.snapTo(0.7f); scale.animateTo(1f, spring(dampingRatio = 0.35f, stiffness = 420f)) }
+            launch { rotation.snapTo(entry.fromRotation); rotation.animateTo(0f, spring(dampingRatio = 0.45f, stiffness = 300f)) }
+            launch { lift.snapTo(entry.fromLift); lift.animateTo(0f, spring(dampingRatio = 0.4f, stiffness = 380f)) }
         }
-        Text(
-            text = label,
-            color = tint,
-            fontSize = 9.5.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            maxLines = 1
+    }
+    val liftPx = with(LocalDensity.current) { lift.value.dp.toPx() }
+
+    Row(
+        modifier = Modifier
+            .height(44.dp)
+            .onGloballyPositioned { onBounds(it.positionInParent().x, it.size.width.toFloat()) }
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = entry.onClick
+            )
+            .padding(horizontal = 15.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Icon(
+            entry.icon,
+            contentDescription = entry.label,
+            tint = tint,
+            modifier = Modifier
+                .size(22.dp)
+                .graphicsLayer {
+                    scaleX = scale.value
+                    scaleY = scale.value
+                    rotationZ = rotation.value
+                    translationY = liftPx
+                }
         )
+        // label reveal: slides open to the right of the icon (the item, lens and bar all grow with it)
+        AnimatedVisibility(
+            visible = active,
+            enter = expandHorizontally(spring(dampingRatio = 0.8f, stiffness = 400f)) + fadeIn(tween(200, delayMillis = 60)),
+            exit = shrinkHorizontally(spring(dampingRatio = 0.9f, stiffness = 500f)) + fadeOut(tween(90))
+        ) {
+            Text(
+                text = entry.label,
+                color = tint,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                softWrap = false,
+                modifier = Modifier.padding(start = 6.dp)
+            )
+        }
     }
 }
 
