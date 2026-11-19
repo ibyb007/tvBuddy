@@ -57,7 +57,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -69,6 +73,8 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
@@ -93,11 +99,11 @@ enum class MobileSection { LIVE, MOVIES, SHOWS }
  */
 fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): Modifier = this
     .shadow(
-        elevation = 14.dp,
+        elevation = 20.dp,
         shape = shape,
         clip = false,
-        ambientColor = Color.Black.copy(alpha = 0.35f),
-        spotColor = Color.Black.copy(alpha = 0.45f)
+        ambientColor = Color.Black.copy(alpha = 0.45f),
+        spotColor = Color.Black.copy(alpha = 0.6f)
     )
     .clip(shape)
     .background(Color(0xFF111726).copy(alpha = alpha))
@@ -106,13 +112,62 @@ fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): M
             listOf(Color.White.copy(alpha = 0.16f), Color.White.copy(alpha = 0.03f), Color.White.copy(alpha = 0.08f))
         )
     )
+    .dropletDepth()
     .border(
         1.dp,
         Brush.linearGradient(
-            listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.32f))
+            listOf(Color.White.copy(alpha = 0.65f), Color.White.copy(alpha = 0.06f), Color.White.copy(alpha = 0.40f))
         ),
         shape
     )
+
+/**
+ * Fake 3D volume, drawn behind the content: darker edges that curve away, a shadowed lower belly,
+ * a glossy highlight near the top and a thin line of refracted light along the bottom, like a water droplet.
+ */
+private fun Modifier.dropletDepth(strength: Float = 1f): Modifier = this.drawBehind {
+    val w = size.width
+    val h = size.height
+    // curved edges: darker towards the left / right ends
+    drawRect(
+        Brush.horizontalGradient(
+            0f to Color.Black.copy(alpha = 0.22f * strength),
+            0.14f to Color.Transparent,
+            0.86f to Color.Transparent,
+            1f to Color.Black.copy(alpha = 0.22f * strength)
+        )
+    )
+    // lower belly shadow
+    drawRect(
+        Brush.verticalGradient(
+            0.5f to Color.Transparent,
+            1f to Color.Black.copy(alpha = 0.30f * strength)
+        )
+    )
+    // glossy highlight on the upper half
+    drawRoundRect(
+        brush = Brush.verticalGradient(
+            colors = listOf(Color.White.copy(alpha = 0.32f * strength), Color.White.copy(alpha = 0.02f * strength)),
+            startY = h * 0.05f,
+            endY = h * 0.5f
+        ),
+        topLeft = Offset(w * 0.07f, h * 0.06f),
+        size = Size(w * 0.86f, h * 0.40f),
+        cornerRadius = CornerRadius(h * 0.2f)
+    )
+    // refracted light along the bottom edge
+    val line = 1.5.dp.toPx()
+    drawRoundRect(
+        brush = Brush.horizontalGradient(
+            0f to Color.Transparent,
+            0.5f to Color.White.copy(alpha = 0.34f * strength),
+            1f to Color.Transparent
+        ),
+        topLeft = Offset(w * 0.14f, h - line - 2.5.dp.toPx()),
+        size = Size(w * 0.72f, line),
+        cornerRadius = CornerRadius(line)
+    )
+}
 
 private class NavEntry(
     val label: String,
@@ -122,6 +177,8 @@ private class NavEntry(
     val fromRotation: Float,
     /** icon starts this many dp lower when it becomes active, then bounces up */
     val fromLift: Float,
+    /** which section this entry opens, or null for Playlists / Settings */
+    val section: MobileSection?,
     val onClick: () -> Unit
 )
 
@@ -144,21 +201,21 @@ fun MobileGlassNavBar(
     settingsOpen: Boolean = false
 ) {
     val entries = buildList {
-        add(NavEntry("TV", Icons.Default.Tv, section == MobileSection.LIVE && !playlistsOpen && !settingsOpen, -10f, 4f) {
+        add(NavEntry("TV", Icons.Default.Tv, section == MobileSection.LIVE && !playlistsOpen && !settingsOpen, -10f, 4f, MobileSection.LIVE) {
             onSelectSection(MobileSection.LIVE)
         })
         if (hasMovies) {
-            add(NavEntry("Movies", Icons.Default.Movie, section == MobileSection.MOVIES && !playlistsOpen && !settingsOpen, -20f, 3f) {
+            add(NavEntry("Movies", Icons.Default.Movie, section == MobileSection.MOVIES && !playlistsOpen && !settingsOpen, -20f, 3f, MobileSection.MOVIES) {
                 onSelectSection(MobileSection.MOVIES)
             })
         }
         if (hasShows) {
-            add(NavEntry("Shows", Icons.Default.VideoLibrary, section == MobileSection.SHOWS && !playlistsOpen && !settingsOpen, 0f, 6f) {
+            add(NavEntry("Shows", Icons.Default.VideoLibrary, section == MobileSection.SHOWS && !playlistsOpen && !settingsOpen, 0f, 6f, MobileSection.SHOWS) {
                 onSelectSection(MobileSection.SHOWS)
             })
         }
-        add(NavEntry("Playlists", Icons.Default.FormatListBulleted, playlistsOpen, 0f, 6f, onTogglePlaylists))
-        add(NavEntry("Settings", Icons.Default.Settings, settingsOpen, 140f, 0f, onOpenSettings))
+        add(NavEntry("Playlists", Icons.Default.FormatListBulleted, playlistsOpen, 0f, 6f, null, onTogglePlaylists))
+        add(NavEntry("Settings", Icons.Default.Settings, settingsOpen, 140f, 0f, null, onOpenSettings))
     }
     val selectedIndex = entries.indexOfFirst { it.selected }
     val currentEntries by rememberUpdatedState(entries)
@@ -167,27 +224,53 @@ fun MobileGlassNavBar(
     val density = LocalDensity.current
     val haptic = LocalHapticFeedback.current
 
-    // item bounds (left, width) inside the row, in px; filled by onGloballyPositioned
+    // item bounds (left, width) in px; only used to find which item is under the finger while dragging
     val bounds = remember { mutableStateMapOf<Int, Pair<Float, Float>>() }
     var dragIndex by remember { mutableStateOf<Int?>(null) }
-    val activeIndex = dragIndex ?: selectedIndex
 
-    // lens position / width, spring-animated towards the active item
+    // Optimistic selection: the lens and label react on the very frame of the tap, without waiting for the
+    // parent screen to recompose and hand us the new state. Cleared as soon as the real state arrives.
+    var pending by remember { mutableStateOf<Int?>(null) }
+    LaunchedEffect(selectedIndex) { pending = null }
+    val activeIndex = dragIndex ?: pending ?: selectedIndex
+
+    fun choose(index: Int) {
+        val e = currentEntries.getOrNull(index) ?: return
+        if (index != currentSelected) {
+            pending = index
+        } else if (e.section == null && e.label == "Playlists") {
+            // closing the playlist panel: the lens goes back to the current section
+            val back = currentEntries.indexOfFirst { it.section == section }
+            if (back >= 0) pending = back
+        }
+        e.onClick()
+    }
+
+    // Lens target computed from the item sizes (icon slot + measured label width), not from the live layout,
+    // so it can start moving immediately and never chases a still-expanding label.
+    val textMeasurer = rememberTextMeasurer()
+    val labelStyle = remember { TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold) }
+    val labelWidths = remember(entries.map { it.label }) {
+        entries.map { textMeasurer.measure(it.label, labelStyle, maxLines = 1).size.width.toFloat() }
+    }
+    val slotPx = with(density) { 52.dp.toPx() }
+    val labelGapPx = with(density) { 6.dp.toPx() }
+    val targetX = if (activeIndex >= 0) slotPx * activeIndex else 0f
+    val targetW = if (activeIndex in labelWidths.indices) slotPx + labelGapPx + labelWidths[activeIndex] else slotPx
+
     val lensX = remember { Animatable(0f) }
     val lensW = remember { Animatable(0f) }
     var lensReady by remember { mutableStateOf(false) }
-    val activeBounds = bounds[activeIndex]
-    LaunchedEffect(activeIndex, activeBounds) {
-        val b = activeBounds ?: return@LaunchedEffect
+    LaunchedEffect(targetX, targetW) {
         if (activeIndex < 0) return@LaunchedEffect
         if (!lensReady) {
-            lensX.snapTo(b.first)
-            lensW.snapTo(b.second)
+            lensX.snapTo(targetX)
+            lensW.snapTo(targetW)
             lensReady = true
         } else {
             coroutineScope {
-                launch { lensX.animateTo(b.first, spring(dampingRatio = 0.72f, stiffness = 380f)) }
-                launch { lensW.animateTo(b.second, spring(dampingRatio = 0.8f, stiffness = 420f)) }
+                launch { lensX.animateTo(targetX, spring(dampingRatio = 0.7f, stiffness = 650f)) }
+                launch { lensW.animateTo(targetW, spring(dampingRatio = 0.8f, stiffness = 700f)) }
             }
         }
     }
@@ -228,6 +311,7 @@ fun MobileGlassNavBar(
                         scaleX = lensSquish
                         scaleY = 1f + (lensSquish - 1f) * 0.6f
                     }
+                    .shadow(8.dp, CircleShape, clip = false, ambientColor = AccentCyan.copy(alpha = 0.4f), spotColor = Color.Black.copy(alpha = 0.55f))
                     .clip(CircleShape)
                     .background(AccentCyan.copy(alpha = 0.20f))
                     .background(
@@ -235,6 +319,7 @@ fun MobileGlassNavBar(
                             listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.04f))
                         )
                     )
+                    .dropletDepth(0.9f)
                     .border(
                         1.dp,
                         Brush.linearGradient(
@@ -250,7 +335,7 @@ fun MobileGlassNavBar(
                         onDragEnd = {
                             val i = dragIndex
                             dragIndex = null
-                            if (i != null && i != currentSelected) currentEntries.getOrNull(i)?.onClick?.invoke()
+                            if (i != null && i != currentSelected) choose(i)
                         },
                         onDragCancel = { dragIndex = null }
                     ) { change, _ ->
@@ -269,7 +354,8 @@ fun MobileGlassNavBar(
                     NavItem(
                         entry = entry,
                         active = index == activeIndex,
-                        onBounds = { x, w -> bounds[index] = x to w }
+                        onBounds = { x, w -> bounds[index] = x to w },
+                        onClick = { choose(index) }
                     )
                 }
             }
@@ -278,7 +364,7 @@ fun MobileGlassNavBar(
 }
 
 @Composable
-private fun NavItem(entry: NavEntry, active: Boolean, onBounds: (Float, Float) -> Unit) {
+private fun NavItem(entry: NavEntry, active: Boolean, onBounds: (Float, Float) -> Unit, onClick: () -> Unit) {
     val tint by animateColorAsState(if (active) AccentCyan else Color.White.copy(alpha = 0.85f), label = "navTint")
 
     // icon "pop" when it becomes active: squash, then spring back with a bounce (plus tilt / lift)
@@ -302,7 +388,7 @@ private fun NavItem(entry: NavEntry, active: Boolean, onBounds: (Float, Float) -
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = entry.onClick
+                onClick = onClick
             )
             .padding(horizontal = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
