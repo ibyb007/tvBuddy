@@ -136,6 +136,7 @@ fun Modifier.glassBackdropSource(backdrop: GlassBackdrop): Modifier = this
  * Liquid-glass surface: the content behind it is blurred (Android 12+; older phones get the plain tint),
  * covered by a dark tint, soft edge shading for depth, a light-catching gradient rim and a drop shadow.
  * [alpha] is the user's navbar opacity; with the blur on, the tint is lighter so the blurred content shows.
+ * The blur strength follows the same value: 100 % opacity = [blurRadius] (max blur), 0 % = no blur at all.
  */
 @Composable
 fun Modifier.liquidGlass(
@@ -163,8 +164,8 @@ fun Modifier.liquidGlass(
                 Modifier
                     .onGloballyPositioned { origin = it.positionInRoot() }
                     .drawBehind {
-                        val r = blurRadius.toPx()
-                        blurLayer.renderEffect = BlurEffect(r, r, TileMode.Clamp)
+                        val r = blurRadius.toPx() * alpha.coerceIn(0f, 1f)
+                        blurLayer.renderEffect = if (r >= 0.5f) BlurEffect(r, r, TileMode.Clamp) else null
                         blurLayer.record(size = IntSize(size.width.roundToInt(), size.height.roundToInt())) {
                             translate(left = backdrop.origin.x - origin.x, top = backdrop.origin.y - origin.y) {
                                 drawLayer(backdrop.layer)
