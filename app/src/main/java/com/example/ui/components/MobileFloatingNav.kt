@@ -54,6 +54,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.CornerBasedShape
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -68,8 +69,20 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntOffset
+import android.os.Build
+import android.view.HapticFeedbackConstants
+import com.example.ui.backdrop.backdrops.LayerBackdrop
+import com.example.ui.backdrop.drawBackdrop
+import com.example.ui.backdrop.effects.blur
+import com.example.ui.backdrop.effects.colorControls
+import com.example.ui.backdrop.effects.lens
+import com.example.ui.backdrop.highlight.Highlight
+import com.example.ui.backdrop.isRenderEffectSupported
+import com.example.ui.backdrop.shadow.Shadow
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import com.example.data.local.entity.PlaylistEntity
 import com.example.ui.theme.AccentCyan
@@ -150,6 +163,52 @@ fun Modifier.liquidGlass(shape: Shape, alpha: Float = DEFAULT_NAVBAR_OPACITY): M
         )
     }
 
+private val NavPillShape = RoundedCornerShape(percent = 50)
+
+/** Resolution the backdrop is processed at; the blur hides the upscaling. Pixel sizes are scaled by it. */
+private const val GLASS_RESOLUTION_SCALE = 0.33f
+
+/**
+ * Real liquid glass (Android 12+): blurs and saturates whatever is behind it in [backdrop], bends the
+ * light along the rim (lens refraction with chromatic aberration on Android 13+), and adds a directional
+ * edge highlight and a soft shadow. [alpha] is the Navbar opacity setting: it only sets how strongly the
+ * dark tint covers the blurred background.
+ */
+@Composable
+fun Modifier.backdropGlass(backdrop: LayerBackdrop, shape: CornerBasedShape, alpha: Float): Modifier {
+    val density = LocalDensity.current
+    val blurPx = with(density) { 8.dp.toPx() } * GLASS_RESOLUTION_SCALE
+    val lensHeightPx = with(density) { 24.dp.toPx() } * GLASS_RESOLUTION_SCALE
+    val lensAmountPx = with(density) { 24.dp.toPx() } * GLASS_RESOLUTION_SCALE
+    val tint = Color(0xFF0E1424).copy(alpha = (alpha * alpha).coerceIn(0.1f, 1f))
+    return drawBackdrop(
+        backdrop = backdrop,
+        shape = { shape },
+        effects = {
+            colorControls(saturation = 1.5f)
+            blur(blurPx)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                lens(
+                    refractionHeight = lensHeightPx,
+                    refractionAmount = lensAmountPx,
+                    depthEffect = true,
+                    chromaticAberration = true
+                )
+            }
+        },
+        highlight = { Highlight.Default },
+        shadow = { Shadow.Default },
+        onDrawSurface = { drawRect(color = tint, size = size) },
+        backdropScale = GLASS_RESOLUTION_SCALE
+    )
+}
+
+/** Backdrop glass when [backdrop] is given and the phone supports it, else the flat [liquidGlass] look. */
+@Composable
+fun Modifier.glassSurface(shape: CornerBasedShape, alpha: Float, backdrop: LayerBackdrop?): Modifier =
+    if (backdrop != null && isRenderEffectSupported()) backdropGlass(backdrop, shape, alpha)
+    else liquidGlass(shape, alpha)
+
 /** Layout of one nav item inside the bar, used to slide the glass lens under the selected item. */
 private data class NavBounds(val x: Float, val width: Float, val height: Float)
 
@@ -173,7 +232,9 @@ fun MobileGlassNavBar(
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
     opacity: Float = DEFAULT_NAVBAR_OPACITY,
-    settingsOpen: Boolean = false
+    settingsOpen: Boolean = false,
+    /** Recorded list content to blur behind the bar. Null (or Android 11 and older) keeps the flat glass. */
+    backdrop: LayerBackdrop? = null
 ) {
     val sectionActive = !playlistsOpen && !settingsOpen
     val entries = buildList {
@@ -195,6 +256,7 @@ fun MobileGlassNavBar(
     }
 
     val density = LocalDensity.current
+    val view = LocalView.current
     val bounds = remember { mutableStateMapOf<String, NavBounds>() }
     val target = entries.firstOrNull { it.selected }?.let { bounds[it.key] }
 
@@ -217,7 +279,7 @@ fun MobileGlassNavBar(
 
     Box(
         modifier = modifier
-            .liquidGlass(CircleShape, opacity)
+            .glassSurface(NavPillShape, opacity, backdrop)
             .padding(horizontal = 5.dp, vertical = 4.dp)
     ) {
         if (target != null && lensPlaced) {
@@ -227,6 +289,11 @@ fun MobileGlassNavBar(
                     .offset { IntOffset(lensX.value.roundToInt(), 0) }
                     .width(with(density) { lensW.value.toDp() })
                     .height(with(density) { target.height.toDp() })
+                    .graphicsLayer {
+                        val lag = (abs(target.x - lensX.value) / target.width).coerceIn(0f, 1f)
+                        scaleX = 1f + lag * 0.16f
+                        scaleY = 1f - lag * 0.08f
+                    }
                     .clip(lensShape)
                     .background(
                         Brush.verticalGradient(
@@ -263,7 +330,10 @@ fun MobileGlassNavBar(
                     label = e.label,
                     icon = e.icon,
                     selected = e.selected,
-                    onClick = e.onClick,
+                    onClick = {
+                        if (!e.selected) view.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+                        e.onClick()
+                    },
                     modifier = Modifier.onGloballyPositioned {
                         val b = NavBounds(it.positionInParent().x, it.size.width.toFloat(), it.size.height.toFloat())
                         if (bounds[e.key] != b) bounds[e.key] = b
@@ -338,7 +408,8 @@ fun MobilePlaylistPanel(
     onAddPlaylist: () -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
-    opacity: Float = DEFAULT_NAVBAR_OPACITY
+    opacity: Float = DEFAULT_NAVBAR_OPACITY,
+    backdrop: LayerBackdrop? = null
 ) {
     BackHandler(onBack = onDismiss)
     Box(
@@ -356,7 +427,7 @@ fun MobilePlaylistPanel(
                 .navigationBarsPadding()
                 .padding(bottom = 76.dp)
                 .width(176.dp)
-                .liquidGlass(RoundedCornerShape(20.dp), opacity)
+                .glassSurface(RoundedCornerShape(20.dp), opacity, backdrop)
                 // swallow taps inside the panel so they don't reach the scrim
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
