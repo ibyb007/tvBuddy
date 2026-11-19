@@ -1125,11 +1125,14 @@ class TvBuddyRepository(
         forgetVodState(playlist.id, ContentType.MOVIE)
         forgetVodState(playlist.id, ContentType.SHOW)
         stalkerSessions.remove(playlist.id)
-        channelDao.deleteChannelsByPlaylist(playlist.id)
-        channelGroupDao.deleteGroupsByPlaylist(playlist.id)
-        epgSourceDao.clearAssignedSourcesForPlaylist(playlist.id)
-        programDao.deleteProgramsByPrefix("sp${playlist.id}:")
-        playlistDao.deletePlaylist(playlist)
+        // one transaction: the UI flows re-query once with the final state instead of after every step
+        database.withTransaction {
+            channelDao.deleteChannelsByPlaylist(playlist.id)
+            channelGroupDao.deleteGroupsByPlaylist(playlist.id)
+            epgSourceDao.clearAssignedSourcesForPlaylist(playlist.id)
+            programDao.deleteProgramsByPrefix("sp${playlist.id}:")
+            playlistDao.deletePlaylist(playlist)
+        }
         epgPrefs.edit().remove("urls_${playlist.id}").remove("ts_${playlist.id}").apply()
     }
 
