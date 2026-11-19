@@ -1,0 +1,237 @@
+package com.example.data.parser
+
+import com.example.data.local.entity.ChannelEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.URI
+import java.net.URLDecoder
+
+/**
+ * Adds dynamic live rows (live sports events, ...) that a playlist's static M3U does not contain.
+ *
+ * Some playlist sites publish a static M3U but keep their changing rows only in a JSON API:
+ * a channel list (with a `category` per channel) and a per-channel detail call with the
+ * sources, headers and ClearKey DRM. When a playlist URL belongs to a known [Site], every API
+ * channel the M3U does not already contain (same name in the same category) is fetched and added
+ * as a normal channel in its category. Any failure is swallowed: the M3U import always wins.
+ *
+ * To support another site with the same API shape, add one entry to [SITES].
+ */
+object LiveEventsSource {
+    /** [detailUrl] gets the URL-encoded channel id appended. */
+    class Site(val host: String, val siteUrl: String, val channelsUrl: String, val detailUrl: String, val idPrefix: String)
+
+    private val SITES = listOf(
+        // LiveTG TV (same data the Vega "LiveTG TV" provider reads)
+        Site(
+            host = "livetgtv.lovable.app",
+            siteUrl = "https://livetgtv.lovable.app",
+            channelsUrl = "https://livetgtv.lovable.app/api/public/channels",
+            detailUrl = "https://livetgtv.lovable.app/api/public/channels/",
+            idPrefix = "livetg"
+        )
+    )
+
+    private const val MAX_DETAIL_FETCHES = 150
+    private const val MAX_SOURCES_PER_CHANNEL = 3
+    private const val PARALLEL_REQUESTS = 6
+
+    private fun siteFor(url: String): Site? = try {
+        val host = URI(url.trim()).host
+        SITES.firstOrNull { it.host.equals(host, ignoreCase = true) }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** True when [url] is a playlist of a site this source knows how to add live events for. */
+    fun isSupportedPlaylist(url: String): Boolean = siteFor(url) != null
+
+    private fun norm(s: String) = s.trim().lowercase().replace(Regex("\\s+"), " ")
+
+    private fun absoluteLogo(site: Site, raw: String?): String? {
+        val v = raw?.trim().orEmpty()
+        return when {
+            v.isEmpty() -> null
+            v.startsWith("http", ignoreCase = true) -> v
+            v.startsWith("/") -> site.siteUrl + v
+            else -> null
+        }
+    }
+
+    private class ApiChannel(val id: String, val name: String, val category: String, val logo: String?)
+
+    private fun parseList(site: Site, json: String): List<ApiChannel> {
+        val arr = JSONObject(json).optJSONArray("channels") ?: return emptyList()
+        val out = ArrayList<ApiChannel>(arr.length())
+        for (i in 0 until arr.length()) {
+            val o = arr.optJSONObject(i) ?: continue
+            val id = o.opt("id")?.toString()?.trim().orEmpty()
+            val name = o.optString("name", "").trim()
+            if (id.isEmpty() || name.isEmpty() || id == "null") continue
+            val category = o.optString("category", "").trim().ifEmpty { "Other" }
+            out.add(ApiChannel(id, name, category, absoluteLogo(site, o.optString("logo", ""))))
+        }
+        return out
+    }
+
+    private data class Drm(val keyIdKey: String)
+
+    /** `{type:"clearkey", clearKeys:{kid:key}}` or `{keyId, key}` -> "kid:key,kid:key"; null = no DRM; throws if unsupported. */
+    private fun parseDrm(drm: Any?): Drm? {
+        if (drm == null || drm == JSONObject.NULL) return null
+        val o = drm as? JSONObject ?: throw IllegalArgumentException("unsupported drm")
+        val type = o.optString("type", "").trim().lowercase()
+        if (type != "clearkey" && type != "org.w3.clearkey") throw IllegalArgumentException("unsupported drm")
+        val pairs = mutableListOf<String>()
+        val keys = o.optJSONObject("clearKeys")
+        if (keys != null) {
+            val kidIter = keys.keys()
+            while (kidIter.hasNext()) {
+                val kid = kidIter.next()
+                pairs.add("${kid.trim()}:${keys.optString(kid).trim()}")
+            }
+        } else if (o.has("keyId") || o.has("key")) {
+            pairs.add("${o.optString("keyId").trim()}:${o.optString("key").trim()}")
+        }
+        if (pairs.isEmpty() || pairs.any { !Regex("^[0-9a-fA-F]{32}:[0-9a-fA-F]{32}$").matches(it) }) {
+            throw IllegalArgumentException("invalid clearkey")
+        }
+        return Drm(pairs.joinToString(","))
+    }
+
+    private fun putHeader(headers: MutableMap<String, String>, name: String, value: String) {
+        if (name.isBlank() || value.isBlank() || name.any { it == '\r' || it == '\n' } || value.any { it == '\r' || it == '\n' }) return
+        val key = when (name.lowercase()) {
+            "cookie" -> "Cookie"
+            "origin" -> "Origin"
+            "referer", "referrer" -> "Referer"
+            "user-agent", "useragent" -> "User-Agent"
+            else -> name
+        }
+        headers.keys.firstOrNull { it.equals(key, ignoreCase = true) }?.let { headers.remove(it) }
+        headers[key] = value
+    }
+
+    private fun readHeaders(obj: JSONObject?, into: MutableMap<String, String>) {
+        if (obj == null) return
+        val names = obj.keys()
+        while (names.hasNext()) {
+            val k = names.next()
+            val v = obj.opt(k)
+            if (v is String) putHeader(into, k, v)
+        }
+    }
+
+    private class Source(val url: String, val headers: Map<String, String>, val drm: Drm?)
+
+    private fun parseDetail(json: String): List<Source> {
+        val root = JSONObject(json)
+        val sources = root.optJSONArray("sources") ?: return emptyList()
+        val baseHeaders = LinkedHashMap<String, String>()
+        readHeaders(root.optJSONObject("headers"), baseHeaders)
+        val baseDrm = runCatching { parseDrm(root.opt("drm")) }
+        val out = ArrayList<Source>()
+        for (i in 0 until sources.length()) {
+            val item = sources.opt(i)
+            var rawUrl = ""
+            val headers = LinkedHashMap(baseHeaders)
+            var drm: Result<Drm?> = baseDrm
+            if (item is String) {
+                rawUrl = item.trim()
+            } else if (item is JSONObject) {
+                rawUrl = item.optString("url", "").trim()
+                readHeaders(item.optJSONObject("headers"), headers)
+                if (item.has("drm")) drm = runCatching { parseDrm(item.opt("drm")) }
+            }
+            if (!rawUrl.startsWith("http", ignoreCase = true)) continue
+            if (drm.isFailure) continue // unsupported / invalid DRM: skip that source only
+            val parsedDrm = drm.getOrNull()
+
+            // "url|User-Agent=..&Referer=.." pipe syntax
+            var url = rawUrl
+            val pipe = rawUrl.indexOf('|')
+            if (pipe >= 0) {
+                url = rawUrl.substring(0, pipe)
+                for (part in rawUrl.substring(pipe + 1).split('&')) {
+                    val eq = part.indexOf('=')
+                    if (eq > 0) {
+                        val v = runCatching { URLDecoder.decode(part.substring(eq + 1), "UTF-8") }.getOrDefault(part.substring(eq + 1))
+                        putHeader(headers, part.substring(0, eq).trim(), v)
+                    }
+                }
+            }
+            out.add(Source(url, headers, parsedDrm))
+        }
+        return out
+    }
+
+    /** Channels of the site's API that [existing] (the parsed M3U) lacks, as ready-to-store entities. */
+    suspend fun fetchMissingChannels(
+        playlistUrl: String,
+        playlistId: Long,
+        existing: List<ChannelEntity>,
+        startNumber: Int,
+        download: (String) -> String
+    ): List<ChannelEntity> {
+        val site = siteFor(playlistUrl) ?: return emptyList()
+        return try {
+            val have = existing.mapTo(HashSet()) { norm(it.name) + "|" + norm(it.groupTitle) }
+            val list = withContext(Dispatchers.IO) { parseList(site, download(site.channelsUrl)) }
+            val missing = list
+                .filter { (norm(it.name) + "|" + norm(it.category)) !in have }
+                .distinctBy { norm(it.name) + "|" + norm(it.category) }
+                .take(MAX_DETAIL_FETCHES)
+            if (missing.isEmpty()) return emptyList()
+
+            val gate = Semaphore(PARALLEL_REQUESTS)
+            val details: List<Pair<ApiChannel, List<Source>>> = coroutineScope {
+                missing.map { ch ->
+                    async(Dispatchers.IO) {
+                        gate.withPermit {
+                            val sources = try {
+                                parseDetail(download(site.detailUrl + java.net.URLEncoder.encode(ch.id, "UTF-8").replace("+", "%20")))
+                            } catch (_: Exception) {
+                                emptyList()
+                            }
+                            ch to sources
+                        }
+                    }
+                }.awaitAll()
+            }
+
+            val result = ArrayList<ChannelEntity>()
+            var number = startNumber
+            for ((ch, sources) in details) {
+                val usable = sources.distinctBy { it.url }.take(MAX_SOURCES_PER_CHANNEL)
+                usable.forEachIndexed { index, s ->
+                    val headers = LinkedHashMap(s.headers)
+                    val ua = headers.keys.firstOrNull { it.equals("User-Agent", ignoreCase = true) }?.let { headers.remove(it) }
+                    result.add(
+                        ChannelEntity(
+                            playlistId = playlistId,
+                            streamId = "${site.idPrefix}:${ch.id}" + if (index > 0) ":${index + 1}" else "",
+                            name = if (index > 0) "${ch.name} (Source ${index + 1})" else ch.name,
+                            streamUrl = s.url,
+                            logoUrl = ch.logo,
+                            groupTitle = ch.category,
+                            channelNumber = number++,
+                            drmType = if (s.drm != null) "CLEARKEY" else null,
+                            drmKeyIdKey = s.drm?.keyIdKey,
+                            httpUserAgent = ua,
+                            httpHeadersJson = if (headers.isNotEmpty()) JSONObject(headers as Map<*, *>).toString() else null
+                        )
+                    )
+                }
+            }
+            result
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+}
