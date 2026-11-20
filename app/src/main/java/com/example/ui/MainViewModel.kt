@@ -247,6 +247,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .flowOn(kotlinx.coroutines.Dispatchers.Default)
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyMap())
 
+    // declared before init: init starts the first startup update and stamps this
+    private var lastStartupUpdateMs = 0L
+
     init {
         prefs.edit().remove(KEY_RESUME_ID).remove(KEY_RESUME_URL).apply()
         viewModelScope.launch {
@@ -254,18 +257,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         repository.refreshStaleEpgs(_globalSpoof.value.getUserAgent())
 
-        // "Update on app start": refresh every active URL-based playlist that has the toggle on, once per app launch.
-        // Runs quietly in the background, one playlist at a time, a few seconds after startup.
-        viewModelScope.launch {
-            kotlinx.coroutines.delay(3_000)
-            val startupList = repository.allPlaylists.first()
-                .filter { it.isActive && it.updateOnStart && it.sourceUrl.startsWith("http", ignoreCase = true) }
-            for (pl in startupList) {
-                val key = UpdateKeys.playlist(pl.id)
-                if (isUpdateRunning(key)) continue
-                runCatching { repository.refreshPlaylist(pl.id) }
-            }
-        }
+        // "Update on app start": every launch updates the playlists that have the toggle on, exactly like pressing
+        // "Update playlist" on them (same progress / result message).
+        runStartupPlaylistUpdates()
 
         // Warm the logo cache in the background a few seconds after the channel list settles
         viewModelScope.launch {
@@ -660,11 +654,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val key = UpdateKeys.playlist(playlistId)
         if (isUpdateRunning(key)) return
         setUpdateState(key, UpdateRowState(running = true))
+        viewModelScope.launch { refreshPlaylistNow(playlistId) }
+    }
+
+    /** The body of the "Update playlist" button, as a suspend call so several can run one after another. */
+    private suspend fun refreshPlaylistNow(playlistId: Long) {
+        val key = UpdateKeys.playlist(playlistId)
+        setUpdateState(key, UpdateRowState(running = true))
+        repository.refreshPlaylist(playlistId) { msg -> setUpdateState(key, UpdateRowState(running = true, message = msg)) }.fold(
+            onSuccess = { setUpdateState(key, UpdateRowState(message = "The playlist is successfully updated")) },
+            onFailure = { setUpdateState(key, UpdateRowState(message = "Update failed: ${it.localizedMessage ?: "unknown error"}", isError = true)) }
+        )
+    }
+
+    /** Launch (cold start) and coming back to an app whose process was kept alive for a while: update the ticked playlists. */
+    private fun runStartupPlaylistUpdates() {
+        lastStartupUpdateMs = System.currentTimeMillis()
         viewModelScope.launch {
-            repository.refreshPlaylist(playlistId) { msg -> setUpdateState(key, UpdateRowState(running = true, message = msg)) }.fold(
-                onSuccess = { setUpdateState(key, UpdateRowState(message = "The playlist is successfully updated")) },
-                onFailure = { setUpdateState(key, UpdateRowState(message = "Update failed: ${it.localizedMessage ?: "unknown error"}", isError = true)) }
-            )
+            // with WARP / VPN on, the first requests must not run before the tunnel is up (they would fail or leak)
+            if (com.example.data.network.TunnelManager.state.value.enabled) {
+                kotlinx.coroutines.withTimeoutOrNull(25_000) {
+                    com.example.data.network.TunnelManager.state.first { it.phase != com.example.data.network.TunnelPhase.STARTING }
+                }
+            }
+            kotlinx.coroutines.delay(1_500)
+            val startupList = repository.allPlaylists.first()
+                .filter { it.updateOnStart && it.sourceUrl.startsWith("http", ignoreCase = true) }
+            for (pl in startupList) {
+                if (isUpdateRunning(UpdateKeys.playlist(pl.id))) continue
+                runCatching { refreshPlaylistNow(pl.id) }
+            }
         }
     }
 
@@ -1460,7 +1479,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Activity lifecycle (see MainActivity)
     fun onAppPaused() { playerManager.pauseForLifecycle() }
     fun onAppStopped() { playerManager.suspendForBackground() }
-    fun onAppStarted() { playerManager.resumeFromBackground() }
+    fun onAppStarted() {
+        playerManager.resumeFromBackground()
+        // the process can outlive the screen: opening the app again counts as a launch after a while away
+        if (System.currentTimeMillis() - lastStartupUpdateMs > 10 * 60_000L) runStartupPlaylistUpdates()
+    }
     fun onAppResumed() { playerManager.resumeFromLifecyclePause() }
     fun dismissMessage() { _uiMessage.value = null }
 
