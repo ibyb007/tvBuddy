@@ -1379,6 +1379,9 @@ class TvBuddyRepository(
 
     suspend fun reorderGroups(playlistId: Long, orderedTitles: List<String>, contentType: String = ContentType.TV) = withContext(Dispatchers.IO) {
         channelGroupDao.updateGroupOrders(playlistId, contentType, orderedTitles)
+        // the saved order only shows (TV groups page, phone group chips, movie / show groups) in "Manual" sorting,
+        // so a manual reorder switches the playlist to it
+        playlistDao.setGroupsSorting(playlistId, "Manual")
     }
 
     private val vodInfoCache = object : LinkedHashMap<Long, VodInfo>(64, 0.75f, true) {
