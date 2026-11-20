@@ -838,16 +838,18 @@ private fun InfoBanner(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
-                        .size(width = 104.dp, height = 58.dp)
+                        .size(width = 120.dp, height = 84.dp)
                         .clip(RoundedCornerShape(4.dp))
                         .background(Color(0x33FFFFFF)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (!channel.logoUrl.isNullOrBlank()) {
+                        // big, like TiviMate: the logo fills the box (it used to be 46 dp high inside a 58 dp box)
                         ChannelLogo(
                             url = channel.logoUrl,
                             contentDescription = channel.name,
-                            modifier = Modifier.fillMaxSize().padding(6.dp)
+                            large = true,
+                            modifier = Modifier.fillMaxSize().padding(2.dp)
                         )
                     } else {
                         Text(channel.name.take(2).uppercase(), color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
