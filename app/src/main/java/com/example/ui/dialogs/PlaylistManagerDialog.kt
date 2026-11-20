@@ -160,6 +160,9 @@ sealed class TiviSettingsRoute {
     data object Tunnel : TiviSettingsRoute()
     /** App version, developer, update channel and update options. */
     data object About : TiviSettingsRoute()
+    /** General: back up / restore all app data. */
+    data object General : TiviSettingsRoute()
+    data object RestoreBackup : TiviSettingsRoute()
     data object UpdateChannelPicker : TiviSettingsRoute()
     data class TvBuddyUnmatched(val playlistId: Long) : TiviSettingsRoute()
     data class TvBuddySources(val playlistId: Long) : TiviSettingsRoute()
@@ -243,7 +246,8 @@ private val LocalDrawerFocus = compositionLocalOf<DrawerFocusMemory?> { null }
  */
 private fun routeChain(route: TiviSettingsRoute): List<TiviSettingsRoute> = when (route) {
     is TiviSettingsRoute.Main -> listOf(route)
-    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback, is TiviSettingsRoute.Tunnel, is TiviSettingsRoute.About -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.Playlists, is TiviSettingsRoute.Epg, is TiviSettingsRoute.AudioBoost, is TiviSettingsRoute.Playback, is TiviSettingsRoute.Tunnel, is TiviSettingsRoute.About, is TiviSettingsRoute.General -> listOf(TiviSettingsRoute.Main, route)
+    is TiviSettingsRoute.RestoreBackup -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.General, route)
     is TiviSettingsRoute.UpdateChannelPicker -> listOf(TiviSettingsRoute.Main, TiviSettingsRoute.About, route)
     is TiviSettingsRoute.ReorderPlaylists, is TiviSettingsRoute.PlaylistDetail ->
         listOf(TiviSettingsRoute.Main, TiviSettingsRoute.Playlists, route)
@@ -535,6 +539,7 @@ fun PlaylistManagerDialog(
                         val route = entry.route
                         when (route) {
                             is TiviSettingsRoute.Main -> MainSettingsMenu(
+                                onOpenGeneral = { navigateTo(TiviSettingsRoute.General) },
                                 onOpenPlaylists = { navigateTo(TiviSettingsRoute.Playlists) },
                                 onOpenSpoofEngine = onOpenSpoofEngine,
                                 onOpenEpg = { navigateTo(TiviSettingsRoute.Epg) },
@@ -855,6 +860,12 @@ fun PlaylistManagerDialog(
                                 }
                             )
 
+                            is TiviSettingsRoute.General -> GeneralSubMenu(
+                                onOpenRestore = { navigateTo(TiviSettingsRoute.RestoreBackup) }
+                            )
+
+                            is TiviSettingsRoute.RestoreBackup -> RestoreBackupSubMenu()
+
                             is TiviSettingsRoute.About -> AboutSubMenu(
                                 update = appUpdate,
                                 onOpenChannel = { navigateTo(TiviSettingsRoute.UpdateChannelPicker) },
@@ -956,6 +967,7 @@ private data class TextEditPrompt(
 
 @Composable
 private fun MainSettingsMenu(
+    onOpenGeneral: () -> Unit = {},
     onOpenPlaylists: () -> Unit,
     onOpenSpoofEngine: () -> Unit,
     onOpenEpg: () -> Unit,
@@ -981,6 +993,13 @@ private fun MainSettingsMenu(
             modifier = Modifier.fillMaxSize(),
             contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
         ) {
+            item {
+                TiviMenuRow(
+                    title = "General",
+                    subtitle = "Back up and restore playlists and settings",
+                    onClick = onOpenGeneral
+                )
+            }
             item {
                 TiviMenuRow(
                     title = "Playlists",
@@ -1529,6 +1548,183 @@ private fun AudioBoostSubMenu(
                 )
             }
         }
+    }
+}
+
+// ============================================================================
+// 1d. GENERAL SUBMENU (back up / restore all app data)
+// ============================================================================
+
+private fun toastLong(context: android.content.Context, text: String) {
+    android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show()
+}
+
+@Composable
+private fun GeneralSubMenu(onOpenRestore: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var backingUp by remember { mutableStateOf(false) }
+    var lastResult by remember { mutableStateOf<Pair<String, Boolean>?>(null) }   // text, isError
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "General")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
+        ) {
+            item {
+                TiviMenuRow(
+                    title = "Back up data",
+                    subtitle = when {
+                        backingUp -> "Creating the backup..."
+                        lastResult != null -> lastResult!!.first
+                        else -> "Save playlists, favourites and all settings to a file in Downloads"
+                    },
+                    busy = backingUp,
+                    isError = lastResult?.second == true && !backingUp,
+                    onClick = {
+                        if (backingUp) return@TiviMenuRow
+                        backingUp = true
+                        lastResult = null
+                        scope.launch {
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                com.example.data.backup.BackupManager.backup(context)
+                            }
+                            backingUp = false
+                            val text = result.fold(
+                                onSuccess = { "Backup saved: $it" },
+                                onFailure = { "Backup failed: ${it.localizedMessage ?: "unknown error"}" }
+                            )
+                            lastResult = text to result.isFailure
+                            toastLong(context, text)
+                        }
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "Restore data",
+                    subtitle = "Replace playlists and settings with a backup file",
+                    onClick = onOpenRestore
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun RestoreBackupSubMenu() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val scope = rememberCoroutineScope()
+    var backups by remember { mutableStateOf<List<com.example.data.backup.BackupFile>?>(null) }
+    var pending by remember { mutableStateOf<com.example.data.backup.BackupFile?>(null) }
+    var restoring by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        backups = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            com.example.data.backup.BackupManager.listBackups(context)
+        }
+    }
+
+    // fallback for backups the list cannot see (copied from another device, made before a reinstall, ...)
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            pending = com.example.data.backup.BackupFile(
+                name = uri.lastPathSegment?.substringAfterLast('/') ?: "selected file",
+                uri = uri, sizeBytes = 0, modifiedMs = 0
+            )
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        DrawerHeader(title = "Restore data")
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = settingsListPadding(top = 8.dp, bottom = 8.dp)
+        ) {
+            val list = backups
+            if (list == null) {
+                item { TiviMenuRow(title = "Looking for backups...", busy = true, onClick = {}) }
+            } else {
+                if (list.isEmpty()) {
+                    item {
+                        TiviMenuRow(
+                            title = "No backup found in Downloads",
+                            subtitle = "Use \"Choose a file\" to pick one from elsewhere",
+                            locked = true,
+                            onClick = {}
+                        )
+                    }
+                }
+                items(list) { b ->
+                    val whenText = if (b.modifiedMs > 0)
+                        java.text.SimpleDateFormat("d MMM yyyy, HH:mm", java.util.Locale.getDefault()).format(java.util.Date(b.modifiedMs))
+                    else ""
+                    val sizeText = if (b.sizeBytes > 0) android.text.format.Formatter.formatShortFileSize(context, b.sizeBytes) else ""
+                    TiviMenuRow(
+                        title = b.name,
+                        subtitle = listOf(whenText, sizeText).filter { it.isNotEmpty() }.joinToString(" · ").ifEmpty { null },
+                        busy = restoring,
+                        onClick = { if (!restoring) pending = b }
+                    )
+                }
+                item {
+                    TiviMenuRow(
+                        title = "Choose a file...",
+                        subtitle = "Pick a .tvbackup file with the system file picker",
+                        busy = restoring,
+                        onClick = { if (!restoring) picker.launch(arrayOf("*/*")) }
+                    )
+                }
+            }
+        }
+    }
+
+    pending?.let { file ->
+        AlertDialog(
+            onDismissRequest = { if (!restoring) pending = null },
+            containerColor = TiviModalBg,
+            titleContentColor = TiviPrimaryText,
+            textContentColor = TiviSecondaryText,
+            title = { Text("Restore this backup?", fontSize = 18.sp, fontWeight = FontWeight.SemiBold) },
+            text = {
+                Text(
+                    "${file.name}\n\nAll current playlists, favourites and settings will be replaced. " +
+                        "The app restarts when the restore is done."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !restoring,
+                    onClick = {
+                        restoring = true
+                        scope.launch {
+                            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                com.example.data.backup.BackupManager.restore(context, file.uri)
+                            }
+                            result.fold(
+                                onSuccess = {
+                                    toastLong(context, "Backup restored. Restarting...")
+                                    com.example.data.backup.BackupManager.restartApp(context)
+                                },
+                                onFailure = {
+                                    restoring = false
+                                    pending = null
+                                    toastLong(context, "Restore failed: ${it.localizedMessage ?: "unknown error"}")
+                                }
+                            )
+                        }
+                    }
+                ) { Text(if (restoring) "Restoring..." else "Restore", color = TiviAccentBlue) }
+            },
+            dismissButton = {
+                TextButton(enabled = !restoring, onClick = { pending = null }) {
+                    Text("Cancel", color = TiviSecondaryText)
+                }
+            }
+        )
     }
 }
 
