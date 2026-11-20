@@ -426,7 +426,13 @@ class TvBuddyRepository(
                 deleteEpgSourceIfUnused(it.id)
             }
         }
-        val allTvb = com.example.data.epg.TvBuddyEpg.SOURCES.map { it.url }.toSet()
+        for (url in com.example.data.epg.TvBuddyEpg.RETIRED_URLS) {
+            epgSourceDao.getEpgSourceByUrl(url)?.let {
+                togglePlaylistEpgAssignment(playlistId, it.id, false)
+                deleteEpgSourceIfUnused(it.id)
+            }
+        }
+        val allTvb = com.example.data.epg.TvBuddyEpg.SOURCES.map { it.url }.toSet() + com.example.data.epg.TvBuddyEpg.RETIRED_URLS
         val urls = ((epgPrefs.getStringSet("urls_$playlistId", null) ?: emptySet()) - legacyUrls - allTvb) + on.map { it.url }
         epgPrefs.edit().putStringSet("urls_$playlistId", urls.toSet()).apply()
         return out
