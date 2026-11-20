@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
@@ -85,7 +86,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.nativeKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.draw.clip
@@ -2676,7 +2676,7 @@ private fun ReorderGroupsSubMenu(
                 .fillMaxSize()
                 .then(
                     if (!phone) Modifier else Modifier.pointerInput(Unit) {
-                        androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress(
+                        detectDragGesturesAfterLongPress(
                             onDragStart = { offset ->
                                 val hit = listState.layoutInfo.visibleItemsInfo.firstOrNull {
                                     offset.y >= it.offset && offset.y <= it.offset + it.size
