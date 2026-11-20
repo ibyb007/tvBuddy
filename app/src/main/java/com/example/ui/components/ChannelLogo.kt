@@ -61,9 +61,8 @@ internal fun prefetchChannelLogo(context: android.content.Context, url: String?)
 }
 
 /**
- * Frosted "glass" card that sits behind a channel logo in the phone lists. Mid-light on purpose: logos whose lettering
- * is black stay readable (they vanished on the old dark tile), and white lettering still keeps some contrast.
- * Size the card from outside; the logo inside keeps its own size.
+ * Transparent "liquid glass" card behind a channel logo in the phone lists: a faint frosted tint with a soft sheen
+ * and a light-catching rim, so the row shows through it. Size the card from outside; the logo inside keeps its own size.
  */
 @Composable
 fun GlassLogoCard(
@@ -74,10 +73,11 @@ fun GlassLogoCard(
     Box(
         modifier = modifier
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(Color(0xF2D6DDE7), Color(0xF2A9B4C3))))
+            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.07f))))
+            .background(Brush.linearGradient(listOf(Color.White.copy(alpha = 0.10f), Color.Transparent, Color.White.copy(alpha = 0.05f))))
             .border(
                 1.dp,
-                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.85f), Color.White.copy(alpha = 0.25f))),
+                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.10f))),
                 shape
             ),
         contentAlignment = Alignment.Center,
