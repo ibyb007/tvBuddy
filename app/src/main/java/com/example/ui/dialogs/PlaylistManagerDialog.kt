@@ -1589,6 +1589,31 @@ private fun TunnelSubMenu(
                     }
                 )
             }
+            item { DrawerSectionHeader(title = "WARP connection") }
+            item {
+                TiviMenuRow(
+                    title = "IPv6 (default)",
+                    subtitle = "Dial sites over IPv6 first, falls back to IPv4",
+                    onClick = { com.example.data.network.TunnelManager.setWarpIpv4(false) },
+                    trailingContent = { isFocused ->
+                        if (!state.warpIpv4) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = if (isFocused) TiviFocusText else TiviAccentBlue)
+                        }
+                    }
+                )
+            }
+            item {
+                TiviMenuRow(
+                    title = "IPv4",
+                    subtitle = "Dial sites over IPv4 first, falls back to IPv6. Restarts WARP if it is on",
+                    onClick = { com.example.data.network.TunnelManager.setWarpIpv4(true) },
+                    trailingContent = { isFocused ->
+                        if (state.warpIpv4) {
+                            Icon(Icons.Default.Check, contentDescription = "Selected", tint = if (isFocused) TiviFocusText else TiviAccentBlue)
+                        }
+                    }
+                )
+            }
             item {
                 TiviMenuRow(
                     title = "Status",
