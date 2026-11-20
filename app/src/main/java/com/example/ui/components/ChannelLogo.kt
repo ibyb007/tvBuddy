@@ -8,6 +8,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -61,23 +63,82 @@ internal fun prefetchChannelLogo(context: android.content.Context, url: String?)
 }
 
 /**
- * Transparent "liquid glass" card behind a channel logo in the phone lists: a faint frosted tint with a soft sheen
- * and a light-catching rim, so the row shows through it. Size the card from outside; the logo inside keeps its own size.
+ * Transparent "liquid glass" card behind a channel logo in the phone lists. Nothing opaque is painted: a frosted
+ * white tint that is brighter at the top and fades down, a diagonal specular sheen, a bright inner top edge, a soft
+ * glow along the bottom edge and a light-catching rim, so the row behind shows through and the card reads like a
+ * pane of glass seen from the front. Size the card from outside; the logo inside keeps its own size.
  */
 @Composable
 fun GlassLogoCard(
     modifier: Modifier = Modifier,
     content: @Composable BoxScope.() -> Unit
 ) {
-    val shape = RoundedCornerShape(10.dp)
+    val shape = RoundedCornerShape(12.dp)
     Box(
         modifier = modifier
             .clip(shape)
-            .background(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.07f))))
-            .background(Brush.linearGradient(listOf(Color.White.copy(alpha = 0.10f), Color.Transparent, Color.White.copy(alpha = 0.05f))))
+            // frosted body (translucent, never black)
+            .background(
+                Brush.verticalGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.30f),
+                        Color.White.copy(alpha = 0.14f),
+                        Color.White.copy(alpha = 0.20f)
+                    )
+                )
+            )
+            .drawWithCache {
+                val w = size.width
+                val h = size.height
+                val r = 12.dp.toPx()
+                // diagonal specular sheen across the upper-left half
+                val sheen = Brush.linearGradient(
+                    colorStops = arrayOf(
+                        0.00f to Color.White.copy(alpha = 0.38f),
+                        0.45f to Color.White.copy(alpha = 0.06f),
+                        0.46f to Color.Transparent,
+                        1.00f to Color.Transparent
+                    ),
+                    start = Offset(0f, 0f),
+                    end = Offset(w, h)
+                )
+                // soft light gathering along the bottom edge (refraction)
+                val bottomGlow = Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, Color.White.copy(alpha = 0.22f)),
+                    startY = h * 0.65f,
+                    endY = h
+                )
+                // bright 1px line just inside the top edge
+                val topLine = Brush.horizontalGradient(
+                    listOf(
+                        Color.Transparent,
+                        Color.White.copy(alpha = 0.85f),
+                        Color.White.copy(alpha = 0.85f),
+                        Color.Transparent
+                    ),
+                    startX = r,
+                    endX = w - r
+                )
+                onDrawBehind {
+                    drawRect(sheen)
+                    drawRect(bottomGlow)
+                    drawLine(
+                        brush = topLine,
+                        start = Offset(r, 1.5.dp.toPx()),
+                        end = Offset(w - r, 1.5.dp.toPx()),
+                        strokeWidth = 1.dp.toPx()
+                    )
+                }
+            }
             .border(
                 1.dp,
-                Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.55f), Color.White.copy(alpha = 0.10f))),
+                Brush.linearGradient(
+                    listOf(
+                        Color.White.copy(alpha = 0.75f),
+                        Color.White.copy(alpha = 0.18f),
+                        Color.White.copy(alpha = 0.45f)
+                    )
+                ),
                 shape
             ),
         contentAlignment = Alignment.Center,
