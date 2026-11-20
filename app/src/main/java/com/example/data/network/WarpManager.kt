@@ -50,6 +50,27 @@ object WarpManager {
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
+    /** Which address family the tunnel dials destinations with first. IPv6 is the default. */
+    enum class IpMode(val title: String) { IPV6("IPv6"), IPV4("IPv4") }
+
+    private const val KEY_IP_MODE = "warp_ip_mode"
+    private val _ipMode = MutableStateFlow(IpMode.IPV6)
+    val ipMode: StateFlow<IpMode> = _ipMode.asStateFlow()
+
+    /** Saves the mode; a running tunnel is restarted so the new mode applies right away. */
+    fun setIpMode(mode: IpMode) {
+        if (!initialised || _ipMode.value == mode) return
+        prefs().edit().putString(KEY_IP_MODE, if (mode == IpMode.IPV4) "ipv4" else "ipv6").apply()
+        _ipMode.value = mode
+        val st = _state.value
+        if (st.enabled && st.phase != Phase.STARTING) {
+            generation++
+            stopInternal()
+            _state.value = State(enabled = true, phase = Phase.STARTING)
+            startAsync()
+        }
+    }
+
     private lateinit var appContext: Context
     private var initialised = false
 
@@ -75,6 +96,7 @@ object WarpManager {
             appContext = context.applicationContext
         }
         installProxySelector()
+        _ipMode.value = if (prefs().getString(KEY_IP_MODE, null) == "ipv4") IpMode.IPV4 else IpMode.IPV6
         val enabled = prefs().getBoolean(KEY_ENABLED, false)
         _state.value = State(enabled = enabled, phase = if (enabled) Phase.STARTING else Phase.OFF)
         if (enabled) startAsync()
@@ -221,6 +243,7 @@ object WarpManager {
         pb.directory(warpDir())
         pb.environment()["USQUE_DNS_SERVERS"] = dns
         pb.environment()["SSL_CERT_DIR"] = ANDROID_CA_DIRS
+        pb.environment()["USQUE_IP_MODE"] = if (_ipMode.value == IpMode.IPV4) "ipv4" else "ipv6"
         pb.redirectErrorStream(true)
         val proc = pb.start()
         synchronized(lock) { process = proc }
