@@ -42,6 +42,9 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET expirationDate = :expiration WHERE id = :playlistId")
     suspend fun updateExpiration(playlistId: Long, expiration: String?)
 
+    @Query("UPDATE playlists SET groupsSorting = :sorting WHERE id = :playlistId")
+    suspend fun setGroupsSorting(playlistId: Long, sorting: String)
+
     @Query("UPDATE playlists SET sortOrder = :sortOrder WHERE id = :playlistId")
     suspend fun updatePlaylistSortOrder(playlistId: Long, sortOrder: Int)
 
