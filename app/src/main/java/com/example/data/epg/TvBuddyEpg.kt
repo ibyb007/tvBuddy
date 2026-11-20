@@ -32,7 +32,8 @@ object TvBuddyEpg {
     val SOURCES: List<Source> = listOf(
         Source("default", "TVBuddy merged guide (India, UK sports, Fox Sports AU, Willow)", SOURCE_URL, true),
         Source("iptvepg_in", "India (iptv-epg.org)", "https://iptv-epg.org/files/epg-in.xml.gz", false),
-        Source("epgpw_in", "India (epg.pw)", "https://epg.pw/xmltv/epg_IN.xml.gz", false),
+        // key kept from the old epg.pw entry so a user's on / off choice carries over to the Jio guide
+        Source("epgpw_in", "India (Jio EPG)", "https://avkb.short.gy/jioepg.xml.gz", false),
         Source("iptvepg_us", "USA (iptv-epg.org)", "https://iptv-epg.org/files/epg-us.xml.gz", false),
         Source("iptvepg_gb", "UK (iptv-epg.org)", "https://iptv-epg.org/files/epg-gb.xml.gz", false),
         Source("iptvepg_au", "Australia (iptv-epg.org)", "https://iptv-epg.org/files/epg-au.xml.gz", false),
@@ -40,6 +41,9 @@ object TvBuddyEpg {
         Source("epgpw_gb", "UK (epg.pw)", "https://epg.pw/xmltv/epg_GB.xml.gz", false),
         Source("epgpw_au", "Australia (epg.pw)", "https://epg.pw/xmltv/epg_AU.xml.gz", false)
     )
+
+    /** Guide links that were replaced; they are unassigned / removed from playlists on the next guide run. */
+    val RETIRED_URLS: Set<String> = setOf("https://epg.pw/xmltv/epg_IN.xml.gz")
 
     /** Name of the guide source entry; the default keeps the plain name. */
     fun sourceName(s: Source) = if (s.key == "default") SOURCE_NAME else "$NAME_PREFIX - ${s.label}"
