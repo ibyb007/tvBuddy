@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -123,27 +124,22 @@ fun ChannelListItem(
             Spacer(modifier = Modifier.width(12.dp))
 
             // Channel Logo
-            Box(
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF0F172A)),
-                contentAlignment = Alignment.Center
-            ) {
+            // glass card around the logo; the card is larger than before so the logo itself is not made smaller
+            GlassLogoCard(modifier = Modifier.size(width = 56.dp, height = 46.dp)) {
                 if (!channel.logoUrl.isNullOrBlank()) {
                     AsyncImage(
                         model = channel.logoUrl,
                         contentDescription = channel.name,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .size(38.dp)
-                            .clip(RoundedCornerShape(6.dp))
+                            .fillMaxSize()
+                            .padding(horizontal = 3.dp, vertical = 4.dp)
                     )
                 } else {
                     Icon(
                         imageVector = Icons.Default.Tv,
                         contentDescription = null,
-                        tint = Color.LightGray,
+                        tint = Color(0xFF3B4658),
                         modifier = Modifier.size(24.dp)
                     )
                 }
