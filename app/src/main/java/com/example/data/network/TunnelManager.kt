@@ -32,7 +32,8 @@ object TunnelManager {
         val phase: TunnelPhase = TunnelPhase.OFF,
         val message: String? = null,
         val vpnConfigName: String? = null,
-        val vpnEndpoint: String? = null
+        val vpnEndpoint: String? = null,
+        val warpIpv4: Boolean = false
     ) {
         val modeTitle: String get() = mode.title
         val statusText: String
@@ -75,7 +76,7 @@ object TunnelManager {
         if (first) {
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
                 // only a trigger: recompute() always reads the latest values, so it can never publish stale ones
-                combine(mode, WarpManager.state, VpnManager.state) { _, _, _ -> }.collect { recompute() }
+                combine(mode, WarpManager.state, VpnManager.state, WarpManager.ipMode) { _, _, _, _ -> }.collect { recompute() }
             }
             // log switched on while the tunnel is already up: record the exit then
             CoroutineScope(SupervisorJob() + Dispatchers.Default).launch {
@@ -120,7 +121,7 @@ object TunnelManager {
                 WarpManager.Phase.RUNNING -> TunnelPhase.RUNNING
                 WarpManager.Phase.ERROR -> TunnelPhase.ERROR
             }
-            State(m, w.enabled, wp, w.message, v.configName, v.endpoint)
+            State(m, w.enabled, wp, w.message, v.configName, v.endpoint, WarpManager.ipMode.value == WarpManager.IpMode.IPV4)
         }
         val cur = _state.value
         if (cur.phase == TunnelPhase.RUNNING && lastPhase != TunnelPhase.RUNNING) logExit(cur.modeTitle)
@@ -149,6 +150,13 @@ object TunnelManager {
         if (wasOn) {
             if (newMode == Mode.VPN) VpnManager.setEnabled(true) else WarpManager.setEnabled(true)
         }
+        recompute()
+    }
+
+    /** WARP only: dial destinations over IPv6 first (default) or IPv4 first. */
+    fun setWarpIpv4(ipv4: Boolean) {
+        if (!initialised) return
+        WarpManager.setIpMode(if (ipv4) WarpManager.IpMode.IPV4 else WarpManager.IpMode.IPV6)
         recompute()
     }
 
