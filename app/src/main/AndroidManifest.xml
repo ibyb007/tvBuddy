@@ -43,6 +43,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Backup restore: restarts the app in a fresh process (own process so it survives the kill) -->
+        <activity
+            android:name="com.example.data.backup.RestartActivity"
+            android:exported="false"
+            android:process=":restart"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <!-- In-app updater -->
         <provider
             android:name="androidx.core.content.FileProvider"
