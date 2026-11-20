@@ -82,7 +82,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.nativeKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.zIndex
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.focus.FocusDirection
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -750,11 +761,16 @@ fun PlaylistManagerDialog(
                             is TiviSettingsRoute.ReorderGroups -> {
                                 val playlist = playlists.find { it.id == route.playlistId }
                                 if (playlist != null) {
-                                    val playlistGroups = allGroups
-                                        .filter { it.playlistId == playlist.id && it.contentType == route.contentType }
-                                        .sortedBy { it.sortOrder }
+                                    // start from the order the groups are shown in right now (whatever the sorting mode is),
+                                    // so the first move works on what the user sees
+                                    val ofType = allGroups.filter { it.playlistId == playlist.id && it.contentType == route.contentType }
+                                    val playlistGroups = when (playlist.groupsSorting) {
+                                        "By name" -> ofType.sortedBy { it.groupTitle.lowercase() }
+                                        "Manual" -> ofType.sortedBy { it.sortOrder }
+                                        else -> ofType.sortedBy { it.originalOrder }
+                                    }
                                     ReorderGroupsSubMenu(
-                                        groups = playlistGroups,
+                                        groupTitles = playlistGroups.map { it.groupTitle },
                                         onSaveOrder = { orderedTitles ->
                                             onReorderGroups(playlist.id, orderedTitles, route.contentType)
                                         }
@@ -995,13 +1011,6 @@ private fun MainSettingsMenu(
         ) {
             item {
                 TiviMenuRow(
-                    title = "General",
-                    subtitle = "Back up and restore playlists and settings",
-                    onClick = onOpenGeneral
-                )
-            }
-            item {
-                TiviMenuRow(
                     title = "Playlists",
                     subtitle = "Add, remove and manage playlists",
                     onClick = onOpenPlaylists
@@ -1084,6 +1093,13 @@ private fun MainSettingsMenu(
                         onClick = onExportLog
                     )
                 }
+            }
+            item {
+                TiviMenuRow(
+                    title = "General",
+                    subtitle = "Back up and restore playlists and settings",
+                    onClick = onOpenGeneral
+                )
             }
             item {
                 TiviMenuRow(
@@ -2533,44 +2549,326 @@ private fun PortalParamsSubMenu(
     }
 }
 
+/**
+ * Reorder groups.
+ *
+ * TV (TiviMate style): OK on a group picks it up (outlined row), UP / DOWN move it through the list, OK drops it
+ * at that position (saved). BACK while a group is picked up puts it back where it was.
+ * Phone: long press a group, drag it to its new position and let go (saved).
+ */
 @Composable
 private fun ReorderGroupsSubMenu(
-    groups: List<ChannelGroupEntity>,
+    groupTitles: List<String>,
     onSaveOrder: (List<String>) -> Unit
 ) {
-    var mutableList by remember(groups) { mutableStateOf(groups) }
+    val phone = LocalPhoneSettings.current
+    // the list is kept locally while it is being edited; it is only rebuilt when the set of groups itself changes
+    val items = remember(groupTitles.toSet()) { groupTitles.toMutableStateList() }
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val latestSave by rememberUpdatedState(onSaveOrder)
+
+    // ---- TV: picked-up group ----
+    var grabbed by remember { mutableStateOf<String?>(null) }
+    var orderAtGrab by remember { mutableStateOf<List<String>>(emptyList()) }
+
+    fun move(title: String, delta: Int) {
+        val from = items.indexOf(title)
+        val to = from + delta
+        if (from < 0 || to < 0 || to > items.lastIndex) return
+        items.add(to, items.removeAt(from))
+    }
+
+    BackHandler(enabled = grabbed != null) {
+        // cancel the move: the group goes back to where it was when it was picked up
+        val back = orderAtGrab
+        if (back.size == items.size) { items.clear(); items.addAll(back) }
+        grabbed = null
+    }
+
+    // keep the picked-up group on screen while it travels through a long list
+    val grabbedIndex = grabbed?.let { items.indexOf(it) } ?: -1
+    LaunchedEffect(grabbedIndex) {
+        if (grabbedIndex < 0) return@LaunchedEffect
+        androidx.compose.runtime.withFrameNanos { }
+        val info = listState.layoutInfo
+        val row = info.visibleItemsInfo.firstOrNull { it.index == grabbedIndex }
+        if (row == null) {
+            listState.animateScrollToItem((grabbedIndex - 2).coerceAtLeast(0))
+        } else {
+            val margin = row.size * 2
+            val top = info.viewportStartOffset + margin
+            val bottom = info.viewportEndOffset - margin
+            if (row.offset < top) {
+                listState.animateScrollBy((row.offset - top).toFloat())
+            } else if (row.offset + row.size > bottom) {
+                listState.animateScrollBy((row.offset + row.size - bottom).toFloat())
+            }
+        }
+    }
+
+    // ---- phone: drag and drop ----
+    var draggingKey by remember { mutableStateOf<String?>(null) }
+    var dragDelta by remember { androidx.compose.runtime.mutableFloatStateOf(0f) }
+    var dragMoved by remember { mutableStateOf(false) }
+    // index the dragged row must reach before the next swap is looked at (layout info lags one frame behind a swap)
+    var awaitIndex by remember { mutableStateOf(-1) }
+    val haptics = androidx.compose.ui.platform.LocalHapticFeedback.current
+
+    fun checkSwap() {
+        val key = draggingKey ?: return
+        val infos = listState.layoutInfo.visibleItemsInfo
+        val dragged = infos.firstOrNull { it.key == key } ?: return
+        if (awaitIndex >= 0 && dragged.index != awaitIndex) return
+        awaitIndex = -1
+        val center = dragged.offset + dragDelta + dragged.size / 2f
+        val target = infos.firstOrNull {
+            it.key != key && center >= it.offset && center <= it.offset + it.size
+        } ?: return
+        val from = items.indexOf(key)
+        val to = items.indexOf(target.key as? String ?: return)
+        if (from < 0 || to < 0 || from == to) return
+        val newOffset = if (to > from) target.offset + target.size - dragged.size else target.offset
+        items.add(to, items.removeAt(from))
+        dragDelta += (dragged.offset - newOffset)
+        awaitIndex = to
+        dragMoved = true
+    }
+
+    // scroll the list while a row is dragged to its top / bottom edge
+    LaunchedEffect(draggingKey) {
+        if (draggingKey == null) return@LaunchedEffect
+        while (draggingKey != null) {
+            val key = draggingKey
+            val info = listState.layoutInfo
+            val dragged = info.visibleItemsInfo.firstOrNull { it.key == key }
+            if (dragged != null) {
+                val top = dragged.offset + dragDelta
+                val bottom = top + dragged.size
+                val edge = dragged.size * 1.2f
+                val speed = when {
+                    top < info.viewportStartOffset + edge -> -((info.viewportStartOffset + edge - top) / edge).coerceIn(0f, 1f) * 28f
+                    bottom > info.viewportEndOffset - edge -> ((bottom - (info.viewportEndOffset - edge)) / edge).coerceIn(0f, 1f) * 28f
+                    else -> 0f
+                }
+                if (speed != 0f) {
+                    val used = listState.scrollBy(speed)
+                    dragDelta += used
+                    checkSwap()
+                }
+            }
+            androidx.compose.runtime.withFrameNanos { }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         DrawerHeader(title = "Reorder groups")
+        if (phone) {
+            Text(
+                text = "Long press a group, then drag it to a new position",
+                color = TiviSecondaryText,
+                fontSize = 12.sp,
+                modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp)
+            )
+        }
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (!phone) Modifier else Modifier.pointerInput(Unit) {
+                        androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress(
+                            onDragStart = { offset ->
+                                val hit = listState.layoutInfo.visibleItemsInfo.firstOrNull {
+                                    offset.y >= it.offset && offset.y <= it.offset + it.size
+                                }
+                                if (hit != null) {
+                                    draggingKey = hit.key as? String
+                                    dragDelta = 0f
+                                    dragMoved = false
+                                    awaitIndex = -1
+                                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                }
+                            },
+                            onDrag = { change, amount ->
+                                if (draggingKey != null) {
+                                    change.consume()
+                                    dragDelta += amount.y
+                                    checkSwap()
+                                }
+                            },
+                            onDragEnd = {
+                                val moved = dragMoved
+                                draggingKey = null
+                                dragDelta = 0f
+                                dragMoved = false
+                                awaitIndex = -1
+                                if (moved) latestSave(items.toList())
+                            },
+                            onDragCancel = {
+                                val moved = dragMoved
+                                draggingKey = null
+                                dragDelta = 0f
+                                dragMoved = false
+                                awaitIndex = -1
+                                if (moved) latestSave(items.toList())
+                            }
+                        )
+                    }
+                ),
             contentPadding = settingsListPadding(top = 0.dp, bottom = 24.dp)
         ) {
-            itemsIndexed(mutableList, key = { _, g -> g.groupTitle }) { index, group ->
-                TiviReorderRow(
-                    title = group.groupTitle,
-                    canMoveUp = index > 0,
-                    canMoveDown = index < mutableList.lastIndex,
-                    onMoveUp = {
-                        if (index > 0) {
-                            val copy = mutableList.toMutableList()
-                            val moved = copy.removeAt(index)
-                            copy.add(index - 1, moved)
-                            mutableList = copy
-                            onSaveOrder(copy.map { it.groupTitle })
+            itemsIndexed(items, key = { _, title -> title }) { _, title ->
+                val isDragging = draggingKey == title
+                GroupReorderRow(
+                    title = title,
+                    phone = phone,
+                    grabbed = grabbed == title,
+                    dragging = isDragging,
+                    onToggleGrab = {
+                        if (grabbed == title) {
+                            // OK again: drop it here
+                            grabbed = null
+                            latestSave(items.toList())
+                        } else if (grabbed == null) {
+                            orderAtGrab = items.toList()
+                            grabbed = title
                         }
                     },
-                    onMoveDown = {
-                        if (index < mutableList.lastIndex) {
-                            val copy = mutableList.toMutableList()
-                            val moved = copy.removeAt(index)
-                            copy.add(index + 1, moved)
-                            mutableList = copy
-                            onSaveOrder(copy.map { it.groupTitle })
-                        }
+                    onMove = { delta -> move(title, delta) },
+                    modifier = if (isDragging) {
+                        Modifier
+                            .zIndex(1f)
+                            .graphicsLayer {
+                                translationY = dragDelta
+                                scaleX = 1.03f
+                                scaleY = 1.03f
+                                shadowElevation = 16f
+                            }
+                    } else {
+                        Modifier.animateItem()
                     }
                 )
             }
+        }
+    }
+}
+
+/** One group in the reorder list (see [ReorderGroupsSubMenu] for how TV and phone use it). */
+@Composable
+private fun GroupReorderRow(
+    title: String,
+    phone: Boolean,
+    grabbed: Boolean,
+    dragging: Boolean,
+    onToggleGrab: () -> Unit,
+    onMove: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isFocused by interactionSource.collectIsFocusedAsState()
+    val memory = LocalDrawerFocus.current
+    val requester = remember { FocusRequester() }
+    val hadFocus = remember { booleanArrayOf(false) }
+    DisposableEffect(Unit) {
+        onDispose { if (hadFocus[0]) { hadFocus[0] = false; memory?.rowLostFocus() } }
+    }
+    // the first group takes focus when the screen opens (TV)
+    val claimsFocus = remember { !phone && memory?.claim(title) == true }
+    LaunchedEffect(Unit) {
+        if (claimsFocus) {
+            repeat(4) {
+                try {
+                    requester.requestFocus()
+                    return@LaunchedEffect
+                } catch (_: Exception) {
+                    delay(60)
+                }
+            }
+        }
+    }
+
+    val showFocus = isFocused && !phone && !grabbed
+    val bg = when {
+        dragging -> Color(0xFF2C323B)
+        showFocus -> TiviFocusBg
+        else -> Color.Transparent
+    }
+    val textColor = if (showFocus) TiviFocusText else TiviPrimaryText
+    val shape = RoundedCornerShape(4.dp)
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .clip(shape)
+            .background(bg)
+            .then(if (grabbed) Modifier.border(1.5.dp, TiviFocusBg, shape) else Modifier)
+            .onPreviewKeyEvent { e ->
+                if (phone) return@onPreviewKeyEvent false
+                val k = e.key
+                val select = k == Key.DirectionCenter || k == Key.Enter || k == Key.NumPadEnter
+                if (select) {
+                    if (e.type == KeyEventType.KeyDown && e.nativeKeyEvent.repeatCount == 0) onToggleGrab()
+                    return@onPreviewKeyEvent true
+                }
+                if (grabbed) {
+                    when (k) {
+                        Key.DirectionUp -> { if (e.type == KeyEventType.KeyDown) onMove(-1); true }
+                        Key.DirectionDown -> { if (e.type == KeyEventType.KeyDown) onMove(1); true }
+                        // a picked-up group stays put on the sides, focus must not leave it
+                        Key.DirectionLeft, Key.DirectionRight -> true
+                        else -> false
+                    }
+                } else false
+            }
+            .focusRequester(requester)
+            .onFocusChanged {
+                if (it.isFocused) {
+                    if (!hadFocus[0]) { hadFocus[0] = true; memory?.rowGainedFocus() }
+                    memory?.onFocused(title)
+                } else if (hadFocus[0]) {
+                    hadFocus[0] = false
+                    memory?.rowLostFocus()
+                }
+            }
+            .focusable(enabled = !phone, interactionSource = interactionSource)
+            .padding(horizontal = 12.dp, vertical = if (phone) 14.dp else 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = title,
+            color = textColor,
+            fontSize = 15.sp,
+            fontWeight = if (showFocus || grabbed) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        if (phone) {
+            // drag handle (the whole row reacts to a long press)
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                repeat(3) {
+                    Box(
+                        Modifier
+                            .size(width = 18.dp, height = 2.dp)
+                            .clip(CircleShape)
+                            .background(if (dragging) com.example.ui.theme.AccentCyan else TiviSecondaryText)
+                    )
+                }
+            }
+        } else if (grabbed) {
+            Icon(
+                imageVector = Icons.Default.ArrowUpward,
+                contentDescription = null,
+                tint = TiviPrimaryText,
+                modifier = Modifier.size(16.dp)
+            )
+            Icon(
+                imageVector = Icons.Default.ArrowDownward,
+                contentDescription = null,
+                tint = TiviPrimaryText,
+                modifier = Modifier.size(16.dp)
+            )
         }
     }
 }
