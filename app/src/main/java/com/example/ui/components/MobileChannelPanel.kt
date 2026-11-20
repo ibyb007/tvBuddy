@@ -204,16 +204,16 @@ private fun ChannelPage(
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(Modifier.size(width = 44.dp, height = 32.dp), contentAlignment = Alignment.Center) {
+                GlassLogoCard(Modifier.size(width = 52.dp, height = 38.dp)) {
                     if (!ch.logoUrl.isNullOrBlank()) {
                         AsyncImage(
                             model = ch.logoUrl,
                             contentDescription = ch.name,
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
+                            modifier = Modifier.fillMaxSize().padding(horizontal = 4.dp, vertical = 3.dp)
                         )
                     } else {
-                        Text(ch.name.take(2).uppercase(), color = fg, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        Text(ch.name.take(2).uppercase(), color = Color(0xFF1F2937), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 Spacer(Modifier.width(10.dp))
