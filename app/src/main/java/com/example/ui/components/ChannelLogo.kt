@@ -81,9 +81,9 @@ fun GlassLogoCard(
             .background(
                 Brush.verticalGradient(
                     listOf(
-                        Color.White.copy(alpha = 0.30f),
-                        Color.White.copy(alpha = 0.14f),
-                        Color.White.copy(alpha = 0.20f)
+                        Color.White.copy(alpha = 0.40f),
+                        Color.White.copy(alpha = 0.24f),
+                        Color.White.copy(alpha = 0.30f)
                     )
                 )
             )
@@ -91,6 +91,16 @@ fun GlassLogoCard(
                 val w = size.width
                 val h = size.height
                 val r = 12.dp.toPx()
+                // soft backlight centred where the logo sits, so dark / detailed logos stay readable on the glass
+                val backlight = Brush.radialGradient(
+                    colors = listOf(
+                        Color.White.copy(alpha = 0.62f),
+                        Color.White.copy(alpha = 0.30f),
+                        Color.Transparent
+                    ),
+                    center = Offset(w / 2f, h / 2f),
+                    radius = maxOf(w, h) * 0.75f
+                )
                 // diagonal specular sheen across the upper-left half
                 val sheen = Brush.linearGradient(
                     colorStops = arrayOf(
@@ -120,6 +130,7 @@ fun GlassLogoCard(
                     endX = w - r
                 )
                 onDrawBehind {
+                    drawRect(backlight)
                     drawRect(sheen)
                     drawRect(bottomGlow)
                     drawLine(
