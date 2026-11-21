@@ -376,13 +376,20 @@ fun HomeScreen(
     var dbSettled by remember { mutableStateOf(false) }
     LaunchedEffect(dataLoaded) {
         if (dataLoaded) {
-            // let the derived channel list catch up: with a saved playlist the channel list is filtered on a
-            // background thread and is briefly empty, which must never be mistaken for "nothing to watch"
-            kotlinx.coroutines.delay(if (playlists.isEmpty()) 250 else 900)
+            kotlinx.coroutines.delay(250)   // let the derived channel list catch up
             dbSettled = true
         } else {
             kotlinx.coroutines.delay(6000)
             dbSettled = true
+        }
+    }
+    // Only used to decide "a saved playlist really has no channels" (start page / "No channels" text). The channel list
+    // itself never waits for it: with a saved playlist it is drawn right away, the filtered list just fills in.
+    var channelsSettled by remember { mutableStateOf(false) }
+    LaunchedEffect(dataLoaded) {
+        if (dataLoaded) {
+            kotlinx.coroutines.delay(900)
+            channelsSettled = true
         }
     }
 
@@ -789,8 +796,8 @@ fun HomeScreen(
             }
         ) { paddingValues ->
             // nothing to watch yet (no playlist, or an empty one): the start page replaces chips, list and buttons
-            val mobileStartup = dbSettled && !isLoading && (playlists.isEmpty() ||
-                (channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
+            val mobileStartup = !isLoading && (playlists.isEmpty() ||
+                (channelsSettled && channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
                     mobilePlaylistId == null && !hasMovies && !hasShows))
             val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode && !showPlaylistManager
             val navInset = androidx.compose.foundation.layout.WindowInsets.navigationBars
@@ -900,7 +907,7 @@ fun HomeScreen(
                 }
 
                 if (!isMobileFullscreen && !isInPipMode) {
-                    if (!dbSettled) {
+                    if (!dbSettled && playlists.isEmpty()) {
                         // database still loading: plain background instead of flashing the start page
                         Box(modifier = Modifier.fillMaxWidth().weight(1f).background(DarkBackground))
                     } else if (mobileStartup) {
@@ -1006,7 +1013,7 @@ fun HomeScreen(
                             }
                         }
 
-                        if (channels.isEmpty() && !isLoading) {
+                        if (channels.isEmpty() && !isLoading && (channelsSettled || searchQuery.isNotEmpty())) {
                             // search / group / playlist with nothing in it
                             Box(
                                 modifier = Modifier
