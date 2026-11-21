@@ -376,7 +376,9 @@ fun HomeScreen(
     var dbSettled by remember { mutableStateOf(false) }
     LaunchedEffect(dataLoaded) {
         if (dataLoaded) {
-            kotlinx.coroutines.delay(250)   // let the derived channel list catch up
+            // let the derived channel list catch up: with a saved playlist the channel list is filtered on a
+            // background thread and is briefly empty, which must never be mistaken for "nothing to watch"
+            kotlinx.coroutines.delay(if (playlists.isEmpty()) 250 else 900)
             dbSettled = true
         } else {
             kotlinx.coroutines.delay(6000)
@@ -787,7 +789,7 @@ fun HomeScreen(
             }
         ) { paddingValues ->
             // nothing to watch yet (no playlist, or an empty one): the start page replaces chips, list and buttons
-            val mobileStartup = !isLoading && (playlists.isEmpty() ||
+            val mobileStartup = dbSettled && !isLoading && (playlists.isEmpty() ||
                 (channels.isEmpty() && searchQuery.isEmpty() && selectedCategory == "All" &&
                     mobilePlaylistId == null && !hasMovies && !hasShows))
             val showNavBar = dbSettled && !mobileStartup && !isMobileFullscreen && !isInPipMode && !showPlaylistManager
@@ -898,7 +900,7 @@ fun HomeScreen(
                 }
 
                 if (!isMobileFullscreen && !isInPipMode) {
-                    if (!dbSettled && playlists.isEmpty()) {
+                    if (!dbSettled) {
                         // database still loading: plain background instead of flashing the start page
                         Box(modifier = Modifier.fillMaxWidth().weight(1f).background(DarkBackground))
                     } else if (mobileStartup) {
