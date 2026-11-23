@@ -18,6 +18,8 @@ import com.example.data.local.entity.EPG_TYPE_XTREAM
 import com.example.data.local.entity.PlaylistEntity
 import com.example.data.local.entity.ProgramEntity
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.retryWhen
+import kotlinx.coroutines.flow.catch
 import com.example.data.model.ContentType
 import com.example.data.model.ImportCounts
 import com.example.data.model.EpisodeIds
@@ -111,12 +113,24 @@ class TvBuddyRepository(
     /** Bumped by "Clear EPG": a guide import that started earlier notices it and stops writing. */
     private val epgEpoch = AtomicInteger(0)
 
+    /**
+     * Big guide queries are re-run while a guide import writes (stalker bulk EPG) and a re-run can invalidate the
+     * cursor of the previous one: Room then throws "Couldn't read row N, col 0 from CursorWindow". That is transient,
+     * so retry instead of letting it crash the app; a flow that keeps failing just shows an empty guide.
+     */
+    private fun <T> Flow<List<T>>.resilient(): Flow<List<T>> =
+        this.retryWhen { cause, attempt ->
+            if (cause is IllegalStateException || cause is android.database.sqlite.SQLiteException) {
+                kotlinx.coroutines.delay(500L * (attempt + 1)); attempt < 6
+            } else false
+        }.catch { emit(emptyList()) }
+
     val allPlaylists: Flow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
     val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
     val favoriteChannels: Flow<List<ChannelEntity>> = channelDao.getFavoriteChannels()
     val allCategories: Flow<List<String>> = channelDao.getAllCategories()
     val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
-    val allCurrentPrograms: Flow<List<ProgramEntity>> = programDao.getAllCurrentPrograms()
+    val allCurrentPrograms: Flow<List<ProgramEntity>> = programDao.getAllCurrentPrograms().resilient()
 
     /** Programs from a few hours ago up to ~a day ahead (TV guide / schedule panels). Window is re-evaluated every 30 min. */
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
@@ -125,7 +139,7 @@ class TvBuddyRepository(
             while (true) { emit(Unit); kotlinx.coroutines.delay(30 * 60_000L) }
         }.flatMapLatest {
             val now = System.currentTimeMillis()
-            programDao.getProgramsInRange(now - 4 * 3_600_000L, now + 30 * 3_600_000L)
+            programDao.getProgramsInRange(now - 4 * 3_600_000L, now + 30 * 3_600_000L).resilient()
         }
     val allEpgSources: Flow<List<EpgSourceEntity>> = epgSourceDao.getAllEpgSources()
     val allPlaylistEpgCrossRefs: Flow<List<PlaylistEpgCrossRef>> = epgSourceDao.getAllPlaylistEpgCrossRefs()
