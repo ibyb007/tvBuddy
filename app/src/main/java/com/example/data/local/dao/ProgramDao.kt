@@ -15,10 +15,11 @@ interface ProgramDao {
     @Query("SELECT * FROM epg_programs WHERE epgChannelId = :epgChannelId AND :now >= startTimeMs AND :now < endTimeMs LIMIT 1")
     fun getCurrentProgram(epgChannelId: String, now: Long = System.currentTimeMillis()): Flow<ProgramEntity?>
 
-    @Query("SELECT * FROM epg_programs WHERE :now >= startTimeMs AND :now < endTimeMs")
+    /** description is cut: whole-guide queries return thousands of rows and long texts make Room's CursorWindow fail mid-read. */
+    @Query("SELECT id, epgChannelId, title, substr(description, 1, 400) AS description, category, startTimeMs, endTimeMs, iconUrl FROM epg_programs WHERE :now >= startTimeMs AND :now < endTimeMs")
     fun getAllCurrentPrograms(now: Long = System.currentTimeMillis()): Flow<List<ProgramEntity>>
 
-    @Query("SELECT * FROM epg_programs WHERE endTimeMs > :from AND startTimeMs < :to ORDER BY startTimeMs ASC")
+    @Query("SELECT id, epgChannelId, title, substr(description, 1, 400) AS description, category, startTimeMs, endTimeMs, iconUrl FROM epg_programs WHERE endTimeMs > :from AND startTimeMs < :to ORDER BY startTimeMs ASC")
     fun getProgramsInRange(from: Long, to: Long): Flow<List<ProgramEntity>>
 
     /** Every channel id that currently has programmes (the only ids worth matching playlist channels to). */
