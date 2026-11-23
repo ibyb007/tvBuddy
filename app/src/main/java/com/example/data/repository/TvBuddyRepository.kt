@@ -126,8 +126,8 @@ class TvBuddyRepository(
         }.catch { emit(emptyList()) }
 
     val allPlaylists: Flow<List<PlaylistEntity>> = playlistDao.getAllPlaylists()
-    val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels()
-    val favoriteChannels: Flow<List<ChannelEntity>> = channelDao.getFavoriteChannels()
+    val allChannels: Flow<List<ChannelEntity>> = channelDao.getAllChannels().resilient()
+    val favoriteChannels: Flow<List<ChannelEntity>> = channelDao.getFavoriteChannels().resilient()
     val allCategories: Flow<List<String>> = channelDao.getAllCategories()
     val playbackHistory: Flow<List<HistoryEntity>> = historyDao.getRecentHistory()
     val allCurrentPrograms: Flow<List<ProgramEntity>> = programDao.getAllCurrentPrograms().resilient()
@@ -1134,11 +1134,11 @@ class TvBuddyRepository(
 
     // ---- Playlist operations ----
     fun getChannelsByPlaylist(playlistId: Long): Flow<List<ChannelEntity>> {
-        return channelDao.getChannelsByPlaylist(playlistId)
+        return channelDao.getChannelsByPlaylist(playlistId).resilient()
     }
 
     fun searchChannels(query: String): Flow<List<ChannelEntity>> {
-        return channelDao.searchChannels(query)
+        return channelDao.searchChannels(query).resilient()
     }
 
     suspend fun deletePlaylist(playlist: PlaylistEntity) = withContext(Dispatchers.IO) {
@@ -1578,7 +1578,7 @@ class TvBuddyRepository(
         more
     }
 
-    fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getVodListByType(contentType)
+    fun vodChannels(contentType: String): Flow<List<ChannelEntity>> = channelDao.getVodListByType(contentType).resilient()
 
     /** Movies / shows that were started, newest first. */
     fun vodHistory(contentType: String): Flow<List<ChannelEntity>> = historyDao.getVodHistory(contentType)
@@ -2000,7 +2000,7 @@ class TvBuddyRepository(
     }
 
     fun getScheduleForChannel(epgChannelId: String): Flow<List<ProgramEntity>> {
-        return programDao.getScheduleForChannel(epgChannelId)
+        return programDao.getScheduleForChannel(epgChannelId).resilient()
     }
 
     suspend fun toggleFavorite(channelId: Long, currentFavorite: Boolean) = withContext(Dispatchers.IO) {
