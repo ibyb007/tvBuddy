@@ -1139,7 +1139,6 @@ fun HomeScreen(
                     adv.includeTv, adv.includeVod
                 )
             },
-            onAddJson = { name, src, isRaw, spoof -> viewModel.addJsonPlaylist(name, src, isRaw, spoof) },
             importState = importState,
             onFinishImport = { id, name -> viewModel.finishImport(id, name) },
             onDiscardImport = { id -> viewModel.discardImport(id) }
