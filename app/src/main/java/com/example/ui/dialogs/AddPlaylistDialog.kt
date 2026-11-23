@@ -88,6 +88,59 @@ data class StalkerAdvanced(
     val includeVod: Boolean = false
 )
 
+/** What the "Auto detect" tab decided the pasted address is. */
+private enum class DetectedType(val label: String) { M3U("M3U playlist"), XTREAM("Xtream Codes"), STALKER("Stalker portal") }
+
+private class Detection(
+    val type: DetectedType,
+    val server: String = "",
+    val user: String = "",
+    val pass: String = "",
+    val mac: String = ""
+)
+
+private val MacRegex = Regex("(?i)[0-9a-f]{2}(?::[0-9a-f]{2}){5}")
+
+/**
+ * Works out what kind of playlist a pasted address is:
+ *  - get.php / player_api.php / xmltv.php (or username + password parameters) -> Xtream Codes,
+ *  - a MAC address in the text, a /c/ or stalker_portal or portal.php path     -> Stalker portal,
+ *  - anything else                                                             -> M3U playlist.
+ */
+private fun detectPlaylist(input: String, macField: String): Detection? {
+    val text = input.trim()
+    if (text.isEmpty()) return null
+    val mac = macField.trim().ifBlank { MacRegex.find(text)?.value.orEmpty() }.uppercase()
+    val address = text.split(Regex("\\s+")).firstOrNull { it.startsWith("http", true) }
+        ?: text.split(Regex("\\s+")).firstOrNull { !MacRegex.matches(it) }
+        ?: return null
+    val uri = try { android.net.Uri.parse(if (address.contains("://")) address else "http://$address") } catch (_: Exception) { null }
+        ?: return null
+    val path = uri.path.orEmpty().lowercase()
+    val user = uri.getQueryParameter("username").orEmpty()
+    val pass = uri.getQueryParameter("password").orEmpty()
+    val root = uri.scheme.orEmpty().ifBlank { "http" } + "://" + uri.authority.orEmpty()
+    val xtreamPath = path.endsWith("get.php") || path.endsWith("player_api.php") || path.endsWith("xmltv.php")
+    if ((xtreamPath && user.isNotBlank() && pass.isNotBlank()) || (user.isNotBlank() && pass.isNotBlank() && !path.contains("/c"))) {
+        return Detection(DetectedType.XTREAM, server = root, user = user, pass = pass)
+    }
+    val stalkerPath = path.endsWith("/c") || path.contains("/c/") || path.contains("stalker_portal") ||
+        path.endsWith("portal.php") || path.contains("/portal")
+    if (mac.isNotEmpty() || stalkerPath) return Detection(DetectedType.STALKER, server = address, mac = mac)
+    return Detection(DetectedType.M3U, server = address)
+}
+
+private fun hex(bytes: ByteArray) = bytes.joinToString("") { "%02X".format(it) }
+
+/** Device ids derived from the MAC address (the way IPTVnator / MAG emulators do): serial = MD5(mac)[0..13], ids = SHA-256(mac). */
+private fun deviceIdsFromMac(mac: String): Triple<String, String, String> {
+    val m = mac.trim().uppercase()
+    if (m.isEmpty()) return Triple("", "", "")
+    val sha = hex(java.security.MessageDigest.getInstance("SHA-256").digest(m.toByteArray()))
+    val md5 = hex(java.security.MessageDigest.getInstance("MD5").digest(m.toByteArray()))
+    return Triple(sha, sha, md5.take(13))
+}
+
 /** "portal.example.com" from a playlist / portal address (used as the default playlist name, like TiviMate). */
 private fun hostOf(address: String): String? = try {
     val a = address.trim()
@@ -107,7 +160,6 @@ fun AddPlaylistDialog(
     onAddM3u: (name: String, source: String, isRaw: Boolean, spoof: SpoofPreset) -> Unit,
     onAddXtream: (name: String, serverUrl: String, user: String, pass: String, spoof: SpoofPreset, includeTv: Boolean, includeVod: Boolean) -> Unit,
     onAddStalker: (name: String, portalUrl: String, mac: String, spoof: SpoofPreset, advanced: StalkerAdvanced) -> Unit,
-    onAddJson: (name: String, source: String, isRaw: Boolean, spoof: SpoofPreset) -> Unit,
     isTvMode: Boolean = false,
     importState: ImportUiState = ImportUiState.Idle,
     onFinishImport: (playlistId: Long, name: String) -> Unit = { _, _ -> },
@@ -115,7 +167,7 @@ fun AddPlaylistDialog(
 ) {
     val tv = isTvMode
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("M3U", "XTREAM", "STALKER", "RAW JSON")
+    val tabTitles = listOf("M3U", "XTREAM", "STALKER", "AUTO")
 
     var selectedSpoof by remember { mutableStateOf(SpoofPreset.TIVIMATE) }
     var spoofDropdownExpanded by remember { mutableStateOf(false) }
@@ -123,6 +175,34 @@ fun AddPlaylistDialog(
     // M3U state
     var m3uName by remember { mutableStateOf("") }
     var m3uSource by remember { mutableStateOf("") }
+    var m3uFileName by remember { mutableStateOf("") }
+    var m3uFileContent by remember { mutableStateOf("") }
+    var m3uFileError by remember { mutableStateOf("") }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val m3uPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            try {
+                val text = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }.orEmpty()
+                if (text.isBlank()) {
+                    m3uFileError = "The file is empty"
+                } else {
+                    m3uFileContent = text
+                    m3uFileError = ""
+                    var display = ""
+                    try {
+                        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                            if (c.moveToFirst()) display = c.getString(0).orEmpty()
+                        }
+                    } catch (_: Exception) {}
+                    m3uFileName = display.ifBlank { uri.lastPathSegment.orEmpty().substringAfterLast('/') }.ifBlank { "playlist.m3u" }
+                }
+            } catch (e: Exception) {
+                m3uFileError = "Could not read the file"
+            }
+        }
+    }
 
     // Xtream state
     var xtreamName by remember { mutableStateOf("") }
@@ -142,13 +222,16 @@ fun AddPlaylistDialog(
     var stalkerDeviceId by remember { mutableStateOf("") }
     var stalkerDeviceId2 by remember { mutableStateOf("") }
     var stalkerSerial by remember { mutableStateOf("") }
+    var stalkerGenIds by remember { mutableStateOf(false) }
     var stalkerIncludeTv by remember { mutableStateOf(true) }
     var stalkerIncludeVod by remember { mutableStateOf(false) }
 
-    // JSON state
-    var jsonName by remember { mutableStateOf("") }
-    var jsonSource by remember { mutableStateOf("") }
-    var jsonIsRaw by remember { mutableStateOf(false) }
+    // Auto detect state
+    var autoName by remember { mutableStateOf("") }
+    var autoInput by remember { mutableStateOf("") }
+    var autoMac by remember { mutableStateOf("") }
+    var autoIncludeTv by remember { mutableStateOf(true) }
+    var autoIncludeVod by remember { mutableStateOf(false) }
 
     val screenHeightDp = LocalConfiguration.current.screenHeightDp
     val firstTabFocus = remember { FocusRequester() }
@@ -263,6 +346,46 @@ fun AddPlaylistDialog(
 
                 Spacer(Modifier.height(gap))
 
+                if (selectedTab == 0) {
+                    // M3U: import a playlist file from the device, right above the player signature
+                    Text("Playlist file", fontSize = 12.sp, color = Muted, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(3.dp))
+                    FocusSurface(
+                        onClick = {
+                            try { m3uPicker.launch(arrayOf("*/*")) } catch (_: Exception) { m3uFileError = "No file picker available on this device" }
+                        },
+                        modifier = Modifier.fillMaxWidth().testTag("m3u_import_file_btn")
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = if (tv) 8.dp else 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = if (m3uFileName.isNotBlank()) m3uFileName else "Import M3U file",
+                                color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(text = if (m3uFileName.isNotBlank()) "Change" else "Browse", color = AccentCyan, fontSize = 12.sp)
+                        }
+                    }
+                    if (m3uFileError.isNotBlank()) {
+                        Text(m3uFileError, color = Color(0xFFFF8A80), fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
+                    } else if (m3uFileName.isNotBlank()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(top = 3.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text("The file is used instead of the URL below", color = Hint, fontSize = 11.sp)
+                            Text(
+                                "Remove", color = AccentCyan, fontSize = 11.sp,
+                                modifier = Modifier.clickable { m3uFileName = ""; m3uFileContent = "" }
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(gap))
+                }
+
                 // Player signature selector
                 Text("Player signature", fontSize = 12.sp, color = Muted, fontWeight = FontWeight.Medium)
                 Spacer(Modifier.height(3.dp))
@@ -330,7 +453,7 @@ fun AddPlaylistDialog(
                         )
                         Spacer(Modifier.height(gap))
                         PlaylistField(
-                            label = "M3U / M3U8 URL",
+                            label = if (m3uFileContent.isNotBlank()) "M3U / M3U8 URL (ignored, file selected)" else "M3U / M3U8 URL",
                             value = m3uSource,
                             onValueChange = { m3uSource = it },
                             placeholder = "http://example.com/playlist.m3u8",
@@ -341,11 +464,14 @@ fun AddPlaylistDialog(
                         Spacer(Modifier.height(gap + 4.dp))
                         SubmitButton(
                             text = "Import M3U playlist",
-                            enabled = m3uSource.isNotBlank(),
+                            enabled = m3uSource.isNotBlank() || m3uFileContent.isNotBlank(),
                             modifier = Modifier.testTag("m3u_submit_btn")
                         ) {
-                            val name = m3uName.ifBlank { hostOf(m3uSource) ?: "M3U Playlist" }
-                            if (m3uSource.isNotBlank()) {
+                            if (m3uFileContent.isNotBlank()) {
+                                val name = m3uName.ifBlank { m3uFileName.substringBeforeLast('.').ifBlank { "M3U Playlist" } }
+                                onAddM3u(name, m3uFileContent, true, selectedSpoof)
+                            } else if (m3uSource.isNotBlank()) {
+                                val name = m3uName.ifBlank { hostOf(m3uSource) ?: "M3U Playlist" }
                                 onAddM3u(name, m3uSource.trim(), false, selectedSpoof)
                             }
                         }
@@ -483,6 +609,14 @@ fun AddPlaylistDialog(
                                 )
                             }
                             Spacer(Modifier.height(gap))
+                            OptionCheck("Generate device IDs from MAC address", stalkerGenIds) { stalkerGenIds = it }
+                            Spacer(Modifier.height(gap))
+                            if (stalkerGenIds) {
+                                Text(
+                                    "Device ID, Device ID 2 and serial number are derived from the MAC address above.",
+                                    fontSize = 11.sp, color = Hint
+                                )
+                            } else {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 PlaylistField(
                                     label = "Device ID (optional)",
@@ -505,6 +639,7 @@ fun AddPlaylistDialog(
                                 imeAction = ImeAction.Done,
                                 modifier = Modifier.testTag("stalker_serial_input")
                             )
+                            }
                         }
                         val ready = stalkerPortal.isNotBlank() && stalkerMac.isNotBlank() &&
                             (stalkerIncludeTv || stalkerIncludeVod)
@@ -516,14 +651,15 @@ fun AddPlaylistDialog(
                         ) {
                             val name = stalkerName.ifBlank { hostOf(stalkerPortal) ?: "Stalker Portal" }
                             if (ready) {
+                                val gen = if (stalkerGenIds) deviceIdsFromMac(stalkerMac) else null
                                 onAddStalker(
                                     name, stalkerPortal.trim(), stalkerMac.trim(), selectedSpoof,
                                     StalkerAdvanced(
                                         username = stalkerUser.trim(),
                                         password = stalkerPass.trim(),
-                                        deviceId = stalkerDeviceId.trim(),
-                                        deviceId2 = stalkerDeviceId2.trim(),
-                                        serial = stalkerSerial.trim(),
+                                        deviceId = gen?.first ?: stalkerDeviceId.trim(),
+                                        deviceId2 = gen?.second ?: stalkerDeviceId2.trim(),
+                                        serial = gen?.third ?: stalkerSerial.trim(),
                                         includeTv = stalkerIncludeTv,
                                         includeVod = stalkerIncludeVod
                                     )
@@ -533,40 +669,74 @@ fun AddPlaylistDialog(
                     }
 
                     3 -> {
+                        val detection = detectPlaylist(autoInput, autoMac)
                         PlaylistField(
-                            label = "Playlist name",
-                            value = jsonName,
-                            onValueChange = { jsonName = it },
-                            placeholder = "e.g. Custom JSON playlist",
-                            modifier = Modifier.testTag("json_name_input")
+                            label = "Playlist name (optional)",
+                            value = autoName,
+                            onValueChange = { autoName = it },
+                            placeholder = "e.g. My playlist",
+                            modifier = Modifier.testTag("auto_name_input")
                         )
                         Spacer(Modifier.height(gap))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            ModeChip("JSON URL", !jsonIsRaw) { jsonIsRaw = false }
-                            ModeChip("Paste JSON", jsonIsRaw) { jsonIsRaw = true }
-                        }
-                        Spacer(Modifier.height(gap))
                         PlaylistField(
-                            label = if (jsonIsRaw) "JSON text" else "JSON URL",
-                            value = jsonSource,
-                            onValueChange = { jsonSource = it },
-                            placeholder = if (jsonIsRaw) "{\n  \"channels\": [\n    {\"name\": \"...\", \"url\": \"...\"}\n  ]\n}" else "http://example.com/channels.json",
-                            singleLine = !jsonIsRaw,
-                            minLines = if (jsonIsRaw) 3 else 1,
-                            maxLines = if (jsonIsRaw) 6 else 1,
-                            keyboardType = if (jsonIsRaw) KeyboardType.Text else KeyboardType.Uri,
+                            label = "Playlist URL or portal address",
+                            value = autoInput,
+                            onValueChange = { autoInput = it },
+                            placeholder = "M3U link, Xtream get.php link or Stalker portal (+ MAC)",
+                            keyboardType = KeyboardType.Uri,
                             imeAction = ImeAction.Done,
-                            modifier = Modifier.testTag("json_source_input")
+                            modifier = Modifier.testTag("auto_input")
                         )
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = detection?.let { "Detected: ${it.type.label}" } ?: "Paste a link and the type is detected for you",
+                            fontSize = 12.sp,
+                            color = if (detection != null) AccentCyan else Hint,
+                            fontWeight = FontWeight.Medium
+                        )
+                        if (detection?.type == DetectedType.STALKER) {
+                            Spacer(Modifier.height(gap))
+                            PlaylistField(
+                                label = "MAC address",
+                                value = if (autoMac.isBlank()) detection.mac else autoMac,
+                                onValueChange = { autoMac = it.uppercase() },
+                                placeholder = "00:1A:79:XX:XX:XX",
+                                modifier = Modifier.testTag("auto_mac_input")
+                            )
+                        }
+                        if (detection != null && detection.type != DetectedType.M3U) {
+                            Spacer(Modifier.height(gap))
+                            OptionCheck("Include TV channels", autoIncludeTv) { autoIncludeTv = it }
+                            Spacer(Modifier.height(4.dp))
+                            OptionCheck("Include VOD (movies and shows)", autoIncludeVod) { autoIncludeVod = it }
+                        }
+                        val ready = detection != null && when (detection.type) {
+                            DetectedType.M3U -> true
+                            DetectedType.XTREAM -> autoIncludeTv || autoIncludeVod
+                            DetectedType.STALKER -> (autoMac.ifBlank { detection.mac }).isNotBlank() && (autoIncludeTv || autoIncludeVod)
+                        }
                         Spacer(Modifier.height(gap + 4.dp))
                         SubmitButton(
-                            text = "Import JSON playlist",
-                            enabled = jsonSource.isNotBlank(),
-                            modifier = Modifier.testTag("json_submit_btn")
+                            text = "Detect and import",
+                            enabled = ready,
+                            modifier = Modifier.testTag("auto_submit_btn")
                         ) {
-                            val name = jsonName.ifBlank { (if (jsonIsRaw) null else hostOf(jsonSource)) ?: "JSON Playlist" }
-                            if (jsonSource.isNotBlank()) {
-                                onAddJson(name, jsonSource.trim(), jsonIsRaw, selectedSpoof)
+                            if (detection != null && ready) {
+                                when (detection.type) {
+                                    DetectedType.M3U -> onAddM3u(
+                                        autoName.ifBlank { hostOf(detection.server) ?: "M3U Playlist" },
+                                        detection.server, false, selectedSpoof
+                                    )
+                                    DetectedType.XTREAM -> onAddXtream(
+                                        autoName.ifBlank { hostOf(detection.server) ?: "Xtream Playlist" },
+                                        detection.server, detection.user, detection.pass, selectedSpoof, autoIncludeTv, autoIncludeVod
+                                    )
+                                    DetectedType.STALKER -> onAddStalker(
+                                        autoName.ifBlank { hostOf(detection.server) ?: "Stalker Portal" },
+                                        detection.server, autoMac.ifBlank { detection.mac }.trim(), selectedSpoof,
+                                        StalkerAdvanced(includeTv = autoIncludeTv, includeVod = autoIncludeVod)
+                                    )
+                                }
                             }
                         }
                     }
