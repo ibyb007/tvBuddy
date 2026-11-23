@@ -1163,7 +1163,9 @@ private fun TvBuddyUnmatchedSubMenu(
     // search results: every channel of the playlist that fits, matched ones too, so their match can be changed
     var found by remember(playlistId) { mutableStateOf<List<com.example.data.epg.EpgChannelMatch>?>(null) }
     var refreshTick by remember(playlistId) { mutableStateOf(0) }
-    LaunchedEffect(playlistId) { rows = load(playlistId) }
+    LaunchedEffect(playlistId) {
+        rows = try { load(playlistId) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { emptyList() }
+    }
     LaunchedEffect(playlistId, query, refreshTick) {
         found = if (query.isBlank()) null else try { search(playlistId, query) } catch (e: Exception) { emptyList() }
     }
